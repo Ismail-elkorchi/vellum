@@ -1,0 +1,95 @@
+# split-narrow-60x18
+
+## Frame
+
+ VELLUM  README.md                  EDIT  [SPLIT]  PREVIEW
+┏ [ SOURCE · ACTIVE ] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ›  1 │ # Vellum                                        ┃ ┃
+┃ │  2 │                                                 ┃ ┃
+┃ │  3 │ A **terminal-first** Markdown editor with *live ┃ ┃
+┃ │    │ preview*, `inline code`, and [clickable links](h┃ ┃
+┃ │    │ ttps://example.com).                            ┃ ┃
+┃ │  4 │                                                 ┃ ┃
+┃ │  5 │ ## Editorial rendering                          │ ┃
+┃ │  6 │                                                 │ ┃
+┃ │  7 │ > Blockquotes use a guide and preserve **nested │ ┃
+┃ │    │ formatting** while wrapping at word boundaries. │ ┃
+┃ │  8 │                                                 │ ┃
+┃ │  9 │ - [x] Block-aware rendering                     │ ┃
+┃ │ 10 │ - [ ] Final polish                              │ ┃
+┃ │ 11 │   - Nested list with *emphasis*                 │ ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+✓ README.md · SAVED     Ln 1, Col 1       Ctrl+S  Ctrl+P  F1
+
+## Accessibility
+
+# vellum-root
+- text: vellum-root
+  - text: vellum-header
+    - text: vellum-header-row
+      - text = VELLUM  README.md
+      - text =  EDIT  [SPLIT]  PREVIEW 
+  - text: vellum-source-surface
+    - textbox: vellum-editor = # Vellum
+
+A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
+
+## Editorial rendering
+
+> Blockquotes use a guide and preserve **nested formatting** while wrapping at word boundaries.
+
+- [x] Block-aware rendering
+- [ ] Final polish
+  - Nested list with *emphasis*
+
+```ts
+export const answer = 42;
+```
+
+| Feature | Status |
+| :--- | ---: |
+| Unicode width | 東京 ✅ |
+| Terminal links | [Open](https://example.com) |
+
+---
+
+![Architecture](https://example.com/architecture.png)
+
+<section>HTML is intentionally not executed.</section> [focused] - 26 lines. Showing 1-14 of 31 rows. Omitted before: 0. Omitted after: 17. Horizontal offset: 0.
+  - status: vellum-status = README.md · SAVED  Ln 1, Col 1  Ctrl+S  Ctrl+P  F1 [live:polite]
+
+## Focus targets
+
+{
+  "accessibilityFocusPath": [
+    "vellum-root",
+    "vellum-source-surface",
+    "vellum-editor"
+  ],
+  "cursor": {
+    "column": 10,
+    "row": 3,
+    "source": {
+      "cellRole": "cursor",
+      "description": "cursor",
+      "elementId": "vellum-editor",
+      "elementKind": "terminal-ui/components/text-area",
+      "partName": "cursor",
+      "partType": "cursor",
+      "rendererFamily": "component"
+    },
+    "style": {
+      "bold": true,
+      "fg": {
+        "kind": "theme",
+        "token": "input.cursor"
+      },
+      "inverse": true
+    }
+  },
+  "focusPath": [
+    "vellum-root",
+    "vellum-source-surface",
+    "vellum-editor"
+  ]
+}

@@ -1,0 +1,101 @@
+# unsaved-confirm-80x24
+
+## Frame
+
+ VELLUM  README.md *                                   [EDIT]  SPLIT   PREVIEW
+┏ [ SOURCE · ACTIVE ] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃    1 │                                                                     ┃ ┃
+┃ ●  2 │ # Vellum                                                            ┃ ┃
+┃ │  3 │                                                                     ┃ ┃
+┃ │  4 │ A **terminal-first** Markdown editor with *live preview*, `inline co┃ ┃
+┃ │    │ de`, and [clickable links](https://example.com).                    ┃ ┃
+┃ │  5 │┌ Unsaved changes ────────────────────────────────────────────┐      ┃ ┃
+┃ │  6 ││                                                             │░     ┃ ┃
+┃ │  7 ││ Quit Vellum and discard the changes in the current document │░     ┃ ┃
+┃ │  8 ││                                                             │░ile w┃ ┃
+┃ │    ││ Save first to keep your work.                               │░     ┃ ┃
+┃ │  9 ││ ─────────────────────────────────────────────────────────── │░     ┃ ┃
+┃ │ 10 ││ › Keep Editing                × Discard and Quit            │░     ┃ ┃
+┃ │ 11 ││                                                             │░     ┃ ┃
+┃ │ 12 │└─────────────────────────────────────────────────────────────┘░     │ ┃
+┃ │ 13 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     │ ┃
+┃ │ 14 │ ```ts                                                               │ ┃
+┃ │ 15 │ export const answer = 42;                                           │ ┃
+┃ │ 16 │ ```                                                                 │ ┃
+┃ │ 17 │                                                                     │ ┃
+┃ │ 18 │ | Feature | Status |                                                │ ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+! README.md · MODIFIED                         Ctrl+S Save  Ctrl+P Mode  F1 Help
+
+## Accessibility
+
+# vellum-root-overlay
+- application: vellum-root-overlay [scope:popover]
+  - dialog: Unsaved changes [scope:modal]
+    - application: vellum-confirm-dialog:portal [scope:document]
+      - text: vellum-confirm-dialog:surface
+        - text: vellum-confirm-dialog:content
+          - text: column-10-11
+            - text = Quit Vellum and discard the changes in the current document?
+            - text = Save first to keep your work.
+          - text: row-14-11
+            - button: Keep Editing [focused]
+            - button: Discard and Quit
+  - text: vellum-root
+    - text: vellum-header
+      - text: vellum-header-row
+        - text = VELLUM  README.md *
+        - text = [EDIT]  SPLIT   PREVIEW 
+    - text: vellum-source-surface
+      - textbox: vellum-editor = 
+# Vellum
+
+A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
+
+## Editorial rendering
+
+> Blockquotes use a guide and preserve **nested formatting** while wrapping at word boundaries.
+
+- [x] Block-aware rendering
+- [ ] Final polish
+  - Nested list with *emphasis*
+
+```ts
+export const answer = 42;
+```
+
+| Feature | Status |
+| :--- | ---: |
+| Unicode width | 東京 ✅ |
+| Terminal links | [Open](https://example.com) |
+
+---
+
+![Architecture](https://example.com/architecture.png)
+
+<section>HTML is intentionally not executed.</section> - 27 lines. Showing 1-20 of 29 rows. Omitted before: 0. Omitted after: 9. Horizontal offset: 0.
+    - status: vellum-status = README.md · MODIFIED  Ln 2, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+
+## Focus targets
+
+{
+  "accessibilityFocusPath": [
+    "vellum-root-overlay",
+    "vellum-confirm-dialog",
+    "vellum-confirm-dialog:portal",
+    "vellum-confirm-dialog:surface",
+    "vellum-confirm-dialog:content",
+    "row-14-11",
+    "vellum-confirm-cancel"
+  ],
+  "cursor": {
+    "column": 11,
+    "row": 14
+  },
+  "focusPath": [
+    "vellum-root-overlay",
+    "vellum-confirm-dialog",
+    "row:2",
+    "vellum-confirm-cancel"
+  ]
+}

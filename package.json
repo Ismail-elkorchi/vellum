@@ -1,0 +1,26 @@
+{
+  "name": "vellum-markdown-editor",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "snapshots": "npm run build && node dist/scripts/generate-snapshots.js",
+    "verify": "npm test && npm run snapshots"
+  },
+  "dependencies": {
+    "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#5cfc52deed787e6d4cde2e209af33415a973e7fb",
+    "marked": "^18.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^6.0.0"
+  },
+  "description": "A terminal-first Markdown editor with a block-aware live preview.",
+  "engines": {
+    "node": ">=24"
+  }
+}

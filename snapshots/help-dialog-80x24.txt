@@ -1,0 +1,104 @@
+# help-dialog-80x24
+
+## Frame
+
+ VELLUM  README.md                                     [EDIT]  SPLIT   PREVIEW
+┏ [ SOURCE · ACTIVE ] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ●  1 │ # Vellum                                                            ┃ ┃
+┃ │  2┌ Vellum keyboard shortcuts ──────────────────────────────────────┐    ┃ ┃
+┃ │  3│                                                                 │░ co┃ ┃
+┃ │   │ Ctrl+O       Open file                                          │░   ┃ ┃
+┃ │  4│ Ctrl+S       Save                                               │░   ┃ ┃
+┃ │  5│ F2 / Ctrl+Shift+S Save As                                       │░   ┃ ┃
+┃ │  6│ Ctrl+P       Edit → Split → Preview                             │░   ┃ ┃
+┃ │  7│ Tab          Switch panes in Split mode                         │░e w┃ ┃
+┃ │   │ Arrow keys   Scroll Preview                                     │░   ┃ ┃
+┃ │  8│ PgUp / PgDn  Scroll Preview by page                             │░   ┃ ┃
+┃ │  9│ Home / End   Preview start / end                                │░   ┃ ┃
+┃ │ 10│ Alt+Arrows   Resize a visible split                             │░   ┃ ┃
+┃ │ 11│ Ctrl+Q       Quit                                               │░   ┃ ┃
+┃ │ 12│ F1           Show this help                                     │░   ┃ ┃
+┃ │ 13│ ─────────────────────────────────────────────────────────────── │░   │ ┃
+┃ │ 14│ › Close                                                         │░   │ ┃
+┃ │ 15│                                                                 │░   │ ┃
+┃ │ 16└─────────────────────────────────────────────────────────────────┘░   │ ┃
+┃ │ 17 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │ ┃
+┃ │ 18 │ | :--- | ---: |                                                     │ ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+✓ README.md · SAVED                            Ctrl+S Save  Ctrl+P Mode  F1 Help
+
+## Accessibility
+
+# vellum-root-overlay
+- application: vellum-root-overlay [scope:popover]
+  - dialog: Vellum keyboard shortcuts [scope:modal]
+    - application: vellum-help-dialog:portal [scope:document]
+      - text: vellum-help-dialog:surface
+        - text: vellum-help-dialog:content
+          - text = Ctrl+O       Open file
+Ctrl+S       Save
+F2 / Ctrl+Shift+S Save As
+Ctrl+P       Edit → Split → Preview
+Tab          Switch panes in Split mode
+Arrow keys   Scroll Preview
+PgUp / PgDn  Scroll Preview by page
+Home / End   Preview start / end
+Alt+Arrows   Resize a visible split
+Ctrl+Q       Quit
+F1           Show this help
+          - button: Close [focused]
+  - text: vellum-root
+    - text: vellum-header
+      - text: vellum-header-row
+        - text = VELLUM  README.md
+        - text = [EDIT]  SPLIT   PREVIEW 
+    - text: vellum-source-surface
+      - textbox: vellum-editor = # Vellum
+
+A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
+
+## Editorial rendering
+
+> Blockquotes use a guide and preserve **nested formatting** while wrapping at word boundaries.
+
+- [x] Block-aware rendering
+- [ ] Final polish
+  - Nested list with *emphasis*
+
+```ts
+export const answer = 42;
+```
+
+| Feature | Status |
+| :--- | ---: |
+| Unicode width | 東京 ✅ |
+| Terminal links | [Open](https://example.com) |
+
+---
+
+![Architecture](https://example.com/architecture.png)
+
+<section>HTML is intentionally not executed.</section> - 26 lines. Showing 1-20 of 28 rows. Omitted before: 0. Omitted after: 8. Horizontal offset: 0.
+    - status: vellum-status = README.md · SAVED  Ln 1, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+
+## Focus targets
+
+{
+  "accessibilityFocusPath": [
+    "vellum-root-overlay",
+    "vellum-help-dialog",
+    "vellum-help-dialog:portal",
+    "vellum-help-dialog:surface",
+    "vellum-help-dialog:content",
+    "vellum-help-close"
+  ],
+  "cursor": {
+    "column": 9,
+    "row": 18
+  },
+  "focusPath": [
+    "vellum-root-overlay",
+    "vellum-help-dialog",
+    "vellum-help-close"
+  ]
+}

@@ -1,0 +1,132 @@
+# split-stacked-80x24
+
+## Frame
+
+ VELLUM  README.md                                      EDIT  [SPLIT]  PREVIEW
+┌ SOURCE ──────────────────────────────────────────────────────────────────────┐
+│ ●  1 │ # Vellum                                                            ┃ │
+│ │  2 │                                                                     ┃ │
+│ │  3 │ A **terminal-first** Markdown editor with *live preview*, `inline co│ │
+│ │    │ de`, and [clickable links](https://example.com).                    │ │
+│ │  4 │                                                                     │ │
+│ │  5 │ ## Editorial rendering                                              │ │
+│ │  6 │                                                                     │ │
+│ │  7 │ > Blockquotes use a guide and preserve **nested formatting** while w│ │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┏ [ PREVIEW · ACTIVE ] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃   Vellum                                                                   ┃ ┃
+┃   ━━━━━━                                                                   │ ┃
+┃                                                                            │ ┃
+┃   A terminal-first Markdown editor with live preview, inline code, and     │ ┃
+┃   clickable links.                                                         │ ┃
+┃                                                                            │ ┃
+┃   Editorial rendering                                                      │ ┃
+┃ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━─  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+✓ README.md · SAVED          Rows 1-8/32  49 words          Ctrl+P Mode  F1 Help
+
+## Accessibility
+
+# vellum-root
+- text: vellum-root
+  - text: vellum-header
+    - text: vellum-header-row
+      - text = VELLUM  README.md
+      - text =  EDIT  [SPLIT]  PREVIEW 
+  - text: Source and preview stacked vertically [focused] - Resizable split pane. Divider 1 of 1 active.
+    - text: vellum-source-surface
+      - textbox: vellum-editor = # Vellum
+
+A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
+
+## Editorial rendering
+
+> Blockquotes use a guide and preserve **nested formatting** while wrapping at word boundaries.
+
+- [x] Block-aware rendering
+- [ ] Final polish
+  - Nested list with *emphasis*
+
+```ts
+export const answer = 42;
+```
+
+| Feature | Status |
+| :--- | ---: |
+| Unicode width | 東京 ✅ |
+| Terminal links | [Open](https://example.com) |
+
+---
+
+![Architecture](https://example.com/architecture.png)
+
+<section>HTML is intentionally not executed.</section> - 26 lines. Showing 1-8 of 28 rows. Omitted before: 0. Omitted after: 20. Horizontal offset: 0.
+    - text: vellum-preview-surface
+      - text: Rendered Markdown preview - Use arrows, Page Up, Page Down, Home, and End to navigate.
+        - document: Markdown preview - 49 words
+          - heading: Vellum [position]
+          - group
+            - text = A 
+            - text = terminal-first
+            - text =  Markdown editor with 
+            - text = live preview
+            - text = , 
+            - text: Inline code = inline code
+            - text = , and 
+            - link: clickable links - Destination: https://example.com
+            - text = .
+          - heading: Editorial rendering [position]
+          - group: Block quote
+            - group
+              - text = Blockquotes use a guide and preserve 
+              - text = nested formatting
+              - text =  while wrapping at word boundaries.
+          - list: Unordered list
+            - listitem [position:1/2]
+              - checkbox: Task [checked:true]
+              - group
+                - text = Block-aware rendering
+            - listitem [position:2/2]
+              - checkbox: Task [checked:false]
+              - group
+                - text = Final polish
+              - list: Unordered list
+                - listitem [position:1/1]
+                  - group
+                    - text = Nested list with 
+                    - text = emphasis
+          - group: Code block, ts
+            - text = export const answer = 42;
+          - table: Markdown table
+            - row [row:1/3]
+              - columnheader = Feature [position]
+              - columnheader = Status [position]
+            - row [row:2/3]
+              - cell = Unicode width [position]
+              - cell = 東京 ✅ [position]
+            - row [row:3/3]
+              - cell = Terminal links [position]
+              - cell = Open [position]
+          - separator
+          - image: Architecture - Destination: https://example.com/architecture.png
+          - text: HTML not rendered = HTML block: <section>
+  - status: vellum-status = README.md · SAVED  Rows 1-8/32  49 words  Ctrl+P Mode  F1 Help [live:polite]
+
+## Focus targets
+
+{
+  "accessibilityFocusPath": [
+    "vellum-root",
+    "vellum-split"
+  ],
+  "cursor": {
+    "column": 1,
+    "row": 2
+  },
+  "focusPath": [
+    "vellum-root",
+    "vellum-split"
+  ]
+}

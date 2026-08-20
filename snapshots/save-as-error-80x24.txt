@@ -1,0 +1,118 @@
+# save-as-error-80x24
+
+## Frame
+
+ VELLUM  README.md                                     [EDIT]  SPLIT   PREVIEW
+┏ [ SOURCE · ACTIVE ] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ●  1 │ # Vellum                                                            ┃ ┃
+┃ │  2 │                                                                     ┃ ┃
+┃ │  3 │ A **terminal-first** Markdown editor with *live preview*, `inline co┃ ┃
+┃ │    │ de`, and [clickable links](https://example.com).                    ┃ ┃
+┃ │ ┌ Save Markdown file as ──────────────────────────────────────────────┐  ┃ ┃
+┃ │ │                                                                     │░ ┃ ┃
+┃ │ │ Choose the destination path for this Markdown document.             │░ ┃ ┃
+┃ │ │                                                                     │░w┃ ┃
+┃ │ │ Save › /workspace/README.md                                         │░ ┃ ┃
+┃ │ │ Destination is not writable.                                        │░ ┃ ┃
+┃ │ │ Enter confirms · Esc cancels                                        │░ ┃ ┃
+┃ │ │ ─────────────────────────────────────────────────────────────────── │░ ┃ ┃
+┃ │ │   Cancel                            Save As                         │░ ┃ ┃
+┃ │ │                                                                     │░ ┃ ┃
+┃ │ └─────────────────────────────────────────────────────────────────────┘░ │ ┃
+┃ │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │ ┃
+┃ │ 15 │ ```                                                                 │ ┃
+┃ │ 16 │                                                                     │ ┃
+┃ │ 17 │ | Feature | Status |                                                │ ┃
+┃ │ 18 │ | :--- | ---: |                                                     │ ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+✓ README.md · SAVED                            Ctrl+S Save  Ctrl+P Mode  F1 Help
+
+## Accessibility
+
+# vellum-root-overlay
+- application: vellum-root-overlay [scope:popover]
+  - dialog: Save Markdown file as [scope:modal]
+    - application: vellum-file-dialog:portal [scope:document]
+      - text: vellum-file-dialog:surface
+        - text: vellum-file-dialog:content
+          - text: column-9-7
+            - text = Choose the destination path for this Markdown document.
+            - combobox: Save ›  = /workspace/README.md [focused, collapsed]
+              - status: error = Destination is not writable.
+          - text: row-15-7
+            - button: Cancel
+            - button: Save As
+  - text: vellum-root
+    - text: vellum-header
+      - text: vellum-header-row
+        - text = VELLUM  README.md
+        - text = [EDIT]  SPLIT   PREVIEW 
+    - text: vellum-source-surface
+      - textbox: vellum-editor = # Vellum
+
+A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
+
+## Editorial rendering
+
+> Blockquotes use a guide and preserve **nested formatting** while wrapping at word boundaries.
+
+- [x] Block-aware rendering
+- [ ] Final polish
+  - Nested list with *emphasis*
+
+```ts
+export const answer = 42;
+```
+
+| Feature | Status |
+| :--- | ---: |
+| Unicode width | 東京 ✅ |
+| Terminal links | [Open](https://example.com) |
+
+---
+
+![Architecture](https://example.com/architecture.png)
+
+<section>HTML is intentionally not executed.</section> - 26 lines. Showing 1-20 of 28 rows. Omitted before: 0. Omitted after: 8. Horizontal offset: 0.
+    - status: vellum-status = README.md · SAVED  Ln 1, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+
+## Focus targets
+
+{
+  "accessibilityFocusPath": [
+    "vellum-root-overlay",
+    "vellum-file-dialog",
+    "vellum-file-dialog:portal",
+    "vellum-file-dialog:surface",
+    "vellum-file-dialog:content",
+    "column-9-7",
+    "vellum-file-input"
+  ],
+  "cursor": {
+    "column": 34,
+    "row": 11,
+    "source": {
+      "cellRole": "cursor",
+      "description": "cursor",
+      "elementId": "vellum-file-input",
+      "elementKind": "terminal-ui/components/command-input",
+      "partName": "cursor",
+      "partType": "cursor",
+      "rendererFamily": "component"
+    },
+    "style": {
+      "bold": true,
+      "fg": {
+        "kind": "theme",
+        "token": "input.cursor"
+      },
+      "inverse": true
+    }
+  },
+  "focusPath": [
+    "vellum-root-overlay",
+    "vellum-file-dialog",
+    "column:0",
+    "vellum-file-input"
+  ]
+}
