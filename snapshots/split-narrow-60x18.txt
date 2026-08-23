@@ -23,14 +23,13 @@
 
 ## Accessibility
 
-# vellum-root
-- text: vellum-root
-  - text: vellum-header
-    - text: vellum-header-row
+- group
+  - group
+    - group
       - text = VELLUM  README.md
       - text =  EDIT  [SPLIT]  PREVIEW 
-  - text: vellum-source-surface
-    - textbox: vellum-editor = # Vellum
+  - group
+    - textbox: Markdown source = # Vellum
 
 A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
 
@@ -56,7 +55,7 @@ export const answer = 42;
 ![Architecture](https://example.com/architecture.png)
 
 <section>HTML is intentionally not executed.</section> [focused] - 26 lines. Showing 1-14 of 31 rows. Omitted before: 0. Omitted after: 17. Horizontal offset: 0.
-  - status: vellum-status = README.md · SAVED  Ln 1, Col 1  Ctrl+S  Ctrl+P  F1 [live:polite]
+  - status = README.md · SAVED  Ln 1, Col 1  Ctrl+S  Ctrl+P  F1 [live:polite]
 
 ## Focus targets
 

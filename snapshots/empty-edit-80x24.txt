@@ -29,15 +29,14 @@
 
 ## Accessibility
 
-# vellum-root
-- text: vellum-root
-  - text: vellum-header
-    - text: vellum-header-row
+- group
+  - group
+    - group
       - text = VELLUM  untitled.md
       - text = [EDIT]  SPLIT   PREVIEW 
-  - text: vellum-source-surface
-    - textbox: vellum-editor =  [focused] - 0 lines. Showing 1-5 of 5 rows. Omitted before: 0. Omitted after: 0. Horizontal offset: 0.
-  - status: vellum-status = untitled.md · UNSAVED  Ln 1, Col 1  0 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+  - group
+    - textbox: Markdown source =  [focused] - 0 lines. Showing 1-5 of 5 rows. Omitted before: 0. Omitted after: 0. Horizontal offset: 0.
+  - status = untitled.md · UNSAVED  Ln 1, Col 1  0 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
 
 ## Focus targets
 

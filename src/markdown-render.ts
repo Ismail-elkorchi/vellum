@@ -4,6 +4,7 @@ import {
   clipRenderSpans,
   compactRenderSpans,
   measureRenderSpans,
+  mergeTerminalStyles,
   padRenderLine,
   type RenderLine,
   type RenderSpan,
@@ -16,7 +17,7 @@ import {
   textWidthProfileKey,
   type TextWidthProfile
 } from '@ismail-elkorchi/terminal-ui/text';
-import { unicodeSymbols, type TerminalSymbols } from '@ismail-elkorchi/terminal-ui/theme';
+import { themeColor, unicodeSymbols, type TerminalSymbols } from '@ismail-elkorchi/terminal-ui/theme';
 import type {
   MarkdownBlock,
   MarkdownDocument,
@@ -26,61 +27,42 @@ import type {
   MarkdownTableCell
 } from './markdown-model.js';
 
-const coreTheme = (token: Parameters<typeof coreColor>[0]) => coreColor(token);
-
-function coreColor(token:
-  | 'text.default'
-  | 'text.muted'
-  | 'text.strong'
-  | 'link.foreground'
-  | 'accent.primary'
-  | 'status.success'
-  | 'status.warning'
-  | 'surface.inset.background'
-  | 'surface.inset.border'
-  | 'surface.bar.background'
-  | 'surface.border'
-  | 'table.header'
-): { readonly kind: 'theme'; readonly token: typeof token } {
-  return { kind: 'theme', token };
-}
-
-const STYLE_BODY: TerminalStyle = { fg: coreTheme('text.default') };
-const STYLE_MUTED: TerminalStyle = { fg: coreTheme('text.muted'), dim: true };
-const STYLE_STRONG: TerminalStyle = { fg: coreTheme('text.strong'), bold: true };
-const STYLE_ACCENT: TerminalStyle = { fg: coreTheme('accent.primary') };
-const STYLE_LINK: TerminalStyle = { fg: coreTheme('link.foreground'), underline: true };
+const STYLE_BODY: TerminalStyle = { fg: themeColor('text.default') };
+const STYLE_MUTED: TerminalStyle = { fg: themeColor('text.muted'), dim: true };
+const STYLE_STRONG: TerminalStyle = { fg: themeColor('text.strong'), bold: true };
+const STYLE_ACCENT: TerminalStyle = { fg: themeColor('accent.primary') };
+const STYLE_LINK: TerminalStyle = { fg: themeColor('link.foreground'), underline: true };
 const STYLE_INLINE_CODE: TerminalStyle = {
-  fg: coreTheme('accent.primary'),
-  bg: coreTheme('surface.inset.background')
+  fg: themeColor('accent.primary'),
+  bg: themeColor('surface.inset.background')
 };
 const STYLE_CODE: TerminalStyle = {
-  fg: coreTheme('text.default'),
-  bg: coreTheme('surface.inset.background')
+  fg: themeColor('text.default'),
+  bg: themeColor('surface.inset.background')
 };
 const STYLE_CODE_LABEL: TerminalStyle = {
-  fg: coreTheme('accent.primary'),
-  bg: coreTheme('surface.bar.background'),
+  fg: themeColor('accent.primary'),
+  bg: themeColor('surface.bar.background'),
   bold: true
 };
-const STYLE_BORDER: TerminalStyle = { fg: coreTheme('surface.inset.border'), dim: true };
-const STYLE_RULE: TerminalStyle = { fg: coreTheme('surface.border'), dim: true };
-const STYLE_TABLE_HEADER: TerminalStyle = { fg: coreTheme('table.header'), bold: true };
-const STYLE_CHECKED: TerminalStyle = { fg: coreTheme('status.success'), bold: true };
-const STYLE_UNCHECKED: TerminalStyle = { fg: coreTheme('text.muted') };
+const STYLE_BORDER: TerminalStyle = { fg: themeColor('surface.inset.border'), dim: true };
+const STYLE_RULE: TerminalStyle = { fg: themeColor('surface.border'), dim: true };
+const STYLE_TABLE_HEADER: TerminalStyle = { fg: themeColor('table.header'), bold: true };
+const STYLE_CHECKED: TerminalStyle = { fg: themeColor('status.success'), bold: true };
+const STYLE_UNCHECKED: TerminalStyle = { fg: themeColor('text.muted') };
 const STYLE_HTML: TerminalStyle = {
-  fg: coreTheme('text.muted'),
-  bg: coreTheme('surface.inset.background'),
+  fg: themeColor('text.muted'),
+  bg: themeColor('surface.inset.background'),
   dim: true
 };
 
 const HEADING_STYLES: readonly TerminalStyle[] = [
-  { fg: coreTheme('accent.primary'), bold: true },
-  { fg: coreTheme('text.strong'), bold: true },
-  { fg: coreTheme('accent.primary'), bold: true },
-  { fg: coreTheme('text.strong'), bold: true },
-  { fg: coreTheme('text.strong'), italic: true },
-  { fg: coreTheme('text.muted'), italic: true, dim: true }
+  { fg: themeColor('accent.primary'), bold: true },
+  { fg: themeColor('text.strong'), bold: true },
+  { fg: themeColor('accent.primary'), bold: true },
+  { fg: themeColor('text.strong'), bold: true },
+  { fg: themeColor('text.strong'), italic: true },
+  { fg: themeColor('text.muted'), italic: true, dim: true }
 ];
 
 export interface MarkdownLayoutOptions {
@@ -149,9 +131,18 @@ type WrapToken =
 const layoutCache = new WeakMap<MarkdownDocument, Map<string, MarkdownLayoutResult>>();
 const LAYOUT_CACHE_LIMIT = 8;
 
-function style(...values: readonly (TerminalStyle | undefined)[]): TerminalStyle | undefined {
-  const merged = Object.assign({}, ...values.filter((value): value is TerminalStyle => value !== undefined));
-  return Object.keys(merged).length === 0 ? undefined : merged;
+function normalizeBoundedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  subject: string
+): number {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'number' || !Number.isFinite(resolved)) {
+    throw new TypeError(`${subject} must be a finite number.`);
+  }
+  return Math.max(minimum, Math.min(maximum, Math.floor(resolved)));
 }
 
 function renderSpan(text: string, spanStyle?: TerminalStyle, link?: TerminalLink): RenderSpan {
@@ -173,7 +164,7 @@ function emptyLine(): RenderLine {
 function mapSpanStyle(spans: readonly RenderSpan[], extra: TerminalStyle): readonly RenderSpan[] {
   return spans.map((current) => ({
     ...current,
-    style: style(current.style, extra)
+    style: mergeTerminalStyles(current.style, extra)
   }));
 }
 
@@ -194,26 +185,26 @@ function inlineToSpans(
         spans.push(renderSpan(inline.text, parentStyle, parentLink));
         break;
       case 'strong':
-        for (const child of inline.children) visit(child, style(parentStyle, { bold: true }) ?? parentStyle, parentLink);
+        for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, { bold: true }) ?? parentStyle, parentLink);
         break;
       case 'emphasis':
-        for (const child of inline.children) visit(child, style(parentStyle, { italic: true }) ?? parentStyle, parentLink);
+        for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, { italic: true }) ?? parentStyle, parentLink);
         break;
       case 'delete':
-        for (const child of inline.children) visit(child, style(parentStyle, { strikethrough: true }) ?? parentStyle, parentLink);
+        for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, { strikethrough: true }) ?? parentStyle, parentLink);
         break;
       case 'code':
-        spans.push(renderSpan(inline.text, style(parentStyle, STYLE_INLINE_CODE), parentLink));
+        spans.push(renderSpan(inline.text, mergeTerminalStyles(parentStyle, STYLE_INLINE_CODE), parentLink));
         break;
       case 'link': {
         const link = inline.href.length === 0 ? parentLink : { href: inline.href };
-        for (const child of inline.children) visit(child, style(parentStyle, STYLE_LINK) ?? parentStyle, link);
+        for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, STYLE_LINK) ?? parentStyle, link);
         break;
       }
       case 'image': {
         const label = inline.alt.length > 0 ? inline.alt : 'image';
         const destination = inline.href.length > 0 ? ` → ${inline.href}` : '';
-        spans.push(renderSpan(`[Image: ${label}${destination}]`, style(parentStyle, STYLE_ACCENT, { italic: true }), inline.href.length === 0 ? parentLink : { href: inline.href }));
+        spans.push(renderSpan(`[Image: ${label}${destination}]`, mergeTerminalStyles(parentStyle, STYLE_ACCENT, { italic: true }), inline.href.length === 0 ? parentLink : { href: inline.href }));
         break;
       }
       case 'softBreak':
@@ -223,7 +214,7 @@ function inlineToSpans(
         spans.push(renderSpan('\n', parentStyle, parentLink));
         break;
       case 'html':
-        spans.push(renderSpan(inline.label, style(parentStyle, STYLE_HTML), parentLink));
+        spans.push(renderSpan(inline.label, mergeTerminalStyles(parentStyle, STYLE_HTML), parentLink));
         break;
     }
   };
@@ -404,7 +395,7 @@ function layoutHeading(
     const glyph = block.depth === 1
       ? (context.symbols.mode === 'unicode' ? '━' : '=')
       : (context.symbols.mode === 'unicode' ? '─' : '-');
-    lines.push(textLine([renderSpan(repeatGlyph(glyph, Math.min(width, measured)), style(headingStyle, { dim: block.depth === 2 }))]));
+    lines.push(textLine([renderSpan(repeatGlyph(glyph, Math.min(width, measured)), mergeTerminalStyles(headingStyle, { dim: block.depth === 2 }))]));
   }
   return lines;
 }
@@ -515,7 +506,7 @@ function layoutBlockquote(
   const guideWidth = measureTextCells(guide, { widthProfile: context.widthProfile }).cells;
   const innerWidth = Math.max(1, width - guideWidth);
   const inner = layoutBlockSequence(block.blocks, innerWidth, context, 1);
-  return prefixLines(inner, [renderSpan(guide, style(STYLE_BORDER, STYLE_ACCENT))]);
+  return prefixLines(inner, [renderSpan(guide, mergeTerminalStyles(STYLE_BORDER, STYLE_ACCENT))]);
 }
 
 function listMarker(
@@ -527,7 +518,7 @@ function listMarker(
 ): readonly RenderSpan[] {
   const bullet = context.symbols.mode === 'unicode' ? '•' : '-';
   const base = ordered ? `${String(number).padStart(orderDigits, ' ')}. ` : `${bullet} `;
-  const spans: RenderSpan[] = [renderSpan(base, style(STYLE_ACCENT, { bold: true }))];
+  const spans: RenderSpan[] = [renderSpan(base, mergeTerminalStyles(STYLE_ACCENT, { bold: true }))];
   if (item.task) {
     const checked = item.checked === true;
     const glyph = checked ? context.symbols.checkboxChecked : context.symbols.checkboxUnchecked;
@@ -911,14 +902,14 @@ function layoutImage(
 ): readonly RenderLine[] {
   const imageLabel = block.alt.length > 0 ? block.alt : 'Untitled image';
   const imageLine = insetLine([
-    renderSpan('IMAGE  ', style(STYLE_ACCENT, { bold: true })),
+    renderSpan('IMAGE  ', mergeTerminalStyles(STYLE_ACCENT, { bold: true })),
     renderSpan(imageLabel, STYLE_STRONG)
-  ], width, context, { bg: coreTheme('surface.inset.background') });
+  ], width, context, { bg: themeColor('surface.inset.background') });
   const destination = block.href.length > 0 ? block.href : '(no destination)';
   const destinationLine = insetLine([
     renderSpan(context.symbols.mode === 'unicode' ? '↳ ' : '-> ', STYLE_MUTED),
     renderSpan(destination, block.href.length > 0 ? STYLE_LINK : STYLE_MUTED, block.href.length > 0 ? { href: block.href } : undefined)
-  ], width, context, { bg: coreTheme('surface.inset.background') });
+  ], width, context, { bg: themeColor('surface.inset.background') });
   return [imageLine, destinationLine];
 }
 
@@ -1037,7 +1028,7 @@ export function layoutMarkdownDocument(
   const target = cache ?? new Map<string, MarkdownLayoutResult>();
   target.set(key, result);
   while (target.size > LAYOUT_CACHE_LIMIT) {
-    const oldest = target.keys().next().value as string | undefined;
+    const oldest = target.keys().next().value;
     if (oldest === undefined) break;
     target.delete(oldest);
   }
@@ -1070,10 +1061,34 @@ export const markdownDocument = defineComponent<
     }
     return {
       document: value.document,
-      maxContentWidth: value.maxContentWidth ?? 88,
-      minHorizontalPadding: value.minHorizontalPadding ?? 2,
-      pageRows: Math.max(1, Math.floor(value.pageRows ?? 10)),
-      contentRows: Math.max(1, Math.floor(value.contentRows ?? 1))
+      maxContentWidth: normalizeBoundedInteger(
+        value.maxContentWidth,
+        88,
+        20,
+        160,
+        'markdownDocument maxContentWidth'
+      ),
+      minHorizontalPadding: normalizeBoundedInteger(
+        value.minHorizontalPadding,
+        2,
+        0,
+        12,
+        'markdownDocument minHorizontalPadding'
+      ),
+      pageRows: normalizeBoundedInteger(
+        value.pageRows,
+        10,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        'markdownDocument pageRows'
+      ),
+      contentRows: normalizeBoundedInteger(
+        value.contentRows,
+        1,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        'markdownDocument contentRows'
+      )
     };
   },
   keys({ model }) {
@@ -1092,6 +1107,7 @@ export const markdownDocument = defineComponent<
       end: () => action('bottom')
     };
   },
+  focusTargets: ({ bounds }) => [{ id: 'self', bounds }],
   measure({ model, constraints, widthProfile, theme: terminalTheme }) {
     const width = Math.max(1, Math.min(4096, Math.floor(constraints.width)));
     const layout = layoutMarkdownDocument(model.document, {
@@ -1108,7 +1124,7 @@ export const markdownDocument = defineComponent<
       preferredHeight: Math.max(1, layout.lines.length)
     };
   },
-  render({ model, bounds, target, widthProfile, theme: terminalTheme, source }) {
+  render({ model, bounds, viewport, target, widthProfile, theme: terminalTheme, source }) {
     if (bounds.width <= 0 || bounds.height <= 0) return;
     const layout = layoutMarkdownDocument(model.document, {
       width: bounds.width,
@@ -1117,7 +1133,13 @@ export const markdownDocument = defineComponent<
       maxContentWidth: model.maxContentWidth,
       minHorizontalPadding: model.minHorizontalPadding
     });
-    for (let row = 0; row < Math.min(bounds.height, layout.lines.length); row += 1) {
+    const startRow = Math.max(0, viewport.row);
+    const endRow = Math.min(
+      bounds.height,
+      layout.lines.length,
+      viewport.row + viewport.height
+    );
+    for (let row = startRow; row < endRow; row += 1) {
       const line = layout.lines[row] ?? emptyLine();
       target.writeLine(row, 0, {
         spans: line.spans.map((span, index) => ({

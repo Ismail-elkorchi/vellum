@@ -1,30 +1,27 @@
 import {
   applyScrollEvent,
-  applyTextPointerAction,
   createCommandInputState,
   createScrollState,
   createSplitPaneState,
+  createTextAreaState,
   commandInputReducer,
   normalizeScrollState,
   prepareCommandSuggestions,
   scrollReducer,
   splitPaneReducer,
+  textAreaReducer,
   type CommandInputState,
   type CommandInputTransition,
   type ScrollEvent,
   type ScrollState,
   type SplitPaneAction,
   type SplitPaneState,
-  type TextAreaAction
+  type TextAreaAction,
+  type TextAreaState
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
-  applyTextEditWithHistory,
-  breakTextEditHistoryGroup,
-  emptyTextEditHistory,
   measureTextCells,
-  type TextEditBuffer,
-  type TextEditHistory,
-  type TextSelection
+  textDocumentText
 } from '@ismail-elkorchi/terminal-ui/text';
 import path from 'node:path';
 
@@ -49,10 +46,7 @@ export interface DocumentState {
   readonly path?: string;
   readonly label: string;
   readonly text: string;
-  readonly cursor: number;
-  readonly selection?: TextSelection;
-  readonly scroll: ScrollState;
-  readonly history: TextEditHistory;
+  readonly editor: TextAreaState;
   readonly savedText: string;
 }
 
@@ -106,23 +100,11 @@ function createPromptState(value = ''): CommandInputState {
   });
 }
 
-function clampIndex(text: string, cursor: number): number {
-  if (!Number.isFinite(cursor)) return 0;
-  return Math.max(0, Math.min(text.length, Math.floor(cursor)));
-}
-
-function sameSelection(left?: TextSelection, right?: TextSelection): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  return left.startOffset === right.startOffset && left.endOffsetExclusive === right.endOffsetExclusive;
-}
-
 function buildDocument(args: {
   readonly id: number;
   readonly path?: string;
   readonly label?: string;
   readonly text: string;
-  readonly cursor?: number;
-  readonly selection?: TextSelection;
 }): DocumentState {
   const resolvedPath = args.path;
   const label = args.label ?? (resolvedPath === undefined ? DEFAULT_TITLE : path.basename(resolvedPath));
@@ -132,10 +114,7 @@ function buildDocument(args: {
     path: resolvedPath,
     label,
     text: args.text,
-    cursor: clampIndex(args.text, args.cursor ?? 0),
-    ...(args.selection === undefined ? {} : { selection: args.selection }),
-    scroll: createScrollState(),
-    history: emptyTextEditHistory(),
+    editor: createTextAreaState({ value: args.text }),
     savedText: args.text
   };
 }
@@ -292,52 +271,11 @@ export function setFileDialogError(state: AppState, error: string): AppState {
   };
 }
 
-function bufferFromDocument(document: DocumentState): TextEditBuffer {
-  return {
-    text: document.text,
-    cursor: document.cursor,
-    ...(document.selection === undefined ? {} : { selection: document.selection })
-  };
-}
-
 export function editDocument(state: AppState, action: TextAreaAction): AppState {
-  if (action.kind === 'scroll') {
-    const scroll = applyScrollEvent(state.document.scroll, action.event);
-    if (scroll === state.document.scroll && state.activePane === 'editor') return state;
-    return {
-      ...state,
-      activePane: 'editor',
-      notice: undefined,
-      document: { ...state.document, scroll }
-    };
-  }
-
-  const currentBuffer = bufferFromDocument(state.document);
-  let nextBuffer = currentBuffer;
-  let nextHistory = state.document.history;
-
-  if (action.kind === 'pointer') {
-    nextBuffer = applyTextPointerAction(currentBuffer, action.action);
-    nextHistory = breakTextEditHistoryGroup(nextHistory);
-  } else {
-    const result = applyTextEditWithHistory(
-      currentBuffer,
-      nextHistory,
-      action.kind === 'edit' ? action.operation : { kind: action.kind }
-    );
-    nextBuffer = result.buffer;
-    nextHistory = result.history;
-  }
-
-  if (
-    nextBuffer.text === state.document.text
-    && nextBuffer.cursor === state.document.cursor
-    && sameSelection(nextBuffer.selection, state.document.selection)
-    && nextHistory === state.document.history
-    && state.activePane === 'editor'
-  ) {
-    return state;
-  }
+  const editor = textAreaReducer(state.document.editor, action);
+  if (editor === state.document.editor && state.activePane === 'editor') return state;
+  const textChanged = editor.document !== state.document.editor.document;
+  const text = textChanged ? textDocumentText(editor.document) : state.document.text;
 
   return {
     ...state,
@@ -345,13 +283,9 @@ export function editDocument(state: AppState, action: TextAreaAction): AppState 
     notice: undefined,
     document: {
       ...state.document,
-      text: nextBuffer.text,
-      revision: nextBuffer.text === state.document.text
-        ? state.document.revision
-        : state.document.revision + 1,
-      cursor: nextBuffer.cursor,
-      ...(nextBuffer.selection === undefined ? { selection: undefined } : { selection: nextBuffer.selection }),
-      history: nextHistory
+      text,
+      editor,
+      revision: textChanged ? state.document.revision + 1 : state.document.revision
     }
   };
 }
@@ -435,7 +369,7 @@ export function synchronizePreviewToEditorScroll(
   geometry: SplitScrollGeometry
 ): AppState {
   if (state.mode !== 'split') return state;
-  const editorScroll = normalizeScrollState(state.document.scroll, {
+  const editorScroll = normalizeScrollState(state.document.editor.scroll, {
     contentRows: geometry.editor.contentRows,
     contentColumns: 1,
     viewportRows: geometry.editor.pageRows,
@@ -463,7 +397,7 @@ export function synchronizeEditorToPreviewScroll(
   if (state.mode !== 'split') return state;
   const previewScroll = normalizedPreviewScroll(state, geometry.preview);
   const editorScroll = scrollReducer(
-    state.document.scroll,
+    state.document.editor.scroll,
     { kind: 'setOffset', rows: offsetAtRatio(scrollRatio(previewScroll, geometry.preview), geometry.editor) },
     {
       contentRows: geometry.editor.contentRows,
@@ -472,9 +406,12 @@ export function synchronizeEditorToPreviewScroll(
       viewportColumns: 1
     }
   );
-  return editorScroll === state.document.scroll
+  const editor = editorScroll === state.document.editor.scroll && !state.document.editor.revealCaret
+    ? state.document.editor
+    : { ...state.document.editor, scroll: editorScroll, revealCaret: false };
+  return editor === state.document.editor
     ? state
-    : { ...state, document: { ...state.document, scroll: editorScroll } };
+    : { ...state, document: { ...state.document, editor } };
 }
 
 export function setPreviewSource(state: AppState, source: string): AppState {
@@ -499,7 +436,8 @@ export function isModified(state: AppState): boolean {
 }
 
 export function cursorLineColumn(state: AppState): { readonly line: number; readonly column: number } {
-  const before = state.document.text.slice(0, clampIndex(state.document.text, state.document.cursor));
+  const cursor = state.document.editor.caret.position.offset;
+  const before = state.document.text.slice(0, Math.max(0, Math.min(state.document.text.length, cursor)));
   const lines = before.length === 0 ? [''] : before.split('\n');
   return {
     line: lines.length,

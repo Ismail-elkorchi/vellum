@@ -38,7 +38,8 @@ async function waitForFrames(
 
 test('the public runtime handles editing, modal focus, mode changes, preview keys, and restoration', async () => {
   const harness = createTerminalHarness({ terminalSize: { columns: 80, rows: 24 } });
-  const running = harness.run((host) => runTui(vellumApp, host, {
+  const running = harness.run((host) => runTui(vellumApp, {
+    host,
     initialFocus: { kind: 'element', elementId: VELLUM_IDS.editor }
   }));
 

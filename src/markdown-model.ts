@@ -351,17 +351,84 @@ function blockPlainText(block: MarkdownBlock): string {
   }
 }
 
+function ownMarkdownInline(inline: MarkdownInline): MarkdownInline {
+  switch (inline.kind) {
+    case 'text':
+    case 'code':
+    case 'html':
+    case 'softBreak':
+    case 'hardBreak':
+      return Object.freeze({ ...inline });
+    case 'strong':
+    case 'emphasis':
+    case 'delete':
+      return Object.freeze({
+        ...inline,
+        children: Object.freeze(inline.children.map(ownMarkdownInline))
+      });
+    case 'link':
+      return Object.freeze({
+        ...inline,
+        children: Object.freeze(inline.children.map(ownMarkdownInline))
+      });
+    case 'image':
+      return Object.freeze({ ...inline });
+  }
+}
+
+function ownMarkdownCell(cell: MarkdownTableCell): MarkdownTableCell {
+  return Object.freeze({
+    content: Object.freeze(cell.content.map(ownMarkdownInline))
+  });
+}
+
+function ownMarkdownBlock(block: MarkdownBlock): MarkdownBlock {
+  switch (block.kind) {
+    case 'heading':
+    case 'paragraph':
+      return Object.freeze({
+        ...block,
+        content: Object.freeze(block.content.map(ownMarkdownInline))
+      });
+    case 'blockquote':
+      return Object.freeze({
+        ...block,
+        blocks: Object.freeze(block.blocks.map(ownMarkdownBlock))
+      });
+    case 'list':
+      return Object.freeze({
+        ...block,
+        items: Object.freeze(block.items.map((item) => Object.freeze({
+          ...item,
+          blocks: Object.freeze(item.blocks.map(ownMarkdownBlock))
+        })))
+      });
+    case 'code':
+    case 'rule':
+    case 'image':
+    case 'html':
+      return Object.freeze({ ...block });
+    case 'table':
+      return Object.freeze({
+        ...block,
+        align: Object.freeze([...block.align]),
+        header: Object.freeze(block.header.map(ownMarkdownCell)),
+        rows: Object.freeze(block.rows.map((row) => Object.freeze(row.map(ownMarkdownCell))))
+      });
+  }
+}
+
 export function countMarkdownWords(text: string): number {
   return text.match(/[\p{L}\p{N}]+(?:[’'\-][\p{L}\p{N}]+)*/gu)?.length ?? 0;
 }
 
 export function parseMarkdownDocument(source: string): MarkdownDocument {
   const normalizedSource = safeText(source).replace(/\r\n?/gu, '\n');
-  const tokens = marked.lexer(normalizedSource) as unknown as readonly Token[];
+  const tokens = marked.lexer(normalizedSource);
   const blocks = parseBlockTokens(tokens);
   const plainText = blocks.map(blockPlainText).filter((part) => part.length > 0).join('\n\n');
   return Object.freeze({
-    blocks: Object.freeze([...blocks]),
+    blocks: Object.freeze(blocks.map(ownMarkdownBlock)),
     wordCount: countMarkdownWords(plainText)
   });
 }

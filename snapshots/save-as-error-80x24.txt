@@ -29,26 +29,25 @@
 
 ## Accessibility
 
-# vellum-root-overlay
-- application: vellum-root-overlay [scope:popover]
+- group [scope:popover]
   - dialog: Save Markdown file as [scope:modal]
-    - application: vellum-file-dialog:portal [scope:document]
-      - text: vellum-file-dialog:surface
-        - text: vellum-file-dialog:content
-          - text: column-9-7
+    - group
+      - group
+        - group
+          - group
             - text = Choose the destination path for this Markdown document.
-            - combobox: Save ›  = /workspace/README.md [focused, collapsed]
+            - combobox: Markdown file destination = /workspace/README.md [focused, collapsed]
               - status: error = Destination is not writable.
-          - text: row-15-7
+          - group
             - button: Cancel
             - button: Save As
-  - text: vellum-root
-    - text: vellum-header
-      - text: vellum-header-row
+  - group
+    - group
+      - group
         - text = VELLUM  README.md
         - text = [EDIT]  SPLIT   PREVIEW 
-    - text: vellum-source-surface
-      - textbox: vellum-editor = # Vellum
+    - group
+      - textbox: Markdown source = # Vellum
 
 A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
 
@@ -74,7 +73,7 @@ export const answer = 42;
 ![Architecture](https://example.com/architecture.png)
 
 <section>HTML is intentionally not executed.</section> - 26 lines. Showing 1-20 of 28 rows. Omitted before: 0. Omitted after: 8. Horizontal offset: 0.
-    - status: vellum-status = README.md · SAVED  Ln 1, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+    - status = README.md · SAVED  Ln 1, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
 
 ## Focus targets
 
@@ -85,7 +84,7 @@ export const answer = 42;
     "vellum-file-dialog:portal",
     "vellum-file-dialog:surface",
     "vellum-file-dialog:content",
-    "column-9-7",
+    "anonymous:19:vellum-root-overlay18:vellum-file-dialog25:vellum-file-dialog:portal26:vellum-file-dialog:surface26:vellum-file-dialog:content8:column:0",
     "vellum-file-input"
   ],
   "cursor": {

@@ -116,7 +116,8 @@ test('visible Split panes synchronize proportional scroll positions in both dire
 
   state = movePreview(state, 'bottom', geometry.preview);
   state = synchronizeEditorToPreviewScroll(state, geometry);
-  assert.equal(state.document.scroll.offsetRow, 80);
+  assert.equal(state.document.editor.scroll.offsetRow, 80);
+  assert.equal(state.document.editor.revealCaret, false);
 });
 
 test('opening a document resets workspace mode, focus intent, history, and scrolling', () => {

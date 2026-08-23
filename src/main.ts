@@ -1,5 +1,4 @@
 import { pathToFileURL } from 'node:url';
-import { createTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import {
   defineTui,
   runTui,
@@ -8,7 +7,6 @@ import {
   type TuiInputBinding,
   type TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
-import { commandInputPresentation } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   activatePane,
   closeDialog,
@@ -357,7 +355,7 @@ export function updateVellum(
     case 'submitFileDialog': {
       if (state.dialog?.kind !== 'file') return { state };
       const dialogState = state.dialog;
-      const value = (message.value ?? commandInputPresentation(dialogState.command).value).trim();
+      const value = (message.value ?? dialogState.command.editor.input.text).trim();
       if (value.length === 0) {
         return {
           state: setFileDialogError(
@@ -475,7 +473,7 @@ export function updateVellum(
 
 export const vellumApp: TuiApp<AppState, AppMessage> = defineTui<AppState, AppMessage>({
   id: 'vellum-markdown-editor',
-  init: () => initialState(),
+  init: () => ({ state: initialState() }),
   inputBindings,
   update: (state, message) => updateVellum(state, message),
   view,
@@ -486,7 +484,7 @@ export const vellumApp: TuiApp<AppState, AppMessage> = defineTui<AppState, AppMe
 });
 
 export async function runVellum() {
-  return runTui(vellumApp, createTerminalHost(), { initialFocus: EDITOR_FOCUS });
+  return runTui(vellumApp, { initialFocus: EDITOR_FOCUS });
 }
 
 const invokedDirectly = process.argv[1] !== undefined

@@ -27,12 +27,7 @@ import {
   type SplitPaneAction,
   type TextAreaAction
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import {
-  prepareTextDocument,
-  measureTextCells,
-  textCaretAt,
-  textDocumentSelectionBetween
-} from '@ismail-elkorchi/terminal-ui/text';
+import { measureTextCells } from '@ismail-elkorchi/terminal-ui/text';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import type {
   ActivePane,
@@ -111,19 +106,13 @@ const inactiveMode = { fg: themeColor('text.muted') } as const;
 const warning = { fg: themeColor('status.warning'), bold: true } as const;
 
 function editorPresentation(state: AppState) {
+  const editor = state.document.editor;
   return {
-    document: prepareTextDocument(state.document.text),
-    caret: textCaretAt(state.document.cursor),
-    ...(state.document.selection === undefined
-      ? {}
-      : {
-          selection: textDocumentSelectionBetween(
-            state.document.selection.startOffset,
-            state.document.selection.endOffsetExclusive
-          )
-        }),
-    scroll: state.document.scroll,
-    revealCaret: true
+    document: editor.document,
+    caret: editor.caret,
+    ...(editor.selection === undefined ? {} : { selection: editor.selection }),
+    scroll: editor.scroll,
+    revealCaret: editor.revealCaret
   };
 }
 
@@ -189,7 +178,10 @@ function makeEditor(state: AppState, sync: SplitScrollGeometry | undefined) {
     wrap: { mode: 'soft' },
     scrollbar: { visible: 'auto' },
     scrollPolicy: { wheel: { rows: 6, columns: 8 } },
-    meta: { focus: { order: 1 } },
+    meta: {
+      accessibleName: 'Markdown source',
+      focus: { order: 1 }
+    },
     onAction: (action: TextAreaAction): AppMessage => ({
       kind: 'editDocument',
       action,
@@ -474,7 +466,10 @@ function makeFileDialog(state: AppState, columns: number, rows: number) {
       ? {}
       : { validation: { message: state.dialog.error, level: 'error' as const } }),
     footer: 'Enter confirms · Esc cancels',
-    meta: { focus: { order: 1 } },
+    meta: {
+      accessibleName: operation === 'open' ? 'Markdown file to open' : 'Markdown file destination',
+      focus: { order: 1 }
+    },
     onTransition: (action: CommandInputTransition): AppMessage => ({ kind: 'editFileDialog', action }),
     onSubmit: ({ value }): AppMessage => ({ kind: 'submitFileDialog', value })
   });
@@ -562,7 +557,7 @@ function makeConfirmDialog(state: AppState, columns: number, rows: number) {
               id: 'vellum-confirm-hint',
               content: 'Save first to keep your work.',
               textRole: 'caption',
-              meta: { styles: { root: muted } }
+              styles: { root: muted }
             })])
       ], { gap: compact ? 0 : 1 }),
       actions: row([
@@ -644,7 +639,7 @@ function makeDialog(state: AppState, columns: number, rows: number) {
     ?? makeHelpDialog(state, columns, rows);
 }
 
-export function view(state: AppState, context: TuiContext) {
+export function view(state: AppState, context: Pick<TuiContext, 'terminalSize'>) {
   const columns = Math.max(1, context.terminalSize.columns);
   const rows = Math.max(1, context.terminalSize.rows);
   const document = getMarkdownDocument(state.previewSource);

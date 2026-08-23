@@ -45,14 +45,13 @@
 
 ## Accessibility
 
-# vellum-root
-- text: vellum-root
-  - text: vellum-header
-    - text: vellum-header-row
+- group
+  - group
+    - group
       - text = VELLUM  README.md
       - text =  EDIT   SPLIT  [PREVIEW]
-  - text: vellum-preview-surface
-    - text: Rendered Markdown preview - Use arrows, Page Up, Page Down, Home, and End to navigate.
+  - group
+    - group: Rendered Markdown preview - Use arrows, Page Up, Page Down, Home, and End to navigate.
       - document: Markdown preview [focused] - 49 words
         - heading: Vellum [position]
         - group
@@ -100,7 +99,7 @@
         - separator
         - image: Architecture - Destination: https://example.com/architecture.png
         - text: HTML not rendered = HTML block: <section>
-  - status: vellum-status = README.md · SAVED  Rows 1-31/31  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+  - status = README.md · SAVED  Rows 1-31/31  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
 
 ## Focus targets
 

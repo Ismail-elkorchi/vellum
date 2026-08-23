@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commandInputPresentation } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   editDocument,
   editFileDialog,
@@ -73,7 +72,7 @@ test('opening over modified content requires discard confirmation and Escape ret
 
   const returned = updateVellum(confirm.state, { kind: 'dismissDialog' });
   assert.equal(returned.state.dialog?.kind, 'file');
-  assert.equal(returned.state.dialog?.kind === 'file' ? commandInputPresentation(returned.state.dialog.command).value : undefined, './next.md');
+  assert.equal(returned.state.dialog?.kind === 'file' ? returned.state.dialog.command.editor.input.text : undefined, './next.md');
   assert.deepEqual(returned.focus, fileInputFocus);
 });
 

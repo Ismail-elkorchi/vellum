@@ -29,12 +29,11 @@
 
 ## Accessibility
 
-# vellum-root-overlay
-- application: vellum-root-overlay [scope:popover]
+- group [scope:popover]
   - dialog: Vellum keyboard shortcuts [scope:modal]
-    - application: vellum-help-dialog:portal [scope:document]
-      - text: vellum-help-dialog:surface
-        - text: vellum-help-dialog:content
+    - group
+      - group
+        - group
           - text = Ctrl+O       Open file
 Ctrl+S       Save
 F2 / Ctrl+Shift+S Save As
@@ -47,13 +46,13 @@ Alt+Arrows   Resize a visible split
 Ctrl+Q       Quit
 F1           Show this help
           - button: Close [focused]
-  - text: vellum-root
-    - text: vellum-header
-      - text: vellum-header-row
+  - group
+    - group
+      - group
         - text = VELLUM  README.md
         - text = [EDIT]  SPLIT   PREVIEW 
-    - text: vellum-source-surface
-      - textbox: vellum-editor = # Vellum
+    - group
+      - textbox: Markdown source = # Vellum
 
 A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
 
@@ -79,7 +78,7 @@ export const answer = 42;
 ![Architecture](https://example.com/architecture.png)
 
 <section>HTML is intentionally not executed.</section> - 26 lines. Showing 1-20 of 28 rows. Omitted before: 0. Omitted after: 8. Horizontal offset: 0.
-    - status: vellum-status = README.md · SAVED  Ln 1, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+    - status = README.md · SAVED  Ln 1, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
 
 ## Focus targets
 

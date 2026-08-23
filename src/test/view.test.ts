@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
-import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import {
   activatePane,
   editDocument,
@@ -41,8 +40,8 @@ const SAMPLE_MARKDOWN = [
   '![Architecture](https://example.com/architecture.png)'
 ].join('\n');
 
-function context(columns: number, rows: number): TuiContext {
-  return { terminalSize: { columns, rows } } as TuiContext;
+function context(columns: number, rows: number) {
+  return { terminalSize: { columns, rows } };
 }
 
 function sampleState(mode: 'edit' | 'split' | 'preview', pane: 'editor' | 'preview' = 'editor'): AppState {

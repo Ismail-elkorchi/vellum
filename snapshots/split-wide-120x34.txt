@@ -39,15 +39,14 @@
 
 ## Accessibility
 
-# vellum-root
-- text: vellum-root
-  - text: vellum-header
-    - text: vellum-header-row
+- group
+  - group
+    - group
       - text = VELLUM  README.md
       - text =  EDIT  [SPLIT]  PREVIEW 
-  - text: Source and preview split horizontally [focused] - Resizable split pane. Divider 1 of 1 active.
-    - text: vellum-source-surface
-      - textbox: vellum-editor = # Vellum
+  - group: Source and preview split horizontally [focused] - Resizable split pane. Divider 1 of 1 active.
+    - group
+      - textbox: Markdown source = # Vellum
 
 A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
 
@@ -73,8 +72,8 @@ export const answer = 42;
 ![Architecture](https://example.com/architecture.png)
 
 <section>HTML is intentionally not executed.</section> - 26 lines. Showing 1-30 of 33 rows. Omitted before: 0. Omitted after: 3. Horizontal offset: 0.
-    - text: vellum-preview-surface
-      - text: Rendered Markdown preview - Use arrows, Page Up, Page Down, Home, and End to navigate.
+    - group
+      - group: Rendered Markdown preview - Use arrows, Page Up, Page Down, Home, and End to navigate.
         - document: Markdown preview - 49 words
           - heading: Vellum [position]
           - group
@@ -122,7 +121,7 @@ export const answer = 42;
           - separator
           - image: Architecture - Destination: https://example.com/architecture.png
           - text: HTML not rendered = HTML block: <section>
-  - status: vellum-status = README.md · SAVED  Rows 1-30/32  49 words  Ctrl+S Save  Ctrl+P Mode  Tab Pane  F1 Help [live:polite]
+  - status = README.md · SAVED  Rows 1-30/32  49 words  Ctrl+S Save  Ctrl+P Mode  Tab Pane  F1 Help [live:polite]
 
 ## Focus targets
 

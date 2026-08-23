@@ -1,7 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
-import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import {
   activatePane,
   editDocument,
@@ -52,8 +51,8 @@ interface SnapshotSpec {
   readonly rows: number;
 }
 
-function context(columns: number, rows: number): TuiContext {
-  return { terminalSize: { columns, rows } } as TuiContext;
+function context(columns: number, rows: number) {
+  return { terminalSize: { columns, rows } };
 }
 
 function documentState(): AppState {
@@ -105,7 +104,7 @@ for (const spec of specs) {
     '',
     '## Accessibility',
     '',
-    result.accessibleText,
+    result.accessibleText.replace(/ = $/gmu, ' = ""'),
     '',
     '## Focus targets',
     '',

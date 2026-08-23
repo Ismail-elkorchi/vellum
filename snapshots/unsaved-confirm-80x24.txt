@@ -4,7 +4,7 @@
 
  VELLUM  README.md *                                   [EDIT]  SPLIT   PREVIEW
 ┏ [ SOURCE · ACTIVE ] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃    1 │                                                                     ┃ ┃
+┃ │  1 │                                                                     ┃ ┃
 ┃ ●  2 │ # Vellum                                                            ┃ ┃
 ┃ │  3 │                                                                     ┃ ┃
 ┃ │  4 │ A **terminal-first** Markdown editor with *live preview*, `inline co┃ ┃
@@ -29,25 +29,24 @@
 
 ## Accessibility
 
-# vellum-root-overlay
-- application: vellum-root-overlay [scope:popover]
+- group [scope:popover]
   - dialog: Unsaved changes [scope:modal]
-    - application: vellum-confirm-dialog:portal [scope:document]
-      - text: vellum-confirm-dialog:surface
-        - text: vellum-confirm-dialog:content
-          - text: column-10-11
+    - group
+      - group
+        - group
+          - group
             - text = Quit Vellum and discard the changes in the current document?
             - text = Save first to keep your work.
-          - text: row-14-11
+          - group
             - button: Keep Editing [focused]
             - button: Discard and Quit
-  - text: vellum-root
-    - text: vellum-header
-      - text: vellum-header-row
+  - group
+    - group
+      - group
         - text = VELLUM  README.md *
         - text = [EDIT]  SPLIT   PREVIEW 
-    - text: vellum-source-surface
-      - textbox: vellum-editor = 
+    - group
+      - textbox: Markdown source = ""
 # Vellum
 
 A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).
@@ -74,7 +73,7 @@ export const answer = 42;
 ![Architecture](https://example.com/architecture.png)
 
 <section>HTML is intentionally not executed.</section> - 27 lines. Showing 1-20 of 29 rows. Omitted before: 0. Omitted after: 9. Horizontal offset: 0.
-    - status: vellum-status = README.md · MODIFIED  Ln 2, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
+    - status = README.md · MODIFIED  Ln 2, Col 1  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
 
 ## Focus targets
 
@@ -85,7 +84,7 @@ export const answer = 42;
     "vellum-confirm-dialog:portal",
     "vellum-confirm-dialog:surface",
     "vellum-confirm-dialog:content",
-    "row-14-11",
+    "anonymous:19:vellum-root-overlay21:vellum-confirm-dialog28:vellum-confirm-dialog:portal29:vellum-confirm-dialog:surface29:vellum-confirm-dialog:content5:row:2",
     "vellum-confirm-cancel"
   ],
   "cursor": {

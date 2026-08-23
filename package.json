@@ -12,7 +12,7 @@
     "verify": "npm test && npm run snapshots"
   },
   "dependencies": {
-    "@ismail-elkorchi/terminal-ui": "github:Ismail-elkorchi/terminal-ui#5cfc52deed787e6d4cde2e209af33415a973e7fb",
+    "@ismail-elkorchi/terminal-ui": "0.1.3",
     "marked": "^18.0.10"
   },
   "devDependencies": {

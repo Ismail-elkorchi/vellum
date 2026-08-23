@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ignoreMessage } from '@ismail-elkorchi/terminal-ui/component';
 import { measureRenderSpans } from '@ismail-elkorchi/terminal-ui/renderer';
 import { defaultTextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import {
@@ -9,6 +10,7 @@ import {
 } from '../markdown-model.js';
 import {
   layoutMarkdownDocument,
+  markdownDocument,
   markdownLayoutPlainText
 } from '../markdown-render.js';
 
@@ -148,12 +150,31 @@ test('document and layout caches reuse immutable results by source and width', (
   const firstDocument = getMarkdownDocument(source);
   const secondDocument = getMarkdownDocument(source);
   assert.equal(firstDocument, secondDocument);
+  assert.ok(Object.isFrozen(firstDocument));
+  assert.ok(Object.isFrozen(firstDocument.blocks));
+  assert.ok(Object.isFrozen(firstDocument.blocks[0]));
+  if (firstDocument.blocks[1]?.kind === 'paragraph') {
+    assert.ok(Object.isFrozen(firstDocument.blocks[1].content));
+    assert.ok(Object.isFrozen(firstDocument.blocks[1].content[0]));
+  }
 
   const firstLayout = layoutMarkdownDocument(firstDocument, { width: 80 });
   const secondLayout = layoutMarkdownDocument(firstDocument, { width: 80 });
   assert.equal(firstLayout, secondLayout);
   assert.ok(Object.isFrozen(firstLayout));
   assert.ok(Object.isFrozen(firstLayout.lines));
+});
+
+test('the component rejects non-finite layout geometry at its public boundary', () => {
+  assert.throws(
+    () => markdownDocument({
+      id: 'invalid-markdown-document',
+      document: parseMarkdownDocument('# Invalid'),
+      maxContentWidth: Number.NaN,
+      onAction: ignoreMessage
+    }),
+    /maxContentWidth must be a finite number/u
+  );
 });
 
 test('word counts use rendered document text and support Unicode words', () => {
