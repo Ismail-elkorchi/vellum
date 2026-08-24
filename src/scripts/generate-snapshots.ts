@@ -4,8 +4,8 @@ import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
 import {
   activatePane,
   editDocument,
-  initialState,
-  openDocument,
+  initialState as createInitialState,
+  openDocument as openEditorDocument,
   setFileDialogError,
   setMode,
   showHelpDialog,
@@ -13,7 +13,30 @@ import {
   startFileDialog,
   type AppState
 } from '../editor-state.js';
+import { createMarkdownPreviewEngine } from '../markdown/preview.js';
 import { view } from '../view.js';
+
+const previewEngine = createMarkdownPreviewEngine();
+
+function initialState(): AppState {
+  return createInitialState(previewEngine.open(0, 0, ''));
+}
+
+function openDocument(
+  state: AppState,
+  filePath: string,
+  label: string,
+  source: string
+): AppState {
+  const documentId = state.document.id + 1;
+  return openEditorDocument(
+    state,
+    filePath,
+    label,
+    source,
+    previewEngine.open(documentId, 0, source)
+  );
+}
 
 const SAMPLE_MARKDOWN = [
   '# Vellum',

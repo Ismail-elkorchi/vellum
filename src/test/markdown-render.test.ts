@@ -3,19 +3,22 @@ import test from 'node:test';
 import { ignoreMessage } from '@ismail-elkorchi/terminal-ui/component';
 import { measureRenderSpans } from '@ismail-elkorchi/terminal-ui/renderer';
 import { defaultTextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import {
-  countMarkdownWords,
-  getMarkdownDocument,
-  parseMarkdownDocument
-} from '../markdown-model.js';
+import { countMarkdownWords } from 'markspan';
+import { createMarkdownPreviewEngine, type ReadyMarkdownPreview } from '../markdown/preview.js';
 import {
   layoutMarkdownDocument,
   markdownDocument,
   markdownLayoutPlainText
-} from '../markdown-render.js';
+} from '../markdown/render.js';
+
+function preview(source: string): ReadyMarkdownPreview {
+  const parsed = createMarkdownPreviewEngine().open(0, 0, source);
+  if (parsed.kind !== 'ready') throw new Error(`Preview failed: ${parsed.message}`);
+  return parsed;
+}
 
 function layout(source: string, width = 72) {
-  return layoutMarkdownDocument(parseMarkdownDocument(source), {
+  return layoutMarkdownDocument(preview(source), {
     width,
     maxContentWidth: width,
     minHorizontalPadding: 0
@@ -145,31 +148,51 @@ test('Unicode tables use terminal-cell width and switch to stacked rows when nar
   assert.doesNotMatch(stacked, /┌|┬|┐/u);
 });
 
-test('document and layout caches reuse immutable results by source and width', () => {
+test('incremental previews preserve stable nodes and cache immutable layouts by identity', () => {
   const source = '# Cached\n\nA paragraph.';
-  const firstDocument = getMarkdownDocument(source);
-  const secondDocument = getMarkdownDocument(source);
-  assert.equal(firstDocument, secondDocument);
-  assert.ok(Object.isFrozen(firstDocument));
-  assert.ok(Object.isFrozen(firstDocument.blocks));
-  assert.ok(Object.isFrozen(firstDocument.blocks[0]));
-  if (firstDocument.blocks[1]?.kind === 'paragraph') {
-    assert.ok(Object.isFrozen(firstDocument.blocks[1].content));
-    assert.ok(Object.isFrozen(firstDocument.blocks[1].content[0]));
-  }
+  const engine = createMarkdownPreviewEngine();
+  const firstDocument = engine.open(7, 0, source);
+  if (firstDocument.kind !== 'ready') throw new Error(`Preview failed: ${firstDocument.message}`);
+  const firstHeading = firstDocument.snapshot.document.tree.children[0];
+  const updated = engine.update(7, 1, `${source}\n\nAnother paragraph.`);
+  if (updated.kind !== 'ready') throw new Error(`Preview failed: ${updated.message}`);
+  assert.equal(updated.update?.strategy, 'incremental');
+  assert.equal(updated.snapshot.document.tree.children[0], firstHeading);
+  assert.ok((updated.update?.reusedNodes ?? 0) > 0);
 
   const firstLayout = layoutMarkdownDocument(firstDocument, { width: 80 });
   const secondLayout = layoutMarkdownDocument(firstDocument, { width: 80 });
   assert.equal(firstLayout, secondLayout);
-  assert.ok(Object.isFrozen(firstLayout));
-  assert.ok(Object.isFrozen(firstLayout.lines));
+  assert.equal(Object.isFrozen(firstLayout), true);
+  assert.equal(Object.isFrozen(firstLayout.lines), true);
+  assert.equal(firstLayout.lines[0]?.nodeId, firstHeading?.id);
+  assert.deepEqual(firstLayout.lines[0]?.sourceSpan, firstHeading?.span);
+});
+
+test('shifted stable nodes reuse layout without retaining stale source spans', () => {
+  const engine = createMarkdownPreviewEngine();
+  const first = engine.open(11, 0, '# Stable\n\nBody');
+  if (first.kind !== 'ready') throw new Error(`Preview failed: ${first.message}`);
+  const heading = first.snapshot.document.tree.children[0];
+  assert.equal(heading?.kind, 'heading');
+  layoutMarkdownDocument(first, { width: 60 });
+
+  const shifted = engine.update(11, 1, 'Intro\n\n# Stable\n\nBody');
+  if (shifted.kind !== 'ready') throw new Error(`Preview failed: ${shifted.message}`);
+  const shiftedHeading = shifted.snapshot.document.tree.children.find((node) => node.kind === 'heading');
+  assert.equal(shiftedHeading?.id, heading?.id);
+
+  const shiftedLayout = layoutMarkdownDocument(shifted, { width: 60 });
+  const headingLine = shiftedLayout.lines.find((line) => line.nodeId === heading?.id);
+  assert.deepEqual(headingLine?.sourceSpan, shiftedHeading?.span);
+  assert.notDeepEqual(headingLine?.sourceSpan, heading?.span);
 });
 
 test('the component rejects non-finite layout geometry at its public boundary', () => {
   assert.throws(
     () => markdownDocument({
       id: 'invalid-markdown-document',
-      document: parseMarkdownDocument('# Invalid'),
+      document: preview('# Invalid'),
       maxContentWidth: Number.NaN,
       onAction: ignoreMessage
     }),
@@ -179,8 +202,8 @@ test('the component rejects non-finite layout geometry at its public boundary', 
 
 test('word counts use rendered document text and support Unicode words', () => {
   assert.equal(countMarkdownWords("Hello world 東京 café state-of-the-art"), 5);
-  assert.equal(parseMarkdownDocument('**Hello**, [world](https://example.com)! 東京 café').wordCount, 4);
-  assert.equal(parseMarkdownDocument('# One\n\nTwo three').wordCount, 3);
+  assert.equal(preview('**Hello**, [world](https://example.com)! 東京 café').wordCount, 4);
+  assert.equal(preview('# One\n\nTwo three').wordCount, 3);
 });
 
 test('zero-start lists, inline HTML labels, and wrapped code retain their content', () => {
@@ -194,4 +217,11 @@ test('zero-start lists, inline HTML labels, and wrapped code retain their conten
     rendered.replace(/\bTS\b/u, '').replace(/\s/gu, ''),
     code.replace(/\s/gu, '')
   );
+});
+
+test('escapes, character references, and footnotes have intentional terminal forms', () => {
+  const rendered = plain('Escaped \\* value &amp; [^n]\n\n[^n]: note', 60);
+  assert.match(rendered, /Escaped \* value & \[\^n\]/u);
+  assert.match(rendered, /Footnote n\s+note/u);
+  assert.doesNotMatch(rendered, /&amp;|\[\^n\]:/u);
 });

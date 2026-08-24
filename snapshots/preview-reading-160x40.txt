@@ -97,7 +97,8 @@
             - cell = Terminal links [position]
             - cell = Open [position]
         - separator
-        - image: Architecture - Destination: https://example.com/architecture.png
+        - group
+          - image: Architecture - Destination: https://example.com/architecture.png
         - text: HTML not rendered = HTML block: <section>
   - status = README.md · SAVED  Rows 1-31/31  49 words  Ctrl+S Save  Ctrl+P Mode  F1 Help [live:polite]
 

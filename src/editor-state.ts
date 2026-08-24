@@ -24,6 +24,10 @@ import {
   textDocumentText
 } from '@ismail-elkorchi/terminal-ui/text';
 import path from 'node:path';
+import {
+  markdownPreviewSource,
+  type MarkdownPreview
+} from './markdown/preview.js';
 
 export type EditorMode = 'edit' | 'preview' | 'split';
 export type ActivePane = 'editor' | 'preview';
@@ -38,12 +42,14 @@ export interface PreviewScrollGeometry {
 export interface SplitScrollGeometry {
   readonly editor: PreviewScrollGeometry;
   readonly preview: PreviewScrollGeometry;
+  readonly editorSourceOffsets: readonly number[];
+  readonly previewSourceOffsets: readonly number[];
 }
 
 export interface DocumentState {
   readonly id: number;
   readonly revision: number;
-  readonly path?: string;
+  readonly path: string | undefined;
   readonly label: string;
   readonly text: string;
   readonly editor: TextAreaState;
@@ -54,7 +60,7 @@ export interface FileDialogState {
   readonly kind: 'file';
   readonly operation: FileDialogOperation;
   readonly command: CommandInputState;
-  readonly error?: string;
+  readonly error: string | undefined;
 }
 
 export interface ConfirmDialogState {
@@ -81,9 +87,9 @@ export interface AppState {
   readonly document: DocumentState;
   readonly previewScroll: ScrollState;
   readonly splitPane: SplitPaneState;
-  readonly previewSource: string;
-  readonly notice?: AppNotice;
-  readonly dialog?: AppDialogState;
+  readonly preview: MarkdownPreview;
+  readonly notice: AppNotice | undefined;
+  readonly dialog: AppDialogState | undefined;
 }
 
 const DEFAULT_TITLE = 'untitled.md';
@@ -119,14 +125,32 @@ function buildDocument(args: {
   };
 }
 
-export function initialState(): AppState {
+function assertCurrentPreview(
+  preview: MarkdownPreview,
+  documentId: number,
+  sourceRevision: number,
+  source: string
+): void {
+  if (
+    preview.documentId !== documentId
+    || preview.sourceRevision !== sourceRevision
+    || markdownPreviewSource(preview) !== source
+  ) {
+    throw new TypeError('Markdown preview must match the active document snapshot.');
+  }
+}
+
+export function initialState(preview: MarkdownPreview): AppState {
+  assertCurrentPreview(preview, 0, 0, '');
   return {
     mode: 'edit',
     activePane: 'editor',
     document: buildDocument({ id: 0, text: '' }),
     previewScroll: createScrollState(),
     splitPane: createSplitPaneState(2, [0.5, 0.5]),
-    previewSource: ''
+    preview,
+    notice: undefined,
+    dialog: undefined
   };
 }
 
@@ -141,7 +165,6 @@ export function setMode(state: AppState, mode: EditorMode): AppState {
     ...state,
     mode,
     activePane: mode === 'preview' ? 'preview' : mode === 'edit' ? 'editor' : state.activePane,
-    previewSource: mode === 'edit' ? state.previewSource : state.document.text,
     dialog: undefined,
     notice: undefined
   };
@@ -156,14 +179,22 @@ export function toggleActivePane(state: AppState): AppState {
   return activatePane(state, state.activePane === 'editor' ? 'preview' : 'editor');
 }
 
-export function openDocument(state: AppState, filePath: string, label: string, text: string): AppState {
+export function openDocument(
+  state: AppState,
+  filePath: string,
+  label: string,
+  text: string,
+  preview: MarkdownPreview
+): AppState {
+  const documentId = state.document.id + 1;
+  assertCurrentPreview(preview, documentId, 0, text);
   return {
     ...state,
     mode: 'edit',
     activePane: 'editor',
-    document: buildDocument({ id: state.document.id + 1, path: filePath, label, text }),
+    document: buildDocument({ id: documentId, path: filePath, label, text }),
     previewScroll: createScrollState(),
-    previewSource: text,
+    preview,
     dialog: undefined,
     notice: undefined
   };
@@ -196,7 +227,7 @@ export function startFileDialog(
       kind: 'file',
       operation,
       command: createPromptState(value),
-      ...(error === undefined ? {} : { error })
+      error
     },
     notice: undefined
   };
@@ -353,15 +384,23 @@ export function normalizedPreviewScroll(
   });
 }
 
-function scrollRatio(scroll: ScrollState, geometry: PreviewScrollGeometry): number {
-  const maximum = Math.max(0, Math.floor(geometry.contentRows) - Math.max(1, Math.floor(geometry.pageRows)));
-  if (maximum === 0) return 0;
-  return Math.max(0, Math.min(1, scroll.offsetRow / maximum));
+function sourceOffsetAtRow(offsets: readonly number[], row: number): number {
+  if (offsets.length === 0) return 0;
+  const index = Math.max(0, Math.min(offsets.length - 1, Math.floor(row)));
+  return offsets[index] ?? 0;
 }
 
-function offsetAtRatio(ratio: number, geometry: PreviewScrollGeometry): number {
-  const maximum = Math.max(0, Math.floor(geometry.contentRows) - Math.max(1, Math.floor(geometry.pageRows)));
-  return Math.round(maximum * Math.max(0, Math.min(1, ratio)));
+function rowAtSourceOffset(offsets: readonly number[], sourceOffset: number): number {
+  const target = Math.max(0, Math.floor(sourceOffset));
+  let nearest = 0;
+  for (let row = 0; row < offsets.length; row += 1) {
+    const offset = offsets[row];
+    if (offset === undefined) continue;
+    if (offset === target) return row;
+    if (offset > target) return nearest;
+    nearest = row;
+  }
+  return nearest;
 }
 
 export function synchronizePreviewToEditorScroll(
@@ -377,7 +416,13 @@ export function synchronizePreviewToEditorScroll(
   });
   const previewScroll = scrollReducer(
     state.previewScroll,
-    { kind: 'setOffset', rows: offsetAtRatio(scrollRatio(editorScroll, geometry.editor), geometry.preview) },
+    {
+      kind: 'setOffset',
+      rows: rowAtSourceOffset(
+        geometry.previewSourceOffsets,
+        sourceOffsetAtRow(geometry.editorSourceOffsets, editorScroll.offsetRow)
+      )
+    },
     {
       contentRows: geometry.preview.contentRows,
       contentColumns: 1,
@@ -398,7 +443,13 @@ export function synchronizeEditorToPreviewScroll(
   const previewScroll = normalizedPreviewScroll(state, geometry.preview);
   const editorScroll = scrollReducer(
     state.document.editor.scroll,
-    { kind: 'setOffset', rows: offsetAtRatio(scrollRatio(previewScroll, geometry.preview), geometry.editor) },
+    {
+      kind: 'setOffset',
+      rows: rowAtSourceOffset(
+        geometry.editorSourceOffsets,
+        sourceOffsetAtRow(geometry.previewSourceOffsets, previewScroll.offsetRow)
+      )
+    },
     {
       contentRows: geometry.editor.contentRows,
       contentColumns: 1,
@@ -414,8 +465,14 @@ export function synchronizeEditorToPreviewScroll(
     : { ...state, document: { ...state.document, editor } };
 }
 
-export function setPreviewSource(state: AppState, source: string): AppState {
-  return state.previewSource === source ? state : { ...state, previewSource: source };
+export function setMarkdownPreview(state: AppState, preview: MarkdownPreview): AppState {
+  assertCurrentPreview(
+    preview,
+    state.document.id,
+    state.document.revision,
+    state.document.text
+  );
+  return state.preview === preview ? state : { ...state, preview };
 }
 
 export function resizeSplitPane(state: AppState, action: SplitPaneAction): AppState {
@@ -425,10 +482,7 @@ export function resizeSplitPane(state: AppState, action: SplitPaneAction): AppSt
 
 export function setNotice(state: AppState, notice: AppNotice | undefined): AppState {
   if (state.notice === notice) return state;
-  return {
-    ...state,
-    ...(notice === undefined ? { notice: undefined } : { notice })
-  };
+  return { ...state, notice };
 }
 
 export function isModified(state: AppState): boolean {

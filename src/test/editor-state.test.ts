@@ -3,17 +3,19 @@ import test from 'node:test';
 import {
   cursorLineColumn,
   editDocument,
-  initialState,
   isModified,
   markDocumentSaved,
   movePreview,
-  openDocument,
   resizeSplitPane,
   setMode,
   synchronizeEditorToPreviewScroll,
   synchronizePreviewToEditorScroll,
   toggleActivePane
 } from '../editor-state.js';
+import {
+  initialTestState as initialState,
+  openTestDocument as openDocument
+} from './support.js';
 
 function insert(state: ReturnType<typeof initialState>, text: string) {
   return editDocument(state, {
@@ -97,10 +99,12 @@ test('split resizing obeys the 25/75 percent pane constraints', () => {
   assert.equal(state.splitPane.shares[1], 0.75);
 });
 
-test('visible Split panes synchronize proportional scroll positions in both directions', () => {
+test('visible Split panes synchronize through Markdown source positions in both directions', () => {
   const geometry = {
     editor: { contentRows: 100, pageRows: 20 },
-    preview: { contentRows: 60, pageRows: 10 }
+    preview: { contentRows: 60, pageRows: 10 },
+    editorSourceOffsets: Array.from({ length: 100 }, (_, row) => row * 10),
+    previewSourceOffsets: Array.from({ length: 60 }, (_, row) => row * 20)
   };
   let state = setMode(initialState(), 'split');
   state = editDocument(state, {
@@ -112,7 +116,7 @@ test('visible Split panes synchronize proportional scroll positions in both dire
     }
   });
   state = synchronizePreviewToEditorScroll(state, geometry);
-  assert.equal(state.previewScroll.offsetRow, 25);
+  assert.equal(state.previewScroll.offsetRow, 20);
 
   state = movePreview(state, 'bottom', geometry.preview);
   state = synchronizeEditorToPreviewScroll(state, geometry);

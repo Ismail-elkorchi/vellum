@@ -10,7 +10,7 @@ export interface MarkdownFileRecord {
 
 function expandHome(rawPath: string): string {
   if (rawPath.startsWith('~/') || rawPath === '~') {
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? process.cwd();
+    const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? process.cwd();
     return path.join(home, rawPath.slice(2));
   }
   return rawPath;

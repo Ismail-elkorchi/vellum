@@ -27,7 +27,10 @@ import {
   type SplitPaneAction,
   type TextAreaAction
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import { measureTextCells } from '@ismail-elkorchi/terminal-ui/text';
+import {
+  measureTextCells,
+  sanitizeTerminalText
+} from '@ismail-elkorchi/terminal-ui/text';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import type {
   ActivePane,
@@ -43,8 +46,12 @@ import {
   type SplitScrollGeometry
 } from './editor-state.js';
 import type { MarkdownFileRecord } from './file-io.js';
-import { getMarkdownDocument, type MarkdownDocument } from './markdown-model.js';
-import { layoutMarkdownDocument, markdownDocument } from './markdown-render.js';
+import type { MarkdownPreview } from './markdown/preview.js';
+import {
+  layoutMarkdownDocument,
+  markdownDocument,
+  markdownLayoutSourceOffsets
+} from './markdown/render.js';
 
 export const VELLUM_IDS = Object.freeze({
   editor: 'vellum-editor',
@@ -77,7 +84,7 @@ export type AppMessage =
   | { readonly kind: 'togglePane' }
   | { readonly kind: 'quit' }
   | { readonly kind: 'save' }
-  | { readonly kind: 'refreshPreview'; readonly documentId: number; readonly revision: number; readonly source: string }
+  | { readonly kind: 'previewReady'; readonly preview: MarkdownPreview }
   | { readonly kind: 'fileOpened'; readonly file: MarkdownFileRecord; readonly documentId: number; readonly revision: number }
   | {
       readonly kind: 'fileSaved';
@@ -192,6 +199,11 @@ function makeEditor(state: AppState, sync: SplitScrollGeometry | undefined) {
 
 interface PreviewMetrics extends PreviewScrollGeometry {
   readonly offsetRow: number;
+  readonly sourceOffsets: readonly number[];
+}
+
+interface EditorMetrics extends PreviewScrollGeometry {
+  readonly sourceOffsets: readonly number[];
 }
 
 type WorkspaceLayout = 'single' | 'horizontal' | 'vertical';
@@ -221,22 +233,24 @@ function paneViewportSize(
 
 function previewMetrics(
   state: AppState,
-  document: MarkdownDocument,
+  document: MarkdownPreview,
   columns: number,
   rows: number,
   layout: WorkspaceLayout
 ): PreviewMetrics {
   const size = paneViewportSize(state, columns, rows, layout, 1);
   const fullPreview = state.mode === 'preview';
-  const contentRows = layoutMarkdownDocument(document, {
+  const rendered = layoutMarkdownDocument(document, {
     width: size.width,
     maxContentWidth: fullPreview ? 88 : 82,
     minHorizontalPadding: fullPreview ? 3 : 2
-  }).lines.length;
+  });
+  const contentRows = rendered.lines.length;
   const geometry = { contentRows, pageRows: size.height };
   return {
     ...geometry,
-    offsetRow: normalizedPreviewScroll(state, geometry).offsetRow
+    offsetRow: normalizedPreviewScroll(state, geometry).offsetRow,
+    sourceOffsets: markdownLayoutSourceOffsets(rendered)
   };
 }
 
@@ -245,20 +259,28 @@ function editorScrollGeometry(
   columns: number,
   rows: number,
   layout: WorkspaceLayout
-): PreviewScrollGeometry {
+): EditorMetrics {
   const size = paneViewportSize(state, columns, rows, layout, 0);
   const sourceLines = state.document.text.split('\n');
   const lineNumberWidth = Math.max(3, String(sourceLines.length).length);
   const contentWidth = Math.max(1, size.width - lineNumberWidth - 4);
-  const contentRows = sourceLines.reduce((total, line) => {
-    const cells = measureTextCells(line.replace(/\t/gu, '    ')).cells;
-    return total + Math.max(1, Math.ceil(cells / contentWidth));
-  }, 0);
-  return { contentRows, pageRows: size.height };
+  const sourceOffsets: number[] = [];
+  let lineStart = 0;
+  for (const line of sourceLines) {
+    const cells = measureTextCells(sanitizeTerminalText(line).text).cells;
+    const visualRows = Math.max(1, Math.ceil(cells / contentWidth));
+    for (let row = 0; row < visualRows; row += 1) sourceOffsets.push(lineStart);
+    lineStart += line.length + 1;
+  }
+  return {
+    contentRows: sourceOffsets.length,
+    pageRows: size.height,
+    sourceOffsets: Object.freeze(sourceOffsets)
+  };
 }
 
 function makePreview(
-  document: MarkdownDocument,
+  document: MarkdownPreview,
   metrics: PreviewMetrics,
   sync: SplitScrollGeometry | undefined,
   fullPreview: boolean
@@ -319,7 +341,7 @@ function makeEditorPane(state: AppState, sync: SplitScrollGeometry | undefined) 
 
 function makePreviewPane(
   state: AppState,
-  document: MarkdownDocument,
+  document: MarkdownPreview,
   metrics: PreviewMetrics,
   sync: SplitScrollGeometry | undefined,
   fullPreview: boolean
@@ -336,16 +358,21 @@ function makePreviewPane(
 
 function makeWorkspace(
   state: AppState,
-  document: MarkdownDocument,
+  document: MarkdownPreview,
   metrics: PreviewMetrics | undefined,
-  editorGeometry: PreviewScrollGeometry | undefined,
+  editorGeometry: EditorMetrics | undefined,
   layout: WorkspaceLayout
 ) {
   const sync = state.mode === 'split'
     && layout !== 'single'
     && metrics !== undefined
     && editorGeometry !== undefined
-    ? { editor: editorGeometry, preview: metrics }
+    ? {
+        editor: editorGeometry,
+        preview: metrics,
+        editorSourceOffsets: editorGeometry.sourceOffsets,
+        previewSourceOffsets: metrics.sourceOffsets
+      }
     : undefined;
   const editor = makeEditorPane(state, sync);
 
@@ -373,7 +400,7 @@ function makeWorkspace(
 
 function makeStatus(
   state: AppState,
-  document: MarkdownDocument,
+  document: MarkdownPreview,
   columns: number,
   metrics: PreviewMetrics | undefined
 ) {
@@ -405,7 +432,13 @@ function makeStatus(
           text: `Ln ${String(cursor.line)}, Col ${String(cursor.column)}`
         },
     ...(columns >= 72
-      ? [{ id: 'vellum-words', kind: 'text' as const, text: `${String(document.wordCount)} words` }]
+      ? [{
+          id: 'vellum-words',
+          kind: 'text' as const,
+          text: document.kind === 'ready'
+            ? `${String(document.wordCount)} words`
+            : 'Preview unavailable'
+        }]
       : [])
   ];
 
@@ -642,7 +675,7 @@ function makeDialog(state: AppState, columns: number, rows: number) {
 export function view(state: AppState, context: Pick<TuiContext, 'terminalSize'>) {
   const columns = Math.max(1, context.terminalSize.columns);
   const rows = Math.max(1, context.terminalSize.rows);
-  const document = getMarkdownDocument(state.previewSource);
+  const document = state.preview;
   const layout = workspaceLayout(state, columns, rows);
   const previewVisible = state.mode === 'preview'
     || (state.mode === 'split' && (layout !== 'single' || state.activePane === 'preview'));

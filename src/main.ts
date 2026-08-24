@@ -21,10 +21,10 @@ import {
   openDocument,
   resizeSplitPane,
   setFileDialogError,
+  setMarkdownPreview,
   setMode,
   setNotice,
   setPreviewScroll,
-  setPreviewSource,
   showHelpDialog,
   showOpenConfirmation,
   showQuitConfirmation,
@@ -38,6 +38,10 @@ import {
   openMarkdownFile,
   saveMarkdownFile
 } from './file-io.js';
+import {
+  createMarkdownPreviewEngine,
+  type MarkdownPreviewEngine
+} from './markdown/preview.js';
 import {
   VELLUM_IDS,
   view,
@@ -216,6 +220,7 @@ function saveMarkdownEffect(
 }
 
 function previewRefreshEffect(
+  engine: MarkdownPreviewEngine,
   documentId: number,
   revision: number,
   source: string
@@ -228,7 +233,10 @@ function previewRefreshEffect(
       if (outcome === 'aborted') return { kind: 'none' };
       return {
         kind: 'message',
-        message: { kind: 'refreshPreview', documentId, revision, source }
+        message: {
+          kind: 'previewReady',
+          preview: engine.update(documentId, revision, source)
+        }
       };
     }
   };
@@ -290,7 +298,8 @@ function requestSave(state: AppState): TuiUpdateResult<AppState, AppMessage> {
   };
 }
 
-export function updateVellum(
+function updateVellum(
+  previewEngine: MarkdownPreviewEngine,
   state: AppState,
   message: AppMessage
 ): TuiUpdateResult<AppState, AppMessage> {
@@ -303,7 +312,12 @@ export function updateVellum(
       if (next.document.revision === state.document.revision) return { state: next };
       return {
         state: next,
-        effects: [previewRefreshEffect(next.document.id, next.document.revision, next.document.text)]
+        effects: [previewRefreshEffect(
+          previewEngine,
+          next.document.id,
+          next.document.revision,
+          next.document.text
+        )]
       };
     }
     case 'editFileDialog':
@@ -394,7 +408,14 @@ export function updateVellum(
       return requestOpen(closeDialog(state), rawPath);
     }
     case 'toggleMode': {
-      const next = setMode(state, cycleMode(state.mode));
+      let next = setMode(state, cycleMode(state.mode));
+      if (next.mode !== 'edit' && next.preview.sourceRevision !== next.document.revision) {
+        next = setMarkdownPreview(next, previewEngine.update(
+          next.document.id,
+          next.document.revision,
+          next.document.text
+        ));
+      }
       return { state: next, focus: workspaceFocus(next) };
     }
     case 'togglePane': {
@@ -422,11 +443,14 @@ export function updateVellum(
           focus: workspaceFocus(state)
         };
       }
+      const documentId = state.document.id + 1;
+      const preview = previewEngine.open(documentId, 0, message.file.text);
       const next = openDocument(
         state,
         message.file.path,
         message.file.label,
-        message.file.text
+        message.file.text,
+        preview
       );
       return {
         state: next,
@@ -439,12 +463,12 @@ export function updateVellum(
       const next = markDocumentSaved(state, message.path, message.savedText);
       return { state: next, focus: dialogFocus(next) };
     }
-    case 'refreshPreview':
+    case 'previewReady':
       if (
-        message.documentId !== state.document.id
-        || message.revision !== state.document.revision
+        message.preview.documentId !== state.document.id
+        || message.preview.sourceRevision !== state.document.revision
       ) return { state };
-      return { state: setPreviewSource(state, message.source) };
+      return { state: setMarkdownPreview(state, message.preview) };
     case 'fileError': {
       if (message.documentId !== state.document.id) return { state };
       if (message.operation === 'open' && message.revision !== state.document.revision) {
@@ -471,11 +495,30 @@ export function updateVellum(
   }
 }
 
+export interface VellumController {
+  initialState(): AppState;
+  update(state: AppState, message: AppMessage): TuiUpdateResult<AppState, AppMessage>;
+}
+
+export function createVellumController(): VellumController {
+  const previewEngine = createMarkdownPreviewEngine();
+  return Object.freeze({
+    initialState(): AppState {
+      return initialState(previewEngine.open(0, 0, ''));
+    },
+    update(state: AppState, message: AppMessage): TuiUpdateResult<AppState, AppMessage> {
+      return updateVellum(previewEngine, state, message);
+    }
+  });
+}
+
+const vellumController = createVellumController();
+
 export const vellumApp: TuiApp<AppState, AppMessage> = defineTui<AppState, AppMessage>({
   id: 'vellum-markdown-editor',
-  init: () => ({ state: initialState() }),
+  init: () => ({ state: vellumController.initialState() }),
   inputBindings,
-  update: (state, message) => updateVellum(state, message),
+  update: (state, message) => vellumController.update(state, message),
   view,
   nonTty: {
     mode: 'last_frame',

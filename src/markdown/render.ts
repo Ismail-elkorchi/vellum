@@ -14,18 +14,24 @@ import {
 import {
   defaultTextWidthProfile,
   measureTextCells,
+  sanitizeTerminalCellText,
+  sanitizeTerminalText,
   textWidthProfileKey,
   type TextWidthProfile
 } from '@ismail-elkorchi/terminal-ui/text';
 import { themeColor, unicodeSymbols, type TerminalSymbols } from '@ismail-elkorchi/terminal-ui/theme';
 import type {
-  MarkdownBlock,
-  MarkdownDocument,
-  MarkdownInline,
-  MarkdownListItem,
+  MarkdownBlockNode,
+  MarkdownInlineNode,
+  MarkdownListItemNode,
   MarkdownTableAlignment,
-  MarkdownTableCell
-} from './markdown-model.js';
+  MarkdownTableCellNode,
+  SourceSpan
+} from 'markspan';
+import type {
+  MarkdownPreview,
+  ReadyMarkdownPreview
+} from './preview.js';
 
 const STYLE_BODY: TerminalStyle = { fg: themeColor('text.default') };
 const STYLE_MUTED: TerminalStyle = { fg: themeColor('text.muted'), dim: true };
@@ -74,10 +80,15 @@ export interface MarkdownLayoutOptions {
 }
 
 export interface MarkdownLayoutResult {
-  readonly lines: readonly RenderLine[];
+  readonly lines: readonly MarkdownLayoutLine[];
   readonly width: number;
   readonly contentWidth: number;
   readonly leftPadding: number;
+}
+
+export interface MarkdownLayoutLine extends RenderLine {
+  readonly nodeId?: number;
+  readonly sourceSpan?: SourceSpan;
 }
 
 export type MarkdownPreviewCommand =
@@ -96,7 +107,7 @@ export interface MarkdownDocumentAction {
 }
 
 export interface MarkdownDocumentComponentOptions {
-  readonly document: MarkdownDocument;
+  readonly document: MarkdownPreview;
   readonly maxContentWidth?: number;
   readonly minHorizontalPadding?: number;
   readonly pageRows?: number;
@@ -104,7 +115,7 @@ export interface MarkdownDocumentComponentOptions {
 }
 
 interface PreparedMarkdownDocumentComponentOptions {
-  readonly document: MarkdownDocument;
+  readonly document: MarkdownPreview;
   readonly maxContentWidth: number;
   readonly minHorizontalPadding: number;
   readonly pageRows: number;
@@ -114,6 +125,7 @@ interface PreparedMarkdownDocumentComponentOptions {
 interface LayoutContext {
   readonly widthProfile: TextWidthProfile;
   readonly symbols: TerminalSymbols;
+  readonly blockCache: Map<string, CachedBlockLayout>;
 }
 
 interface StyledGrapheme {
@@ -128,8 +140,16 @@ type WrapToken =
   | { readonly kind: 'space'; readonly grapheme?: StyledGrapheme }
   | { readonly kind: 'break' };
 
-const layoutCache = new WeakMap<MarkdownDocument, Map<string, MarkdownLayoutResult>>();
+interface CachedBlockLayout {
+  readonly kind: MarkdownBlockNode['kind'];
+  readonly spanStart: number;
+  readonly lines: readonly MarkdownLayoutLine[];
+}
+
+const layoutCache = new WeakMap<MarkdownPreview['identity'], Map<string, MarkdownLayoutResult>>();
+const blockLayoutCache = new WeakMap<MarkdownPreview['identity'], Map<string, CachedBlockLayout>>();
 const LAYOUT_CACHE_LIMIT = 8;
+const BLOCK_LAYOUT_CACHE_LIMIT = 4_096;
 
 function normalizeBoundedInteger(
   value: unknown,
@@ -153,36 +173,57 @@ function renderSpan(text: string, spanStyle?: TerminalStyle, link?: TerminalLink
   };
 }
 
-function textLine(spans: readonly RenderSpan[] = []): RenderLine {
+function textLine(spans: readonly RenderSpan[] = []): MarkdownLayoutLine {
   return { spans: compactRenderSpans(spans) };
 }
 
-function emptyLine(): RenderLine {
+function emptyLine(): MarkdownLayoutLine {
   return { spans: [] };
 }
 
+function safeText(value: string): string {
+  return sanitizeTerminalText(value).text;
+}
+
+function safeHref(value: string): string {
+  return sanitizeTerminalCellText(value).text.trim();
+}
+
+function htmlLabel(raw: string, block: boolean): string {
+  const match = /<\s*(\/?)\s*([A-Za-z][A-Za-z0-9:-]*)/u.exec(raw);
+  const tag = match?.[2]?.toLowerCase();
+  if (tag === undefined) return block ? 'HTML block' : 'HTML';
+  const label = `<${match?.[1] === '/' ? '/' : ''}${tag}>`;
+  return block ? `HTML block: ${label}` : `HTML tag: ${label}`;
+}
+
 function mapSpanStyle(spans: readonly RenderSpan[], extra: TerminalStyle): readonly RenderSpan[] {
-  return spans.map((current) => ({
-    ...current,
-    style: mergeTerminalStyles(current.style, extra)
-  }));
+  return spans.map((current) => {
+    const style = mergeTerminalStyles(current.style, extra);
+    return {
+      ...current,
+      ...(style === undefined ? {} : { style })
+    };
+  });
 }
 
 function inlineToSpans(
-  content: readonly MarkdownInline[],
+  content: readonly MarkdownInlineNode[],
   inheritedStyle: TerminalStyle = STYLE_BODY,
   inheritedLink?: TerminalLink
 ): readonly RenderSpan[] {
   const spans: RenderSpan[] = [];
 
   const visit = (
-    inline: MarkdownInline,
+    inline: MarkdownInlineNode,
     parentStyle: TerminalStyle,
     parentLink?: TerminalLink
   ): void => {
     switch (inline.kind) {
       case 'text':
-        spans.push(renderSpan(inline.text, parentStyle, parentLink));
+      case 'escape':
+      case 'characterReference':
+        spans.push(renderSpan(safeText(inline.value), parentStyle, parentLink));
         break;
       case 'strong':
         for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, { bold: true }) ?? parentStyle, parentLink);
@@ -190,21 +231,27 @@ function inlineToSpans(
       case 'emphasis':
         for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, { italic: true }) ?? parentStyle, parentLink);
         break;
-      case 'delete':
+      case 'strikethrough':
         for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, { strikethrough: true }) ?? parentStyle, parentLink);
         break;
-      case 'code':
-        spans.push(renderSpan(inline.text, mergeTerminalStyles(parentStyle, STYLE_INLINE_CODE), parentLink));
+      case 'codeSpan':
+        spans.push(renderSpan(safeText(inline.value), mergeTerminalStyles(parentStyle, STYLE_INLINE_CODE), parentLink));
         break;
       case 'link': {
-        const link = inline.href.length === 0 ? parentLink : { href: inline.href };
+        const destination = safeHref(inline.destination);
+        const link = destination.length === 0 ? parentLink : { href: destination };
         for (const child of inline.children) visit(child, mergeTerminalStyles(parentStyle, STYLE_LINK) ?? parentStyle, link);
         break;
       }
       case 'image': {
-        const label = inline.alt.length > 0 ? inline.alt : 'image';
-        const destination = inline.href.length > 0 ? ` → ${inline.href}` : '';
-        spans.push(renderSpan(`[Image: ${label}${destination}]`, mergeTerminalStyles(parentStyle, STYLE_ACCENT, { italic: true }), inline.href.length === 0 ? parentLink : { href: inline.href }));
+        const label = inlineText(inline.children) || 'image';
+        const href = safeHref(inline.destination);
+        const destination = href.length > 0 ? ` → ${href}` : '';
+        spans.push(renderSpan(
+          `[Image: ${label}${destination}]`,
+          mergeTerminalStyles(parentStyle, STYLE_ACCENT, { italic: true }),
+          href.length === 0 ? parentLink : { href }
+        ));
         break;
       }
       case 'softBreak':
@@ -213,8 +260,11 @@ function inlineToSpans(
       case 'hardBreak':
         spans.push(renderSpan('\n', parentStyle, parentLink));
         break;
-      case 'html':
-        spans.push(renderSpan(inline.label, mergeTerminalStyles(parentStyle, STYLE_HTML), parentLink));
+      case 'htmlInline':
+        spans.push(renderSpan(htmlLabel(safeText(inline.value), false), mergeTerminalStyles(parentStyle, STYLE_HTML), parentLink));
+        break;
+      case 'footnoteReference':
+        spans.push(renderSpan(`[^${safeText(inline.label)}]`, mergeTerminalStyles(parentStyle, STYLE_ACCENT), parentLink));
         break;
     }
   };
@@ -369,7 +419,7 @@ function wrapSpansAtWords(
 }
 
 function inlineLines(
-  content: readonly MarkdownInline[],
+  content: readonly MarkdownInlineNode[],
   width: number,
   context: LayoutContext,
   baseStyle: TerminalStyle = STYLE_BODY
@@ -384,12 +434,12 @@ function repeatGlyph(glyph: string, cells: number): string {
 }
 
 function layoutHeading(
-  block: Extract<MarkdownBlock, { readonly kind: 'heading' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'heading' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
   const headingStyle = HEADING_STYLES[block.depth - 1] ?? HEADING_STYLES[0] ?? STYLE_STRONG;
-  const lines = [...inlineLines(block.content, width, context, headingStyle)];
+  const lines = [...inlineLines(block.children, width, context, headingStyle)];
   if (block.depth <= 2) {
     const measured = Math.max(3, ...lines.map((line) => measureRenderSpans(line.spans, { widthProfile: context.widthProfile })));
     const glyph = block.depth === 1
@@ -398,22 +448,6 @@ function layoutHeading(
     lines.push(textLine([renderSpan(repeatGlyph(glyph, Math.min(width, measured)), mergeTerminalStyles(headingStyle, { dim: block.depth === 2 }))]));
   }
   return lines;
-}
-
-function expandTabs(value: string, context: LayoutContext, tabSize = 4): string {
-  let column = 0;
-  let result = '';
-  for (const grapheme of measureTextCells(value, { widthProfile: context.widthProfile }).graphemes) {
-    if (grapheme.text === '\t') {
-      const spaces = tabSize - (column % tabSize);
-      result += ' '.repeat(spaces);
-      column += spaces;
-    } else {
-      result += grapheme.text;
-      column += grapheme.cells;
-    }
-  }
-  return result;
 }
 
 function wrapLiteralLine(
@@ -464,20 +498,21 @@ function insetLine(
 }
 
 function layoutCode(
-  block: Extract<MarkdownBlock, { readonly kind: 'code' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'codeBlock' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
   const lines: RenderLine[] = [];
   const pad = width >= 3 ? 1 : 0;
   const innerWidth = Math.max(1, width - pad * 2);
-  if (block.language !== undefined) {
+  if (block.language !== null) {
     lines.push(insetLine([renderSpan(block.language.toUpperCase(), STYLE_CODE_LABEL)], width, context, STYLE_CODE_LABEL));
   }
 
-  const codeLines = block.text.length === 0 ? [''] : block.text.split('\n');
+  const code = safeText(block.value);
+  const codeLines = code.length === 0 ? [''] : code.split('\n');
   for (const codeLine of codeLines) {
-    const wrapped = wrapLiteralLine(expandTabs(codeLine, context), innerWidth, context, STYLE_CODE);
+    const wrapped = wrapLiteralLine(codeLine, innerWidth, context, STYLE_CODE);
     for (const line of wrapped) {
       lines.push(insetLine(line.spans, width, context, STYLE_CODE, pad));
     }
@@ -498,14 +533,14 @@ function prefixLines(
 }
 
 function layoutBlockquote(
-  block: Extract<MarkdownBlock, { readonly kind: 'blockquote' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'blockQuote' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
   const guide = context.symbols.mode === 'unicode' ? '│ ' : '| ';
   const guideWidth = measureTextCells(guide, { widthProfile: context.widthProfile }).cells;
   const innerWidth = Math.max(1, width - guideWidth);
-  const inner = layoutBlockSequence(block.blocks, innerWidth, context, 1);
+  const inner = layoutBlockSequence(block.children, innerWidth, context, 1);
   return prefixLines(inner, [renderSpan(guide, mergeTerminalStyles(STYLE_BORDER, STYLE_ACCENT))]);
 }
 
@@ -513,14 +548,14 @@ function listMarker(
   ordered: boolean,
   number: number,
   orderDigits: number,
-  item: MarkdownListItem,
+  item: MarkdownListItemNode,
   context: LayoutContext
 ): readonly RenderSpan[] {
   const bullet = context.symbols.mode === 'unicode' ? '•' : '-';
   const base = ordered ? `${String(number).padStart(orderDigits, ' ')}. ` : `${bullet} `;
   const spans: RenderSpan[] = [renderSpan(base, mergeTerminalStyles(STYLE_ACCENT, { bold: true }))];
-  if (item.task) {
-    const checked = item.checked === true;
+  if (item.task !== null) {
+    const checked = item.task.checked;
     const glyph = checked ? context.symbols.checkboxChecked : context.symbols.checkboxUnchecked;
     spans.push(renderSpan(`${glyph} `, checked ? STYLE_CHECKED : STYLE_UNCHECKED));
   }
@@ -528,14 +563,15 @@ function listMarker(
 }
 
 function layoutList(
-  block: Extract<MarkdownBlock, { readonly kind: 'list' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'list' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
   if (block.items.length === 0) return [];
-  const finalNumber = block.start + block.items.length - 1;
+  const start = block.start ?? 1;
+  const finalNumber = start + block.items.length - 1;
   const orderDigits = String(finalNumber).length;
-  const markers = block.items.map((item, index) => listMarker(block.ordered, block.start + index, orderDigits, item, context));
+  const markers = block.items.map((item, index) => listMarker(block.ordered, start + index, orderDigits, item, context));
   const lines: RenderLine[] = [];
 
   for (let index = 0; index < block.items.length; index += 1) {
@@ -545,15 +581,16 @@ function layoutList(
     const markerWidth = Math.max(1, measureRenderSpans(marker, { widthProfile: context.widthProfile }));
     const contentWidth = Math.max(1, width - markerWidth);
     const continuation = [renderSpan(' '.repeat(markerWidth))];
-    const itemLines = layoutBlockSequence(item.blocks, contentWidth, context, item.loose || block.loose ? 1 : 0);
+    const loose = item.spread || !block.tight;
+    const itemLines = layoutBlockSequence(item.children, contentWidth, context, loose ? 1 : 0);
     lines.push(...prefixLines(itemLines, marker, continuation));
-    if (index < block.items.length - 1 && (item.loose || block.loose)) lines.push(emptyLine());
+    if (index < block.items.length - 1 && loose) lines.push(emptyLine());
   }
   return lines;
 }
 
-function cellSpans(cell: MarkdownTableCell): readonly RenderSpan[] {
-  return inlineToSpans(cell.content).map((span) => ({
+function cellSpans(cell: MarkdownTableCellNode | undefined): readonly RenderSpan[] {
+  return inlineToSpans(cell?.children ?? []).map((span) => ({
     ...span,
     text: span.text.replace(/\s+/gu, ' ')
   }));
@@ -643,73 +680,91 @@ function tableDataLine(
   return textLine(spans);
 }
 
-function inlineText(content: readonly MarkdownInline[]): string {
+function inlineText(content: readonly MarkdownInlineNode[]): string {
   return content.map((inline) => {
     switch (inline.kind) {
       case 'text':
-      case 'code':
-        return inline.text;
+      case 'escape':
+      case 'characterReference':
+      case 'codeSpan':
+        return safeText(inline.value);
       case 'strong':
       case 'emphasis':
-      case 'delete':
+      case 'strikethrough':
       case 'link':
         return inlineText(inline.children);
       case 'image':
-        return inline.alt.length > 0 ? inline.alt : 'Image';
+        return inlineText(inline.children) || 'Image';
       case 'softBreak':
       case 'hardBreak':
         return ' ';
-      case 'html':
-        return inline.label;
+      case 'htmlInline':
+        return htmlLabel(safeText(inline.value), false);
+      case 'footnoteReference':
+        return `[^${safeText(inline.label)}]`;
     }
   }).join('').replace(/\s+/gu, ' ').trim();
 }
 
 function accessibleInlineNodes(
-  content: readonly MarkdownInline[],
+  content: readonly MarkdownInlineNode[],
   idPrefix: string
 ): readonly AccessibleNode[] {
   const nodes: AccessibleNode[] = [];
-  for (let index = 0; index < content.length; index += 1) {
-    const inline = content[index];
-    if (inline === undefined) continue;
-    const id = `${idPrefix}:inline:${String(index)}`;
+  for (const inline of content) {
+    const id = `${idPrefix}:node:${String(inline.id)}`;
     switch (inline.kind) {
       case 'text':
-        if (inline.text.length > 0) nodes.push({ id, role: 'text', value: inline.text });
+      case 'escape':
+      case 'characterReference': {
+        const value = safeText(inline.value);
+        if (value.length > 0) nodes.push({ id, role: 'text', value });
         break;
-      case 'code':
-        nodes.push({ id, role: 'text', label: 'Inline code', value: inline.text });
+      }
+      case 'codeSpan':
+        nodes.push({ id, role: 'text', label: 'Inline code', value: safeText(inline.value) });
         break;
       case 'strong':
       case 'emphasis':
-      case 'delete':
+      case 'strikethrough':
         nodes.push(...accessibleInlineNodes(inline.children, id));
         break;
-      case 'link':
+      case 'link': {
+        const destination = safeHref(inline.destination);
         nodes.push({
           id,
           role: 'link',
-          label: inlineText(inline.children) || inline.href,
-          description: `Destination: ${inline.href}`
+          label: inlineText(inline.children) || destination,
+          description: `Destination: ${destination}`
         });
         break;
-      case 'image':
+      }
+      case 'image': {
+        const destination = safeHref(inline.destination);
         nodes.push({
           id,
           role: 'image',
-          label: inline.alt || 'Image',
-          ...(inline.href.length === 0 ? {} : { description: `Destination: ${inline.href}` })
+          label: inlineText(inline.children) || 'Image',
+          ...(destination.length === 0 ? {} : { description: `Destination: ${destination}` })
         });
         break;
+      }
       case 'softBreak':
         nodes.push({ id, role: 'text', value: ' ' });
         break;
       case 'hardBreak':
         nodes.push({ id, role: 'text', value: '\n' });
         break;
-      case 'html':
-        nodes.push({ id, role: 'text', label: 'HTML not rendered', value: inline.label });
+      case 'htmlInline':
+        nodes.push({
+          id,
+          role: 'text',
+          label: 'HTML not rendered',
+          value: htmlLabel(safeText(inline.value), false)
+        });
+        break;
+      case 'footnoteReference':
+        nodes.push({ id, role: 'text', label: 'Footnote reference', value: safeText(inline.label) });
         break;
     }
   }
@@ -717,93 +772,112 @@ function accessibleInlineNodes(
 }
 
 function accessibleBlockNodes(
-  blocks: readonly MarkdownBlock[],
+  blocks: readonly MarkdownBlockNode[],
   idPrefix: string
 ): readonly AccessibleNode[] {
-  return blocks.map((block, index): AccessibleNode => {
-    const id = `${idPrefix}:block:${String(index)}`;
+  const nodes: AccessibleNode[] = [];
+  for (const block of blocks) {
+    const id = `${idPrefix}:node:${String(block.id)}`;
     switch (block.kind) {
       case 'heading':
-        return {
+        nodes.push({
           id,
           role: 'heading',
-          label: inlineText(block.content),
+          label: inlineText(block.children),
           position: { level: block.depth }
-        };
+        });
+        break;
       case 'paragraph':
-        return { id, role: 'group', children: accessibleInlineNodes(block.content, id) };
-      case 'blockquote':
-        return {
+        nodes.push({ id, role: 'group', children: accessibleInlineNodes(block.children, id) });
+        break;
+      case 'blockQuote':
+        nodes.push({
           id,
           role: 'group',
           label: 'Block quote',
-          children: accessibleBlockNodes(block.blocks, id)
-        };
+          children: accessibleBlockNodes(block.children, id)
+        });
+        break;
       case 'list':
-        return {
+        nodes.push({
           id,
           role: 'list',
           label: block.ordered ? 'Ordered list' : 'Unordered list',
           children: block.items.map((item, itemIndex): AccessibleNode => {
-            const itemId = `${id}:item:${String(itemIndex)}`;
+            const itemId = `${id}:node:${String(item.id)}`;
             return {
               id: itemId,
               role: 'listitem',
               position: { positionInSet: itemIndex + 1, setSize: block.items.length },
               children: [
-                ...(item.task
+                ...(item.task !== null
                   ? [{
                       id: `${itemId}:task`,
                       role: 'checkbox' as const,
                       label: 'Task',
-                      checked: item.checked === true,
+                      checked: item.task.checked,
                       readOnly: true
                     }]
                   : []),
-                ...accessibleBlockNodes(item.blocks, itemId)
+                ...accessibleBlockNodes(item.children, itemId)
               ]
             };
           })
-        };
-      case 'code':
-        return {
+        });
+        break;
+      case 'codeBlock':
+        nodes.push({
           id,
           role: 'group',
-          label: block.language === undefined ? 'Code block' : `Code block, ${block.language}`,
-          children: [{ id: `${id}:text`, role: 'text', value: block.text }]
-        };
+          label: block.language === null ? 'Code block' : `Code block, ${safeText(block.language)}`,
+          children: [{ id: `${id}:text`, role: 'text', value: safeText(block.value) }]
+        });
+        break;
       case 'table': {
         const rows = [block.header, ...block.rows];
-        return {
+        nodes.push({
           id,
           role: 'table',
           label: 'Markdown table',
           children: rows.map((row, rowIndex): AccessibleNode => ({
-            id: `${id}:row:${String(rowIndex)}`,
+            id: `${id}:node:${String(row.id)}`,
             role: 'row',
             position: { rowIndex: rowIndex + 1, rowCount: rows.length },
-            children: row.map((cell, columnIndex): AccessibleNode => ({
-              id: `${id}:row:${String(rowIndex)}:cell:${String(columnIndex)}`,
+            children: row.cells.map((cell, columnIndex): AccessibleNode => ({
+              id: `${id}:node:${String(cell.id)}`,
               role: rowIndex === 0 ? 'columnheader' : 'cell',
-              value: inlineText(cell.content),
-              position: { columnIndex: columnIndex + 1, columnCount: row.length }
+              value: inlineText(cell.children),
+              position: { columnIndex: columnIndex + 1, columnCount: row.cells.length }
             }))
           }))
-        };
+        });
+        break;
       }
-      case 'rule':
-        return { id, role: 'separator', orientation: 'horizontal' };
-      case 'image':
-        return {
+      case 'thematicBreak':
+        nodes.push({ id, role: 'separator', orientation: 'horizontal' });
+        break;
+      case 'htmlBlock':
+        nodes.push({
           id,
-          role: 'image',
-          label: block.alt || 'Image',
-          ...(block.href.length === 0 ? {} : { description: `Destination: ${block.href}` })
-        };
-      case 'html':
-        return { id, role: 'text', label: 'HTML not rendered', value: block.label };
+          role: 'text',
+          label: 'HTML not rendered',
+          value: htmlLabel(safeText(block.value), true)
+        });
+        break;
+      case 'linkDefinition':
+        break;
+      case 'footnoteDefinition':
+        if (!block.active) break;
+        nodes.push({
+          id,
+          role: 'group',
+          label: `Footnote ${safeText(block.label)}`,
+          children: accessibleBlockNodes(block.children, id)
+        });
+        break;
     }
-  });
+  }
+  return nodes;
 }
 
 function wrapWithHangingPrefix(
@@ -836,26 +910,27 @@ function wrapWithHangingPrefix(
 }
 
 function layoutStackedTable(
-  block: Extract<MarkdownBlock, { readonly kind: 'table' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'table' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
-  const columnCount = Math.max(block.header.length, ...block.rows.map((row) => row.length), 0);
+  const columnCount = Math.max(block.header.cells.length, ...block.rows.map((row) => row.cells.length), 0);
   const labels = Array.from({ length: columnCount }, (_, index) => {
-    const label = inlineText(block.header[index]?.content ?? []);
+    const label = inlineText(block.header.cells[index]?.children ?? []);
     return label.length > 0 ? label : `Column ${String(index + 1)}`;
   });
   const rows = block.rows.length > 0 ? block.rows : [block.header];
   const lines: RenderLine[] = [];
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-    const row = rows[rowIndex] ?? [];
+    const row = rows[rowIndex];
+    if (row === undefined) continue;
     if (block.rows.length > 0) {
       lines.push(textLine([renderSpan(`Row ${String(rowIndex + 1)}`, STYLE_TABLE_HEADER)]));
     }
     for (let column = 0; column < columnCount; column += 1) {
       const prefix = [renderSpan(`${labels[column] ?? `Column ${String(column + 1)}`}: `, STYLE_STRONG)];
-      lines.push(...wrapWithHangingPrefix(prefix, cellSpans(row[column] ?? { content: [] }), width, context));
+      lines.push(...wrapWithHangingPrefix(prefix, cellSpans(row.cells[column]), width, context));
     }
     if (rowIndex < rows.length - 1) lines.push(emptyLine());
   }
@@ -863,16 +938,16 @@ function layoutStackedTable(
 }
 
 function layoutTable(
-  block: Extract<MarkdownBlock, { readonly kind: 'table' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'table' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
-  const columnCount = Math.max(block.header.length, ...block.rows.map((row) => row.length), 0);
+  const columnCount = Math.max(block.header.cells.length, ...block.rows.map((row) => row.cells.length), 0);
   if (columnCount === 0) return [];
   const overhead = columnCount * 3 + 1;
 
-  const header = Array.from({ length: columnCount }, (_, index) => cellSpans(block.header[index] ?? { content: [] }));
-  const rows = block.rows.map((row) => Array.from({ length: columnCount }, (_, index) => cellSpans(row[index] ?? { content: [] })));
+  const header = Array.from({ length: columnCount }, (_, index) => cellSpans(block.header.cells[index]));
+  const rows = block.rows.map((row) => Array.from({ length: columnCount }, (_, index) => cellSpans(row.cells[index])));
   const natural = Array.from({ length: columnCount }, (_, index) => Math.max(
     1,
     measureRenderSpans(header[index] ?? [], { widthProfile: context.widthProfile }),
@@ -896,65 +971,147 @@ function layoutTable(
 }
 
 function layoutImage(
-  block: Extract<MarkdownBlock, { readonly kind: 'image' }>,
+  image: Extract<MarkdownInlineNode, { readonly kind: 'image' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
-  const imageLabel = block.alt.length > 0 ? block.alt : 'Untitled image';
+  const imageLabel = inlineText(image.children) || 'Untitled image';
   const imageLine = insetLine([
     renderSpan('IMAGE  ', mergeTerminalStyles(STYLE_ACCENT, { bold: true })),
     renderSpan(imageLabel, STYLE_STRONG)
   ], width, context, { bg: themeColor('surface.inset.background') });
-  const destination = block.href.length > 0 ? block.href : '(no destination)';
+  const href = safeHref(image.destination);
+  const destination = href.length > 0 ? href : '(no destination)';
   const destinationLine = insetLine([
     renderSpan(context.symbols.mode === 'unicode' ? '↳ ' : '-> ', STYLE_MUTED),
-    renderSpan(destination, block.href.length > 0 ? STYLE_LINK : STYLE_MUTED, block.href.length > 0 ? { href: block.href } : undefined)
+    renderSpan(destination, href.length > 0 ? STYLE_LINK : STYLE_MUTED, href.length > 0 ? { href } : undefined)
   ], width, context, { bg: themeColor('surface.inset.background') });
   return [imageLine, destinationLine];
 }
 
 function layoutHtml(
-  block: Extract<MarkdownBlock, { readonly kind: 'html' }>,
+  block: Extract<MarkdownBlockNode, { readonly kind: 'htmlBlock' }>,
   width: number,
   context: LayoutContext
 ): readonly RenderLine[] {
   return [insetLine([
-    renderSpan(`HTML not rendered · ${block.label}`, STYLE_HTML)
+    renderSpan(`HTML not rendered · ${htmlLabel(safeText(block.value), true)}`, STYLE_HTML)
   ], width, context, STYLE_HTML)];
 }
 
-function layoutBlock(block: MarkdownBlock, width: number, context: LayoutContext): readonly RenderLine[] {
+function paragraphImage(
+  block: Extract<MarkdownBlockNode, { readonly kind: 'paragraph' }>
+): Extract<MarkdownInlineNode, { readonly kind: 'image' }> | undefined {
+  const meaningful = block.children.filter((inline) => (
+    inline.kind !== 'text' || safeText(inline.value).trim().length > 0
+  ));
+  const only = meaningful[0];
+  return meaningful.length === 1 && only?.kind === 'image' ? only : undefined;
+}
+
+function tagBlockLines(
+  lines: readonly MarkdownLayoutLine[],
+  block: MarkdownBlockNode
+): readonly MarkdownLayoutLine[] {
+  return lines.map((line) => ({
+    ...line,
+    nodeId: line.nodeId ?? block.id,
+    sourceSpan: line.sourceSpan ?? block.span
+  }));
+}
+
+function shiftCachedLines(
+  lines: readonly MarkdownLayoutLine[],
+  offset: number
+): readonly MarkdownLayoutLine[] {
+  if (offset === 0) return lines;
+  return lines.map((line) => ({
+    ...line,
+    ...(line.sourceSpan === undefined
+      ? {}
+      : {
+          sourceSpan: {
+            start: line.sourceSpan.start + offset,
+            end: line.sourceSpan.end + offset
+          }
+        })
+  }));
+}
+
+function blockLayoutCacheKey(block: MarkdownBlockNode, width: number, context: LayoutContext): string {
+  return [
+    block.id,
+    width,
+    textWidthProfileKey(context.widthProfile),
+    context.symbols.mode,
+    context.symbols.checkboxChecked,
+    context.symbols.checkboxUnchecked
+  ].join('|');
+}
+
+function layoutBlockUncached(
+  block: MarkdownBlockNode,
+  width: number,
+  context: LayoutContext
+): readonly MarkdownLayoutLine[] {
   switch (block.kind) {
     case 'heading':
       return layoutHeading(block, width, context);
-    case 'paragraph':
-      return inlineLines(block.content, width, context);
-    case 'blockquote':
+    case 'paragraph': {
+      const image = paragraphImage(block);
+      return image === undefined
+        ? inlineLines(block.children, width, context)
+        : layoutImage(image, width, context);
+    }
+    case 'blockQuote':
       return layoutBlockquote(block, width, context);
     case 'list':
       return layoutList(block, width, context);
-    case 'code':
+    case 'codeBlock':
       return layoutCode(block, width, context);
     case 'table':
       return layoutTable(block, width, context);
-    case 'rule': {
+    case 'thematicBreak': {
       const glyph = context.symbols.mode === 'unicode' ? '─' : '-';
       return [textLine([renderSpan(repeatGlyph(glyph, width), STYLE_RULE)])];
     }
-    case 'image':
-      return layoutImage(block, width, context);
-    case 'html':
+    case 'htmlBlock':
       return layoutHtml(block, width, context);
+    case 'linkDefinition':
+      return [];
+    case 'footnoteDefinition': {
+      if (!block.active) return [];
+      const label = textLine([renderSpan(`Footnote ${safeText(block.label)}`, STYLE_STRONG)]);
+      return [label, ...layoutBlockSequence(block.children, width, context, 1)];
+    }
   }
 }
 
+function layoutBlock(block: MarkdownBlockNode, width: number, context: LayoutContext): readonly MarkdownLayoutLine[] {
+  const key = blockLayoutCacheKey(block, width, context);
+  const cached = context.blockCache.get(key);
+  if (cached !== undefined && cached.kind === block.kind) {
+    context.blockCache.delete(key);
+    context.blockCache.set(key, cached);
+    return shiftCachedLines(cached.lines, block.span.start - cached.spanStart);
+  }
+  const lines = tagBlockLines(layoutBlockUncached(block, width, context), block);
+  context.blockCache.set(key, Object.freeze({ kind: block.kind, spanStart: block.span.start, lines }));
+  while (context.blockCache.size > BLOCK_LAYOUT_CACHE_LIMIT) {
+    const oldest = context.blockCache.keys().next().value;
+    if (oldest === undefined) break;
+    context.blockCache.delete(oldest);
+  }
+  return lines;
+}
+
 function layoutBlockSequence(
-  blocks: readonly MarkdownBlock[],
+  blocks: readonly MarkdownBlockNode[],
   width: number,
   context: LayoutContext,
   gapRows: number
-): readonly RenderLine[] {
-  const lines: RenderLine[] = [];
+): readonly MarkdownLayoutLine[] {
+  const lines: MarkdownLayoutLine[] = [];
   const visible = blocks.map((block) => layoutBlock(block, width, context)).filter((blockLines) => blockLines.length > 0);
   for (let index = 0; index < visible.length; index += 1) {
     lines.push(...(visible[index] ?? []));
@@ -965,13 +1122,24 @@ function layoutBlockSequence(
   return lines;
 }
 
-function emptyPreview(width: number, context: LayoutContext): readonly RenderLine[] {
+function emptyPreview(width: number, context: LayoutContext): readonly MarkdownLayoutLine[] {
   const title = wrapSpansAtWords([renderSpan('Nothing to preview', STYLE_STRONG)], width, context);
   const hint = wrapSpansAtWords([renderSpan('Write Markdown in the source pane.', STYLE_MUTED)], width, context);
   return [...title, ...hint];
 }
 
+function failedPreview(
+  preview: Exclude<MarkdownPreview, ReadyMarkdownPreview>,
+  width: number,
+  context: LayoutContext
+): readonly MarkdownLayoutLine[] {
+  const title = wrapSpansAtWords([renderSpan('Preview unavailable', STYLE_STRONG)], width, context);
+  const message = wrapSpansAtWords([renderSpan(safeText(preview.message), STYLE_HTML)], width, context);
+  return [...title, ...message];
+}
+
 function layoutCacheKey(
+  preview: MarkdownPreview,
   width: number,
   maxContentWidth: number,
   minHorizontalPadding: number,
@@ -979,6 +1147,8 @@ function layoutCacheKey(
 ): string {
   const symbols = context.symbols;
   return [
+    preview.kind,
+    preview.sourceRevision,
     width,
     maxContentWidth,
     minHorizontalPadding,
@@ -990,18 +1160,21 @@ function layoutCacheKey(
 }
 
 export function layoutMarkdownDocument(
-  document: MarkdownDocument,
+  preview: MarkdownPreview,
   options: MarkdownLayoutOptions
 ): MarkdownLayoutResult {
   const width = Math.max(1, Math.min(4096, Math.floor(options.width)));
   const maxContentWidth = Math.max(20, Math.min(160, Math.floor(options.maxContentWidth ?? 88)));
   const minHorizontalPadding = Math.max(0, Math.min(12, Math.floor(options.minHorizontalPadding ?? 2)));
+  const blocks = blockLayoutCache.get(preview.identity) ?? new Map<string, CachedBlockLayout>();
+  if (!blockLayoutCache.has(preview.identity)) blockLayoutCache.set(preview.identity, blocks);
   const context: LayoutContext = {
     widthProfile: options.widthProfile ?? defaultTextWidthProfile,
-    symbols: options.symbols ?? unicodeSymbols
+    symbols: options.symbols ?? unicodeSymbols,
+    blockCache: blocks
   };
-  const key = layoutCacheKey(width, maxContentWidth, minHorizontalPadding, context);
-  const cache = layoutCache.get(document);
+  const key = layoutCacheKey(preview, width, maxContentWidth, minHorizontalPadding, context);
+  const cache = layoutCache.get(preview.identity);
   const cached = cache?.get(key);
   if (cached !== undefined) {
     cache?.delete(key);
@@ -1012,13 +1185,18 @@ export function layoutMarkdownDocument(
   const usable = Math.max(1, width - minHorizontalPadding * 2);
   const contentWidth = Math.max(1, Math.min(maxContentWidth, usable));
   const leftPadding = Math.max(0, Math.floor((width - contentWidth) / 2));
-  const rawLines = document.blocks.length === 0
-    ? emptyPreview(contentWidth, context)
-    : layoutBlockSequence(document.blocks, contentWidth, context, 1);
-  const lines = rawLines.map((line) => textLine([
-    ...(leftPadding === 0 ? [] : [renderSpan(' '.repeat(leftPadding))]),
-    ...line.spans
-  ]));
+  const rawLines = preview.kind === 'failed'
+    ? failedPreview(preview, contentWidth, context)
+    : preview.snapshot.document.tree.children.length === 0
+      ? emptyPreview(contentWidth, context)
+      : layoutBlockSequence(preview.snapshot.document.tree.children, contentWidth, context, 1);
+  const lines = rawLines.map((line): MarkdownLayoutLine => ({
+    ...line,
+    spans: compactRenderSpans([
+      ...(leftPadding === 0 ? [] : [renderSpan(' '.repeat(leftPadding))]),
+      ...line.spans
+    ])
+  }));
   const result: MarkdownLayoutResult = Object.freeze({
     lines: Object.freeze(lines.length === 0 ? [emptyLine()] : lines),
     width,
@@ -1032,8 +1210,18 @@ export function layoutMarkdownDocument(
     if (oldest === undefined) break;
     target.delete(oldest);
   }
-  if (cache === undefined) layoutCache.set(document, target);
+  if (cache === undefined) layoutCache.set(preview.identity, target);
   return result;
+}
+
+export function markdownLayoutSourceOffsets(
+  layout: MarkdownLayoutResult
+): readonly number[] {
+  let previous = 0;
+  return Object.freeze(layout.lines.map((line) => {
+    if (line.sourceSpan !== undefined) previous = line.sourceSpan.start;
+    return previous;
+  }));
 }
 
 export function markdownLayoutPlainText(layout: MarkdownLayoutResult): string {
@@ -1148,20 +1336,27 @@ export const markdownDocument = defineComponent<
             cellRole: 'text',
             partName: 'markdown',
             itemIndex: row,
-            description: `markdown.line.${String(row)}.span.${String(index)}`
+            description: line.nodeId === undefined || line.sourceSpan === undefined
+              ? `markdown.line.${String(row)}.span.${String(index)}`
+              : `markdown.node.${String(line.nodeId)}.source.${String(line.sourceSpan.start)}-${String(line.sourceSpan.end)}.line.${String(row)}.span.${String(index)}`
           })
         }))
       });
     }
   },
   accessibility({ id, model, focused }) {
+    const preview = model.document;
     return {
       id,
       role: 'document',
       label: 'Markdown preview',
       ...(focused ? { focused: true } : {}),
-      description: `${String(model.document.wordCount)} words`,
-      children: accessibleBlockNodes(model.document.blocks, id)
+      description: preview.kind === 'ready'
+        ? `${String(preview.wordCount)} words`
+        : `Preview unavailable: ${safeText(preview.message)}`,
+      children: preview.kind === 'ready'
+        ? accessibleBlockNodes(preview.snapshot.document.tree.children, id)
+        : [{ id: `${id}:error`, role: 'text', value: safeText(preview.message) }]
     };
   }
 });

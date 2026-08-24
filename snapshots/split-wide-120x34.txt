@@ -119,7 +119,8 @@ export const answer = 42;
               - cell = Terminal links [position]
               - cell = Open [position]
           - separator
-          - image: Architecture - Destination: https://example.com/architecture.png
+          - group
+            - image: Architecture - Destination: https://example.com/architecture.png
           - text: HTML not rendered = HTML block: <section>
   - status = README.md · SAVED  Rows 1-30/32  49 words  Ctrl+S Save  Ctrl+P Mode  Tab Pane  F1 Help [live:polite]
 

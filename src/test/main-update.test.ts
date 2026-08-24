@@ -3,13 +3,26 @@ import test from 'node:test';
 import {
   editDocument,
   editFileDialog,
-  initialState,
   isModified,
-  openDocument,
   startFileDialog
 } from '../editor-state.js';
-import { updateVellum } from '../main.js';
+import { createVellumController } from '../main.js';
 import { VELLUM_IDS } from '../view.js';
+import { openTestDocument as openDocument } from './support.js';
+
+let controller = createVellumController();
+
+function initialState() {
+  controller = createVellumController();
+  return controller.initialState();
+}
+
+function updateVellum(
+  state: Parameters<typeof controller.update>[0],
+  message: Parameters<typeof controller.update>[1]
+) {
+  return controller.update(state, message);
+}
 
 const editorFocus = { kind: 'element', elementId: VELLUM_IDS.editor } as const;
 const previewFocus = { kind: 'element', elementId: VELLUM_IDS.preview } as const;

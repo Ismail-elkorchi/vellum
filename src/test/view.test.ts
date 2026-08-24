@@ -4,8 +4,6 @@ import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
 import {
   activatePane,
   editDocument,
-  initialState,
-  openDocument,
   setFileDialogError,
   setMode,
   showHelpDialog,
@@ -14,6 +12,10 @@ import {
   type AppState
 } from '../editor-state.js';
 import { VELLUM_IDS, view } from '../view.js';
+import {
+  initialTestState as initialState,
+  openTestDocument as openDocument
+} from './support.js';
 
 const SAMPLE_MARKDOWN = [
   '# Vellum',
