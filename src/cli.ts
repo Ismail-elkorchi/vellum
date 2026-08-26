@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { stat } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
 import { stdin, stderr, stdout } from 'node:process';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import {
@@ -16,7 +15,7 @@ import { runVellum } from './tui.js';
 import { loadUserKeymap } from './commands/keymap.js';
 import { loadUserMarkdownTheme, type MarkdownTheme } from './markdown/theme.js';
 
-export async function runCli(
+async function runCli(
   arguments_: readonly string[],
   streams: { readonly input: NodeJS.ReadableStream; readonly output: NodeJS.WritableStream; readonly error: NodeJS.WritableStream } = {
     input: stdin,
@@ -121,5 +120,4 @@ async function readStandardInput(input: NodeJS.ReadableStream): Promise<string> 
   return source;
 }
 
-const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (invokedDirectly) process.exitCode = await runCli(process.argv.slice(2));
+process.exitCode = await runCli(process.argv.slice(2));

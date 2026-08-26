@@ -10,6 +10,7 @@ import {
   stat
 } from 'node:fs/promises';
 import path from 'node:path';
+import { flushDirectoryMetadata } from './durability.js';
 import type {
   ExternalFileFingerprint,
   FileFormat
@@ -177,24 +178,11 @@ export async function saveSourceFile(
     await rename(temporaryPath, targetPath);
     temporaryCreated = false;
     if (options.format.permissionMode !== undefined) await chmod(targetPath, options.format.permissionMode);
-    await flushDirectory(directory);
+    await flushDirectoryMetadata(directory);
   } finally {
     if (temporaryCreated) await rm(temporaryPath, { force: true });
   }
   return readSourceFile(exactPath, options.signal);
-}
-
-async function flushDirectory(directory: string): Promise<void> {
-  try {
-    const handle = await open(directory, 'r');
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  } catch (error) {
-    if (process.platform !== 'win32') throw error;
-  }
 }
 
 function hasFileCode(error: unknown, code: string): boolean {

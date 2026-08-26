@@ -20,6 +20,7 @@ import type {
 } from '../app/types.js';
 import { createBufferParser, type BufferParser } from '../markdown/preview.js';
 import { createFileTreeState } from '../project/file-tree.js';
+import { flushDirectoryMetadata } from '../files/durability.js';
 
 const recoverySchemaVersion = 1;
 
@@ -98,12 +99,7 @@ export function createRecoveryStore(directory = defaultRecoveryDirectory()): Rec
         await handle.close();
         handle = undefined;
         await rename(temporary, filePath);
-        const directoryHandle = await open(directory, 'r');
-        try {
-          await directoryHandle.sync();
-        } finally {
-          await directoryHandle.close();
-        }
+        await flushDirectoryMetadata(directory);
       } finally {
         await handle?.close().catch(() => undefined);
         await rm(temporary, { force: true });
