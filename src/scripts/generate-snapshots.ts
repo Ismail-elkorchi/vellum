@@ -1,140 +1,44 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
-import {
-  activatePane,
-  editDocument,
-  initialState as createInitialState,
-  openDocument as openEditorDocument,
-  setFileDialogError,
-  setMode,
-  showHelpDialog,
-  showQuitConfirmation,
-  startFileDialog,
-  type AppState
-} from '../editor-state.js';
-import { createMarkdownPreviewEngine } from '../markdown/preview.js';
-import { view } from '../view.js';
+import { createBufferParser } from '../markdown/preview.js';
+import { createPreviewLayoutCache, layoutMarkdownPreview } from '../markdown/render/layout.js';
+import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 
-const previewEngine = createMarkdownPreviewEngine();
+const fixtures = Object.freeze([
+  Object.freeze({
+    name: 'document',
+    source: '---\ntitle: Example\n---\n\n# Heading\n\nParagraph with **strong**, [link](./target.md), $x^2$, and a footnote[^1].\n\n> [!NOTE]\n> A callout.\n\n| A | B |\n| - | - |\n| x | y |\n\n[^1]: Detail.'
+  }),
+  Object.freeze({ name: 'malformed', source: '---\nunsafe: !tag value\n\n**unclosed\n\n$$\nmath' })
+]);
 
-function initialState(): AppState {
-  return createInitialState(previewEngine.open(0, 0, ''));
-}
-
-function openDocument(
-  state: AppState,
-  filePath: string,
-  label: string,
-  source: string
-): AppState {
-  const documentId = state.document.id + 1;
-  return openEditorDocument(
-    state,
-    filePath,
-    label,
-    source,
-    previewEngine.open(documentId, 0, source)
+const snapshot = fixtures.map((fixture) => {
+  const parser = createBufferParser(fixture.source, 0);
+  const preview = parser.preview();
+  if (preview.kind === 'failed') return Object.freeze({ name: fixture.name, failure: preview.message });
+  const layout = layoutMarkdownPreview(
+    preview.snapshot.document.tree,
+    preview.snapshot.source,
+    44,
+    darkTerminalMarkdownTheme,
+    createPreviewLayoutCache()
   );
-}
-
-const SAMPLE_MARKDOWN = [
-  '# Vellum',
-  '',
-  'A **terminal-first** Markdown editor with *live preview*, `inline code`, and [clickable links](https://example.com).',
-  '',
-  '## Editorial rendering',
-  '',
-  '> Blockquotes use a guide and preserve **nested formatting** while wrapping at word boundaries.',
-  '',
-  '- [x] Block-aware rendering',
-  '- [ ] Final polish',
-  '  - Nested list with *emphasis*',
-  '',
-  '```ts',
-  'export const answer = 42;',
-  '```',
-  '',
-  '| Feature | Status |',
-  '| :--- | ---: |',
-  '| Unicode width | 東京 ✅ |',
-  '| Terminal links | [Open](https://example.com) |',
-  '',
-  '---',
-  '',
-  '![Architecture](https://example.com/architecture.png)',
-  '',
-  '<section>HTML is intentionally not executed.</section>'
-].join('\n');
-
-interface SnapshotSpec {
-  readonly name: string;
-  readonly state: AppState;
-  readonly columns: number;
-  readonly rows: number;
-}
-
-function context(columns: number, rows: number) {
-  return { terminalSize: { columns, rows } };
-}
-
-function documentState(): AppState {
-  return openDocument(initialState(), '/workspace/README.md', 'README.md', SAMPLE_MARKDOWN);
-}
-
-function inMode(mode: 'edit' | 'split' | 'preview', pane: 'editor' | 'preview' = 'editor'): AppState {
-  return activatePane(setMode(documentState(), mode), pane);
-}
-
-let modified = editDocument(inMode('edit'), {
-  kind: 'edit',
-  operation: { kind: 'insert', text: '\n' }
-});
-modified = showQuitConfirmation(modified);
-
-const specs: readonly SnapshotSpec[] = [
-  { name: 'empty-edit-80x24', state: initialState(), columns: 80, rows: 24 },
-  { name: 'split-narrow-60x18', state: inMode('split', 'editor'), columns: 60, rows: 18 },
-  { name: 'split-stacked-80x24', state: inMode('split', 'preview'), columns: 80, rows: 24 },
-  { name: 'split-wide-120x34', state: inMode('split', 'preview'), columns: 120, rows: 34 },
-  { name: 'preview-reading-160x40', state: inMode('preview', 'preview'), columns: 160, rows: 40 },
-  { name: 'open-dialog-80x24', state: startFileDialog(inMode('edit'), 'open'), columns: 80, rows: 24 },
-  {
-    name: 'save-as-error-80x24',
-    state: setFileDialogError(startFileDialog(inMode('edit'), 'saveAs'), 'Destination is not writable.'),
-    columns: 80,
-    rows: 24
-  },
-  { name: 'unsaved-confirm-80x24', state: modified, columns: 80, rows: 24 },
-  { name: 'help-dialog-80x24', state: showHelpDialog(inMode('edit')), columns: 80, rows: 24 }
-];
-
-const outputDirectory = path.resolve(process.cwd(), 'snapshots');
-await mkdir(outputDirectory, { recursive: true });
-
-for (const spec of specs) {
-  const terminalSize = { columns: spec.columns, rows: spec.rows };
-  const result = renderElementSnapshot({
-    element: view(spec.state, context(spec.columns, spec.rows)),
-    terminalSize
+  return Object.freeze({
+    name: fixture.name,
+    diagnostics: preview.snapshot.document.diagnostics,
+    metrics: preview.metrics,
+    rows: layout.lines.map((line) => Object.freeze({
+      sourceOffset: line.sourceOffset,
+      text: line.inlineSpans.map((span) => span.text).join('')
+    }))
   });
-  const artifact = [
-    `# ${spec.name}`,
-    '',
-    '## Frame',
-    '',
-    result.plainTextFrame,
-    '',
-    '## Accessibility',
-    '',
-    result.accessibleText.replace(/ = $/gmu, ' = ""'),
-    '',
-    '## Focus targets',
-    '',
-    result.focusTargetJson,
-    ''
-  ].join('\n');
-  await writeFile(path.join(outputDirectory, `${spec.name}.txt`), artifact, 'utf8');
-}
+});
 
-console.log(`Wrote ${String(specs.length)} Vellum visual snapshots to ${outputDirectory}`);
+const output = JSON.stringify(snapshot, null, 2) + '\n';
+const filePath = path.join(process.cwd(), 'snapshots', 'preview.json');
+if (process.argv.includes('--write')) {
+  await writeFile(filePath, output, 'utf8');
+} else {
+  const current = await readFile(filePath, 'utf8');
+  if (current !== output) throw new Error('Preview snapshots are stale. Run npm run snapshots:update.');
+}

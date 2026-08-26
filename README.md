@@ -1,81 +1,165 @@
 # Vellum
 
-Vellum is a terminal-first Markdown editor whose interface is built with [`@ismail-elkorchi/terminal-ui`](https://github.com/Ismail-elkorchi/terminal-ui) and whose source-aware syntax tree comes from [`markspan`](https://github.com/Ismail-elkorchi/markspan). It combines a controlled source editor with an incremental, block-aware, width-aware terminal preview.
+Vellum is a project-aware terminal Markdown editor. A buffer always stores the
+exact Markdown source document; preview, hybrid decorations, search, navigation,
+document metrics, and export are derived from that source.
 
-## Requirements
+Vellum uses
+[`@ismail-elkorchi/terminal-ui`](https://github.com/Ismail-elkorchi/terminal-ui)
+for text editing, terminal layout, accessibility, graphics, tabs, and the file
+tree. It uses [`markspan`](https://github.com/Ismail-elkorchi/markspan) for
+source-exact CommonMark/GFM syntax trees and incremental parsing.
 
-- Node.js 24 or newer
-- A terminal with UTF-8 support
-- OSC 8 support for clickable preview links, when available
+## Install and run
 
-## Run
+Vellum requires Node.js 24 or newer.
 
 ```sh
-npm install
-npm run build
-npm start
+npm install --global vellum-markdown-editor
+vellum README.md
 ```
 
-Vellum starts with a new document. Use `Ctrl+O` to open an existing `.md` file or `Ctrl+Shift+S` to choose a destination for a new document.
+The command accepts a file, a project directory, the current directory, or
+UTF-8 Markdown on standard input:
 
-## Interface
+```sh
+vellum
+vellum README.md
+vellum .
+vellum docs/
+vellum README.md --line 72
+vellum README.md --preview
+vellum README.md --source
+vellum README.md --hybrid
+vellum - --preview
+vellum export README.md --profile html
+```
 
-Vellum has three modes:
+Run `vellum --help` for the options generated from the CLI definitions. Opening
+a path never changes its extension. A project directory indexes Markdown files
+below one root, omits `.git` and configured exclusions, and does not traverse
+directory symbolic links.
 
-- **Edit** — the source editor fills the workspace.
-- **Split** — source and preview are shown side by side on wide terminals, stacked on medium terminals, or one active pane at a time on compact terminals.
-- **Preview** — a centered reading column renders the document without Markdown source delimiters.
+## Buffers and panes
 
-The source editor provides line numbers, active-line emphasis, selection, soft wrapping, scrolling, undo/redo through the `terminal-ui` text behavior, and a compact status bar.
+Each buffer independently retains its source text, caret, selection, undo/redo
+history, source and preview scroll, revisions, external file revision, Markspan
+session, and preview cache. Opening an already-open file activates its existing
+buffer. Tabs show the file label, dirty state, and external conflict state.
 
-The preview preserves block and inline structure. It supports headings, paragraphs, strong and emphasized text, strikethrough, inline code, links, blockquotes, ordered and unordered lists, tasks, nested lists, code blocks, tables, horizontal rules, images, hard breaks, footnotes, and safe HTML placeholders. Tables measure terminal-cell width and switch to a stacked record layout when a terminal is too narrow.
+Editor mode and pane arrangement are independent:
 
-Preview parsing is incremental. Unchanged Markspan nodes retain stable identities, their terminal layouts are reused, and Split-mode scrolling maps source positions to rendered blocks instead of estimating positions from document percentages.
+- Editor mode is `source` or `hybrid`.
+- Pane arrangement is `editor`, `preview`, or `editorPreview`.
 
-Raw HTML is never executed. Images are represented by labeled terminal placeholders with their destinations.
+Hybrid mode styles the source document and conceals inactive Markdown
+delimiters. Entering a syntax node reveals its delimiters. Copy, paste, search,
+save, undo, redo, and diagnostics continue to use exact source offsets and exact
+Markdown source.
 
-## Keyboard shortcuts
+The preview supports CommonMark and GFM, footnotes, YAML front matter, GFM
+callouts, inline and block math, fenced-code highlighting, local images, and
+Mermaid diagram fences. Raw HTML is shown as inert source placeholders. Remote
+images are disabled unless explicitly enabled. Unsupported highlighting,
+graphics, math, and diagram rendering retain labeled source fallbacks.
 
-| Shortcut | Action |
+Editor and preview scrolling is synchronized through source offsets. The editor
+row-offset map comes from the actual terminal text layout, including wrapping,
+tabs, grapheme widths, gutters, concealed ranges, virtual text, scrollbars, and
+terminal resizing. Preview lines retain Markspan source spans.
+
+## Commands
+
+`Ctrl+Shift+P` opens the command palette. The command registry is the source for
+palette entries, availability, titles, categories, help labels, and default
+bindings. Important defaults include:
+
+| Binding | Command |
 | --- | --- |
-| `Ctrl+O` | Open a Markdown file |
+| `Ctrl+N` | New file |
+| `Ctrl+O` | Open file |
+| `Ctrl+Shift+O` | Open project directory |
 | `Ctrl+S` | Save |
-| `F2` / `Ctrl+Shift+S` | Save As |
-| `Ctrl+P` | Cycle Edit → Split → Preview |
-| `Tab` / `Shift+Tab` | Switch the active Split pane |
-| Arrow keys | Scroll the focused Preview pane |
-| `Page Up` / `Page Down` | Scroll Preview by a page |
-| `Home` / `End` | Move Preview to the beginning or end |
-| `Alt+Arrow` | Resize a visible split |
-| `F1` | Open keyboard help |
+| `Ctrl+Shift+S` | Save as |
+| `Ctrl+Alt+S` | Save all |
+| `Ctrl+W` | Close active buffer |
+| `Ctrl+Shift+T` | Reopen recently closed buffer |
+| `Ctrl+P` | Quick open |
+| `Ctrl+F` / `Ctrl+H` | Find / replace in the source document |
+| `Ctrl+Shift+F` | Search the project directory |
+| `Ctrl+Alt+O` | Open the document outline |
+| `Alt+Left` / `Alt+Right` | Navigate back / forward |
+| `F7` / `F8` | Preview / editor and preview |
 | `Ctrl+Q` | Quit |
 
-Vellum asks before discarding unsaved work when opening another file or quitting.
+Markdown commands cover strong and emphasis, inline code, links, task state,
+heading level, code fences, block movement and duplication, list indentation,
+and GFM table navigation and structure. Each operation produces one exact text
+change set and one undo entry.
 
-`F2` provides a Save As binding in terminals whose input protocol cannot distinguish `Ctrl+Shift+S` from `Ctrl+S`.
+### User keymap
 
-## Architecture
+Vellum reads `keymap.json` from the platform configuration directory:
 
-- `src/editor-state.ts` owns immutable document, preview, dialog, scroll, and split-pane state.
-- `src/markdown/preview.ts` owns the active Markspan session and publishes immutable source-aware preview snapshots.
-- `src/markdown/render.ts` renders Markspan nodes directly, applies terminal-safety policy, and reuses layouts by stable node identity.
-- `src/view.ts` composes the responsive workspace, status bar, and modal dialogs.
-- `src/main.ts` defines shortcuts, effects, focus transitions, unsaved-change handling, and the TUI runtime.
-- `src/file-io.ts` implements `.md` path handling and UTF-8 file operations.
+- Linux: `$XDG_CONFIG_HOME/vellum/keymap.json` or `~/.config/vellum/keymap.json`
+- macOS: `~/Library/Application Support/vellum/keymap.json`
+- Windows: `%APPDATA%\vellum\keymap.json`
 
-## Verification
+The file is an array of command bindings:
 
-```sh
-npm test
-npm run snapshots
+```json
+[
+  { "command": "file.quickOpen", "key": "ctrl+p" },
+  { "command": "markdown.formatTable", "key": "ctrl+alt+t" }
+]
 ```
 
-The suite covers incremental Markdown parsing and rendering, stable source identities, nested inline styles, loose and nested lists, CRLF input, Unicode tables, source-aware scrolling, responsive layouts, modal focus, unsaved-change behavior, exact save snapshots, file I/O, preview keyboard navigation, and terminal restoration.
+Unknown commands, malformed keys, duplicates, and conflicts are reported and do
+not start the editor.
 
-Generated visual artifacts are stored in `snapshots/` for these layouts and states:
+## Files, recovery, and conflicts
 
-- `60×18`, `80×24`, `120×34`, and `160×40`
-- empty editor
-- compact, stacked, and wide Split layouts
-- full Preview reading layout
-- Open, Save As error, unsaved-change, and Help dialogs
+Saves preserve UTF-8 BOM state, LF/CRLF source text, permissions, and symbolic
+links. Vellum writes and flushes a temporary file beside the target, then renames
+it atomically. Existing output is not replaced without an explicit action.
+
+Unsaved buffers are written atomically to the platform application-state
+directory after a bounded delay and during controlled shutdown. A new
+application instance restores the project directory, open-buffer order, active
+buffer, exact source, selection, caret, scroll, editor mode, and pane
+arrangement. Recovery records are removed after the corresponding buffers are
+saved or intentionally discarded.
+
+File watchers and metadata checks detect external replacement, modification,
+deletion, and project-directory rename. A dirty conflict offers Compare, Reload
+Disk, Keep Buffer, Save As, and Overwrite Disk. A deleted file offers Recreate,
+Save As, and Close Buffer. No conflict action overwrites a disk file implicitly.
+
+## Export
+
+Built-in Pandoc profiles target HTML, PDF, DOCX, and EPUB. Export invokes the
+configured executable directly with an argument array; it never interpolates a
+shell command. User profiles specify an identifier, label, target format,
+extension, executable, arguments, and resource paths. Existing outputs require
+`--overwrite`. Project-directory export follows stable path order.
+
+## Markdown theme
+
+Vellum provides dark-terminal and light-terminal Markdown themes. An optional
+`markdown-theme.json` beside `keymap.json` may override semantic terminal-style
+entries such as `body`, `headings`, `link`, `frontMatter`, `callouts`, `math`,
+and diagnostic severity. Unknown keys and invalid color/style values produce a
+diagnostic instead of being ignored.
+
+## Verification and benchmarks
+
+```sh
+npm ci
+npm run verify
+```
+
+Verification builds strict declarations, runs integration tests, checks the
+deterministic preview snapshot, runs the complete benchmark fixture set, proves
+the package archive is reproducible, runs the packed CLI help target, and checks
+`npm pack`. CI runs the same package on Node.js 24 across Ubuntu, macOS, and
+Windows.

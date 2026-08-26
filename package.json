@@ -1,25 +1,61 @@
 {
   "name": "vellum-markdown-editor",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "A project-aware terminal Markdown editor with source-exact hybrid editing and preview.",
   "type": "module",
-  "private": true,
-  "main": "dist/main.js",
+  "packageManager": "npm@11.8.0",
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "bin": {
+    "vellum": "./dist/cli.js"
+  },
+  "files": [
+    "dist/app",
+    "dist/commands",
+    "dist/editing",
+    "dist/export",
+    "dist/files",
+    "dist/markdown",
+    "dist/navigation",
+    "dist/project",
+    "dist/recovery",
+    "dist/search",
+    "dist/cli-options.js",
+    "dist/cli-options.d.ts",
+    "dist/cli.js",
+    "dist/cli.d.ts",
+    "dist/main.js",
+    "dist/main.d.ts",
+    "dist/tui.js",
+    "dist/tui.d.ts",
+    "dist/view.js",
+    "dist/view.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/main.js",
+    "build": "node scripts/clean.mjs && tsc && node scripts/finalize-build.mjs",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "snapshots": "npm run build && node dist/scripts/generate-snapshots.js",
-    "verify": "npm test && npm run snapshots"
+    "snapshots": "npm run build && node dist/scripts/generate-snapshots.js --check",
+    "snapshots:update": "npm run build && node dist/scripts/generate-snapshots.js --write",
+    "benchmark": "npm run build && node dist/benchmark/run.js",
+    "verify:package": "npm run build && node scripts/verify-package.mjs",
+    "verify": "npm run build && npm test && npm run snapshots && npm run benchmark && npm run verify:package && npm pack --dry-run",
+    "prepare": "npm run build"
   },
   "dependencies": {
-    "@ismail-elkorchi/terminal-ui": "0.1.3",
-    "markspan": "0.1.0"
+    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#5a1546fd53243d3d2e86c7252f275be3d98a709b",
+    "markspan": "git+https://github.com/Ismail-elkorchi/markspan.git#9a453ba000c69f19c6eb85bf0b8762e7263a44a1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "typescript": "^6.0.0"
   },
-  "description": "A terminal-first Markdown editor with an incremental source-aware preview.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ismail-elkorchi/vellum.git"
+  },
   "engines": {
     "node": ">=24"
   }

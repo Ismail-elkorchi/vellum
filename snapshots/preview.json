@@ -1,0 +1,108 @@
+[
+  {
+    "name": "document",
+    "diagnostics": [],
+    "metrics": {
+      "wordCount": 16,
+      "headingCount": 1,
+      "linkCount": 1,
+      "taskCount": 0
+    },
+    "rows": [
+      {
+        "sourceOffset": 0,
+        "text": "title: Example"
+      },
+      {
+        "sourceOffset": 24,
+        "text": "Heading"
+      },
+      {
+        "sourceOffset": 35,
+        "text": "Paragraph with strong, link, x^2, and a foot"
+      },
+      {
+        "sourceOffset": 100,
+        "text": "note[^1]."
+      },
+      {
+        "sourceOffset": 111,
+        "text": "NOTE: A callout."
+      },
+      {
+        "sourceOffset": 135,
+        "text": "| A   | B   |"
+      },
+      {
+        "sourceOffset": 155,
+        "text": "| x   | y   |"
+      },
+      {
+        "sourceOffset": 166,
+        "text": "[^1]: Detail."
+      }
+    ]
+  },
+  {
+    "name": "malformed",
+    "diagnostics": [
+      {
+        "code": "invalid-front-matter",
+        "severity": "error",
+        "message": "YAML tags are not supported in front matter.",
+        "span": {
+          "start": 12,
+          "end": 22
+        }
+      },
+      {
+        "code": "invalid-front-matter",
+        "severity": "error",
+        "message": "Front matter entries must use a plain key followed by a colon and a value.",
+        "span": {
+          "start": 24,
+          "end": 34
+        }
+      },
+      {
+        "code": "invalid-front-matter",
+        "severity": "error",
+        "message": "Front matter entries must use a plain key followed by a colon and a value.",
+        "span": {
+          "start": 36,
+          "end": 38
+        }
+      },
+      {
+        "code": "invalid-front-matter",
+        "severity": "error",
+        "message": "Front matter entries must use a plain key followed by a colon and a value.",
+        "span": {
+          "start": 39,
+          "end": 43
+        }
+      },
+      {
+        "code": "unclosed-front-matter",
+        "severity": "error",
+        "message": "Front matter must end with a closing --- delimiter.",
+        "span": {
+          "start": 0,
+          "end": 3
+        }
+      }
+    ],
+    "metrics": {
+      "wordCount": 0,
+      "headingCount": 0,
+      "linkCount": 0,
+      "taskCount": 0
+    },
+    "rows": [
+      {
+        "sourceOffset": 0,
+        "text": "unsafe: !tag value"
+      }
+    ]
+  }
+]

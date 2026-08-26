@@ -2,710 +2,611 @@ import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import {
   button,
   commandInput,
+  createTextAreaRowOffsetMap,
   dialog,
   richText,
-  statusBar,
+  tabs,
   text,
   textArea,
+  tree,
   type InlineContent,
-  type StatusBarItem
+  type TabCloseEvent,
+  type TabsTransition,
+  type TreeActivateEvent,
+  type TextAreaDecoration
 } from '@ismail-elkorchi/terminal-ui/components';
-import {
-  column,
-  grid,
-  overlay,
-  row,
-  splitPane,
-  surface,
-  viewport
-} from '@ismail-elkorchi/terminal-ui/layout';
 import {
   commandInputPresentation,
   splitPanePresentation,
   type CommandInputTransition,
   type ScrollEvent,
   type SplitPaneAction,
-  type TextAreaAction
+  type TextAreaAction,
+  type TreeTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import {
-  measureTextCells,
-  sanitizeTerminalText
-} from '@ismail-elkorchi/terminal-ui/text';
+import { column, grid, overlay, row, splitPane, surface, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
-import type {
-  ActivePane,
-  AppState,
-  EditorMode,
-  FileDialogOperation,
-  PreviewScrollCommand
-} from './editor-state.js';
-import {
-  cursorLineColumn,
-  normalizedPreviewScroll,
-  type PreviewScrollGeometry,
-  type SplitScrollGeometry
-} from './editor-state.js';
-import type { MarkdownFileRecord } from './file-io.js';
-import type { MarkdownPreview } from './markdown/preview.js';
-import {
-  layoutMarkdownDocument,
-  markdownDocument,
-  markdownLayoutSourceOffsets
-} from './markdown/render.js';
+import type { RowOffsetMap } from '@ismail-elkorchi/terminal-ui/text';
+import type { AppState, BufferId, BufferState, CommandId } from './app/types.js';
+import type { VellumApplication } from './app/application.js';
+import { hybridTextDecorations } from './markdown/hybrid.js';
+import type { MarkdownPreviewLayout } from './markdown/render/layout.js';
+import { inlinePlainText } from './markdown/render/inline.js';
+import { localImageComponent } from './markdown/render/image.js';
+import { terminalFileTreeView } from './project/file-tree.js';
 
 export const VELLUM_IDS = Object.freeze({
   editor: 'vellum-editor',
   preview: 'vellum-preview',
-  split: 'vellum-split',
-  fileInput: 'vellum-file-input',
-  filePrimary: 'vellum-file-primary',
+  tabs: 'vellum-buffers',
+  fileTree: 'vellum-file-tree',
+  filePath: 'vellum-file-path',
+  selection: 'vellum-selection',
+  searchQuery: 'vellum-search-query',
+  searchReplacement: 'vellum-search-replacement',
   dialogCancel: 'vellum-dialog-cancel',
-  confirmCancel: 'vellum-confirm-cancel',
-  confirmDiscard: 'vellum-confirm-discard',
-  helpClose: 'vellum-help-close'
+  dialogPrimary: 'vellum-dialog-primary'
 });
 
-export type FileOperation = 'open' | 'save' | 'saveAs';
-
 export type AppMessage =
-  | { readonly kind: 'editDocument'; readonly action: TextAreaAction; readonly sync?: SplitScrollGeometry }
-  | { readonly kind: 'editFileDialog'; readonly action: CommandInputTransition }
-  | { readonly kind: 'scrollPreview'; readonly event: ScrollEvent; readonly sync?: SplitScrollGeometry }
-  | { readonly kind: 'movePreview'; readonly command: PreviewScrollCommand; readonly geometry: PreviewScrollGeometry; readonly sync?: SplitScrollGeometry }
-  | { readonly kind: 'activatePane'; readonly pane: ActivePane }
-  | { readonly kind: 'resizeSplit'; readonly action: SplitPaneAction }
-  | { readonly kind: 'openDialog' }
-  | { readonly kind: 'saveAsDialog' }
-  | { readonly kind: 'helpDialog' }
+  | { readonly kind: 'editor'; readonly bufferId: BufferId; readonly action: TextAreaAction; readonly editorMap?: RowOffsetMap; readonly previewMap?: RowOffsetMap }
+  | { readonly kind: 'previewScroll'; readonly bufferId: BufferId; readonly event: ScrollEvent; readonly editorMap?: RowOffsetMap; readonly previewMap?: RowOffsetMap }
+  | { readonly kind: 'tabs'; readonly transition: TabsTransition<BufferId> }
+  | { readonly kind: 'closeTab'; readonly bufferId: BufferId }
+  | { readonly kind: 'fileTree'; readonly transition: TreeTransition }
+  | { readonly kind: 'activateFileTree'; readonly nodeId: string }
+  | { readonly kind: 'split'; readonly action: SplitPaneAction }
+  | { readonly kind: 'command'; readonly commandId: CommandId }
+  | { readonly kind: 'filePath'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'submitFilePath'; readonly value?: string }
+  | { readonly kind: 'selection'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'submitSelection'; readonly value?: string }
+  | { readonly kind: 'documentSearch'; readonly field: 'query' | 'replacement'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'configureDocumentSearch'; readonly option: 'regularExpression' | 'caseSensitive' | 'wholeWord' | 'selectionOnly' }
+  | { readonly kind: 'navigateDocumentSearch'; readonly direction: 'next' | 'previous' }
+  | { readonly kind: 'replaceDocumentSearch'; readonly scope: 'current' | 'all' }
+  | { readonly kind: 'projectDirectorySearch'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'submitProjectDirectorySearch'; readonly value?: string }
+  | { readonly kind: 'outline'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'submitOutline'; readonly value?: string }
+  | { readonly kind: 'goToLine'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'submitGoToLine'; readonly value?: string }
+  | { readonly kind: 'previewActivate'; readonly bufferId: BufferId; readonly row: number; readonly column: number }
+  | { readonly kind: 'exportProfile'; readonly transition: CommandInputTransition }
+  | { readonly kind: 'submitExportProfile'; readonly value?: string }
   | { readonly kind: 'dismissDialog' }
-  | { readonly kind: 'submitFileDialog'; readonly value?: string }
-  | { readonly kind: 'confirmDiscard' }
-  | { readonly kind: 'toggleMode' }
-  | { readonly kind: 'togglePane' }
-  | { readonly kind: 'quit' }
-  | { readonly kind: 'save' }
-  | { readonly kind: 'previewReady'; readonly preview: MarkdownPreview }
-  | { readonly kind: 'fileOpened'; readonly file: MarkdownFileRecord; readonly documentId: number; readonly revision: number }
-  | {
-      readonly kind: 'fileSaved';
-      readonly path: string;
-      readonly savedText: string;
-      readonly documentId: number;
+  | { readonly kind: 'resolveDirty'; readonly action: 'save' | 'discard' | 'cancel' }
+  | { readonly kind: 'externalFile'; readonly action: 'compare' | 'reloadDisk' | 'keepBuffer' | 'saveAs' | 'overwriteDisk' | 'recreate' | 'closeBuffer' }
+  | { readonly kind: 'checkExternalFiles' }
+  | { readonly kind: 'exit' }
+  | { readonly kind: 'refresh' };
+
+export function viewVellum(
+  application: VellumApplication,
+  state: AppState,
+  context: Pick<TuiContext, 'terminalSize'>
+) {
+  const columns = Math.max(1, context.terminalSize.columns);
+  const rows = Math.max(1, context.terminalSize.rows);
+  const fileTreeWidth = state.project.rootDirectory === undefined || columns < 72 ? 0 : Math.min(28, Math.floor(columns * 0.25));
+  const bodyWidth = Math.max(1, columns - fileTreeWidth - (fileTreeWidth > 0 ? 1 : 0));
+  const bodyRows = Math.max(1, rows - 2);
+  const root = grid({
+    id: 'vellum-root',
+    areas: `header\nbody\nstatus`,
+    rows: [{ kind: 'fixed', cells: 1 }, { kind: 'fill' }, { kind: 'fixed', cells: 1 }],
+    columns: [{ kind: 'fill' }],
+    children: {
+      header: header(state),
+      body: fileTreeWidth === 0
+        ? bufferTabs(application, state, bodyWidth, bodyRows)
+        : row([
+          fileTree(state),
+          bufferTabs(application, state, bodyWidth, bodyRows)
+        ], { sizes: [{ kind: 'fixed', cells: fileTreeWidth }, { kind: 'fill' }], gap: 1 }),
+      status: status(state)
     }
-  | {
-      readonly kind: 'fileError';
-      readonly operation: FileOperation;
-      readonly rawPath: string;
-      readonly message: string;
-      readonly documentId: number;
-      readonly revision: number;
-    };
-
-const strong = { fg: themeColor('text.strong'), bold: true } as const;
-const muted = { fg: themeColor('text.muted'), dim: true } as const;
-const accent = { fg: themeColor('accent.primary'), bold: true } as const;
-const activeMode = {
-  fg: themeColor('control.primary.foreground'),
-  bg: themeColor('control.primary.background'),
-  bold: true
-} as const;
-const inactiveMode = { fg: themeColor('text.muted') } as const;
-const warning = { fg: themeColor('status.warning'), bold: true } as const;
-
-function editorPresentation(state: AppState) {
-  const editor = state.document.editor;
-  return {
-    document: editor.document,
-    caret: editor.caret,
-    ...(editor.selection === undefined ? {} : { selection: editor.selection }),
-    scroll: editor.scroll,
-    revealCaret: editor.revealCaret
-  };
+  });
+  const modal = activeDialog(state, columns);
+  return modal === undefined ? root : overlay([root, modal], { id: 'vellum-overlay' });
 }
 
-function modeLabel(mode: EditorMode, selected: boolean): InlineContent {
-  return [{
-    kind: 'text',
-    text: selected ? `[${mode.toUpperCase()}]` : ` ${mode.toUpperCase()} `,
-    style: selected ? activeMode : inactiveMode
-  }];
+function header(state: AppState) {
+  const project = state.project.rootDirectory?.split(/[\\/]/u).at(-1) ?? 'No project directory';
+  return surface(richText({
+    id: 'vellum-header-text',
+    segments: [
+      { kind: 'text', text: 'MARKDOWN VELLUM', style: { fg: themeColor('accent.primary'), bold: true } },
+      { kind: 'text', text: `  ${project}`, style: { fg: themeColor('text.muted') } },
+      { kind: 'text', text: `  ${state.editorMode.toUpperCase()} · ${state.paneArrangement}` }
+    ],
+    wrap: false
+  }), { id: 'vellum-header', appearance: 'bar', border: { kind: 'none' }, padding: { left: 1, right: 1 } });
 }
 
-function makeHeader(state: AppState, columns: number) {
-  const modified = state.document.text !== state.document.savedText;
-  const identity: InlineContent = [
-    { kind: 'text', text: 'VELLUM', style: accent },
-    { kind: 'text', text: columns >= 52 ? `  ${state.document.label}` : ` ${state.document.label}`, style: strong },
-    ...(modified
-      ? [{ kind: 'text' as const, text: ' *', style: warning }]
-      : [])
-  ];
-
-  const selector: InlineContent = columns < 44
-    ? modeLabel(state.mode, true)
-    : [
-        ...modeLabel('edit', state.mode === 'edit'),
-        { kind: 'text', text: ' ', style: muted },
-        ...modeLabel('split', state.mode === 'split'),
-        { kind: 'text', text: ' ', style: muted },
-        ...modeLabel('preview', state.mode === 'preview')
-      ];
-
-  return surface(
-    row([
-      richText({ id: 'vellum-header-identity', segments: identity, wrap: false }),
-      richText({ id: 'vellum-header-modes', segments: selector, wrap: false })
-    ], {
-      id: 'vellum-header-row',
-      sizes: [{ kind: 'fill' }, { kind: 'content', max: 32 }],
-      align: 'center'
-    }),
-    {
-      id: 'vellum-header',
-      appearance: 'bar',
-      border: { kind: 'none' },
-      padding: { left: 1, right: 1 }
-    }
-  );
+function status(state: AppState) {
+  const activeId = state.project.activeBufferId;
+  const buffer = activeId === undefined ? undefined : state.project.buffers[activeId];
+  const textValue = buffer === undefined
+    ? 'Ctrl+N new file · Ctrl+O open file · Ctrl+Shift+O open project directory'
+    : `${buffer.label} · ${buffer.dirty ? 'UNSAVED' : 'SAVED'} · ${buffer.preview.kind === 'ready' ? `${String(buffer.preview.metrics.wordCount)} words` : 'PREVIEW FAILED'}`;
+  return surface(text({ id: 'vellum-status-text', content: textValue, textRole: 'metadata' }), {
+    id: 'vellum-status', appearance: 'bar', border: { kind: 'none' }, padding: { left: 1, right: 1 }
+  });
 }
 
-function makeEditor(state: AppState, sync: SplitScrollGeometry | undefined) {
-  return textArea({
-    id: VELLUM_IDS.editor,
-    presentation: editorPresentation(state),
-    placeholder: [
-      'Start a Markdown document here.',
-      '',
-      '# A heading',
-      '',
-      'Write in the source pane, then use Ctrl+P to open Split or Preview.'
-    ].join('\n'),
+function bufferTabs(application: VellumApplication, state: AppState, width: number, rows: number) {
+  const items = state.project.bufferOrder.flatMap((id) => {
+    const buffer = state.project.buffers[id];
+    if (buffer === undefined) return [];
+    const conflict = buffer.externalFileState.kind === 'conflict' || buffer.externalFileState.kind === 'deleted';
+    return [{
+      id,
+      label: buffer.label,
+      ...(conflict ? { badge: '!' } : buffer.dirty ? { badge: '●' } : {}),
+      description: conflict ? 'External file conflict' : buffer.dirty ? 'Unsaved source document' : 'Saved source document',
+      closable: true,
+      panel: applicationContent(application, state, buffer, width, Math.max(1, rows - 1))
+    }];
+  });
+  if (items.length === 0) {
+    return surface(text({
+      id: 'vellum-empty',
+      content: 'Open a Markdown file or create a new source document.',
+      textRole: 'body'
+    }), { id: 'vellum-empty-surface', title: 'Vellum', border: { kind: 'rounded' }, padding: 1 });
+  }
+  return tabs({
+    id: VELLUM_IDS.tabs,
+    tabs: items,
+    presentation: {
+      ...(state.project.activeBufferId === undefined ? {} : {
+        activeId: state.project.activeBufferId,
+        selectedId: state.project.activeBufferId
+      })
+    },
+    onTransition: (transition: TabsTransition<BufferId>): AppMessage => ({ kind: 'tabs', transition }),
+    onClose: (event: TabCloseEvent<BufferId>): AppMessage => ({ kind: 'closeTab', bufferId: event.id }),
+    meta: { accessibleName: 'Open buffers', focus: { order: 2 } }
+  });
+}
+
+function applicationContent(
+  application: VellumApplication,
+  state: AppState,
+  buffer: BufferState,
+  width: number,
+  rows: number
+) {
+  if (state.paneArrangement === 'editor') return editorPane(application, state, buffer, width, rows);
+  if (state.paneArrangement === 'preview') return previewPane(application, state, buffer, width, rows);
+  const horizontal = width >= 96;
+  const editorWidth = horizontal ? Math.max(1, Math.floor((width - 1) * (state.splitPane.shares[0] ?? 0.5))) : width;
+  const previewWidth = horizontal ? Math.max(1, width - editorWidth - 1) : width;
+  const editorRows = horizontal ? rows : Math.max(1, Math.floor((rows - 1) * (state.splitPane.shares[0] ?? 0.5)));
+  const previewRows = horizontal ? rows : Math.max(1, rows - editorRows - 1);
+  const editor = editorPane(application, state, buffer, editorWidth, editorRows, previewWidth);
+  const preview = previewPane(application, state, buffer, previewWidth, previewRows, editorWidth);
+  return splitPane([editor, preview], {
+    id: `vellum-split-${buffer.id}`,
+    direction: horizontal ? 'horizontal' : 'vertical',
+    ...splitPanePresentation(state.splitPane),
+    gap: 1,
+    resizeStep: 0.04,
+    onAction: (action: SplitPaneAction): AppMessage => ({ kind: 'split', action }),
+    meta: { accessibility: { label: 'Editor and preview panes' } }
+  });
+}
+
+function editorPane(
+  application: VellumApplication,
+  state: AppState,
+  buffer: BufferState,
+  width: number,
+  rows: number,
+  previewWidth?: number
+) {
+  const decorations: readonly TextAreaDecoration[] = state.editorMode === 'hybrid'
+    ? hybridTextDecorations(buffer, application.markdownTheme())
+    : Object.freeze([]);
+  const editorMap = createTextAreaRowOffsetMap({
+    document: buffer.editor.document,
+    terminalWidth: width,
+    terminalRows: rows,
+    decorations,
     lineNumbers: { minWidth: 3 },
-    highlightActiveLine: true,
+    wrap: { mode: 'soft' },
+    scrollbar: { visible: 'auto' }
+  });
+  const previewMap = previewWidth === undefined
+    ? undefined
+    : application.previewLayout(buffer.id, previewWidth)?.rowOffsetMap;
+  return textArea({
+    id: `${VELLUM_IDS.editor}-${buffer.id}`,
+    presentation: {
+      document: buffer.editor.document,
+      caret: buffer.editor.caret,
+      ...(buffer.editor.selection === undefined ? {} : { selection: buffer.editor.selection }),
+      scroll: buffer.editor.scroll,
+      revealCaret: buffer.editor.revealCaret
+    },
+    placeholder: 'Start a Markdown source document.',
+    decorations,
+    lineNumbers: { minWidth: 3 },
     wrap: { mode: 'soft' },
     scrollbar: { visible: 'auto' },
-    scrollPolicy: { wheel: { rows: 6, columns: 8 } },
-    meta: {
-      accessibleName: 'Markdown source',
-      focus: { order: 1 }
-    },
+    scrollPolicy: { wheel: { rows: 5, columns: 8 } },
+    meta: { accessibleName: `${buffer.label} source document`, focus: { order: 3 } },
     onAction: (action: TextAreaAction): AppMessage => ({
-      kind: 'editDocument',
+      kind: 'editor',
+      bufferId: buffer.id,
       action,
-      ...(action.kind === 'scroll' && sync !== undefined ? { sync } : {})
+      ...(previewMap === undefined ? {} : { editorMap, previewMap })
     })
   });
 }
 
-interface PreviewMetrics extends PreviewScrollGeometry {
-  readonly offsetRow: number;
-  readonly sourceOffsets: readonly number[];
-}
-
-interface EditorMetrics extends PreviewScrollGeometry {
-  readonly sourceOffsets: readonly number[];
-}
-
-type WorkspaceLayout = 'single' | 'horizontal' | 'vertical';
-
-function workspaceLayout(state: AppState, columns: number, rows: number): WorkspaceLayout {
-  if (state.mode !== 'split') return 'single';
-  if (columns >= 96) return 'horizontal';
-  return columns >= 68 && rows >= 24 ? 'vertical' : 'single';
-}
-
-function paneViewportSize(
+function previewPane(
+  application: VellumApplication,
   state: AppState,
-  columns: number,
+  buffer: BufferState,
+  width: number,
   rows: number,
-  layout: WorkspaceLayout,
-  paneIndex: 0 | 1
+  editorWidth?: number
 ) {
-  const bodyRows = Math.max(1, rows - 2);
-  const height = layout === 'vertical'
-    ? Math.max(1, Math.floor(Math.max(0, bodyRows - 1) * (state.splitPane.shares[paneIndex] ?? 0.5)) - 2)
-    : Math.max(1, bodyRows - 2);
-  const width = layout === 'horizontal'
-    ? Math.max(1, Math.floor(Math.max(0, columns - 1) * (state.splitPane.shares[paneIndex] ?? 0.5)) - 4)
-    : Math.max(1, columns - 4);
-  return { width, height };
-}
-
-function previewMetrics(
-  state: AppState,
-  document: MarkdownPreview,
-  columns: number,
-  rows: number,
-  layout: WorkspaceLayout
-): PreviewMetrics {
-  const size = paneViewportSize(state, columns, rows, layout, 1);
-  const fullPreview = state.mode === 'preview';
-  const rendered = layoutMarkdownDocument(document, {
-    width: size.width,
-    maxContentWidth: fullPreview ? 88 : 82,
-    minHorizontalPadding: fullPreview ? 3 : 2
-  });
-  const contentRows = rendered.lines.length;
-  const geometry = { contentRows, pageRows: size.height };
-  return {
-    ...geometry,
-    offsetRow: normalizedPreviewScroll(state, geometry).offsetRow,
-    sourceOffsets: markdownLayoutSourceOffsets(rendered)
-  };
-}
-
-function editorScrollGeometry(
-  state: AppState,
-  columns: number,
-  rows: number,
-  layout: WorkspaceLayout
-): EditorMetrics {
-  const size = paneViewportSize(state, columns, rows, layout, 0);
-  const sourceLines = state.document.text.split('\n');
-  const lineNumberWidth = Math.max(3, String(sourceLines.length).length);
-  const contentWidth = Math.max(1, size.width - lineNumberWidth - 4);
-  const sourceOffsets: number[] = [];
-  let lineStart = 0;
-  for (const line of sourceLines) {
-    const cells = measureTextCells(sanitizeTerminalText(line).text).cells;
-    const visualRows = Math.max(1, Math.ceil(cells / contentWidth));
-    for (let row = 0; row < visualRows; row += 1) sourceOffsets.push(lineStart);
-    lineStart += line.length + 1;
+  if (buffer.preview.kind === 'failed') {
+    return surface(text({ id: `preview-failed-${buffer.id}`, content: `Preview failed: ${buffer.preview.message}`, textRole: 'body' }), {
+      id: `preview-failed-surface-${buffer.id}`,
+      title: 'Preview', border: { kind: 'rounded' }, padding: 1
+    });
   }
-  return {
-    contentRows: sourceOffsets.length,
-    pageRows: size.height,
-    sourceOffsets: Object.freeze(sourceOffsets)
-  };
-}
-
-function makePreview(
-  document: MarkdownPreview,
-  metrics: PreviewMetrics,
-  sync: SplitScrollGeometry | undefined,
-  fullPreview: boolean
-) {
-  return viewport(
-    markdownDocument({
-      id: VELLUM_IDS.preview,
-      document,
-      maxContentWidth: fullPreview ? 88 : 82,
-      minHorizontalPadding: fullPreview ? 3 : 2,
-      pageRows: metrics.pageRows,
-      contentRows: metrics.contentRows,
-      meta: { focus: { order: 2 } },
-      onAction: (action): AppMessage => ({
-        kind: 'movePreview',
-        command: action.command,
-        geometry: { pageRows: action.pageRows, contentRows: action.contentRows },
-        ...(sync === undefined ? {} : { sync })
-      })
-    }),
-    {
-      id: 'vellum-preview-viewport',
-      offset: {
-        row: metrics.offsetRow,
-        column: 0
-      },
-      scrollbar: { visible: 'auto' },
-      scrollPolicy: { wheel: { rows: 6, columns: 8 } },
-      meta: {
-        accessibility: {
-          label: 'Rendered Markdown preview',
-          description: 'Use arrows, Page Up, Page Down, Home, and End to navigate.'
-        }
-      },
-      onScroll: (event: ScrollEvent): AppMessage => ({
-        kind: 'scrollPreview',
-        event,
-        ...(sync === undefined ? {} : { sync })
-      })
-    }
-  );
-}
-
-function paneTitle(label: string, active: boolean): string {
-  return active ? `[ ${label} · ACTIVE ]` : label;
-}
-
-function makeEditorPane(state: AppState, sync: SplitScrollGeometry | undefined) {
-  const active = state.activePane === 'editor';
-  return surface(makeEditor(state, sync), {
-    id: 'vellum-source-surface',
-    title: paneTitle('SOURCE', active),
-    appearance: active ? 'raised' : 'neutral',
-    border: { kind: active ? 'heavy' : 'rounded' },
-    padding: { top: 0, right: 1, bottom: 0, left: 1 }
+  const layout = application.previewLayout(buffer.id, width, application.markdownTheme());
+  if (layout === undefined) return text({ id: `preview-empty-${buffer.id}`, content: '', textRole: 'body' });
+  const editorMap = editorWidth === undefined
+    ? undefined
+    : createTextAreaRowOffsetMap({
+      document: buffer.editor.document,
+      terminalWidth: editorWidth,
+      terminalRows: rows,
+      decorations: state.editorMode === 'hybrid'
+        ? hybridTextDecorations(buffer, application.markdownTheme())
+        : Object.freeze([]),
+      lineNumbers: { minWidth: 3 },
+      wrap: { mode: 'soft' },
+      scrollbar: { visible: 'auto' }
+    });
+  return viewport(previewContent(application, buffer, layout), {
+    id: `${VELLUM_IDS.preview}-${buffer.id}`,
+    offset: { row: buffer.previewScroll.offsetRow, column: buffer.previewScroll.offsetColumn },
+    scrollbar: { visible: 'auto' },
+    scrollPolicy: { wheel: { rows: 5, columns: 8 } },
+    meta: { accessibility: { label: `${buffer.label} preview` } },
+    onScroll: (event: ScrollEvent): AppMessage => ({
+      kind: 'previewScroll',
+      bufferId: buffer.id,
+      event,
+      ...(editorMap === undefined ? {} : { editorMap, previewMap: layout.rowOffsetMap })
+    })
   });
 }
 
-function makePreviewPane(
-  state: AppState,
-  document: MarkdownPreview,
-  metrics: PreviewMetrics,
-  sync: SplitScrollGeometry | undefined,
-  fullPreview: boolean
-) {
-  const active = state.activePane === 'preview';
-  return surface(makePreview(document, metrics, sync, fullPreview), {
-    id: 'vellum-preview-surface',
-    title: paneTitle('PREVIEW', active),
-    appearance: active ? 'raised' : 'neutral',
-    border: { kind: active ? 'heavy' : 'rounded' },
-    padding: { top: 0, right: 1, bottom: 0, left: 1 }
+function previewContent(application: VellumApplication, buffer: BufferState, layout: MarkdownPreviewLayout) {
+  const segments: InlineContent = layout.lines.flatMap((line, index) => [
+    ...line.inlineSpans.map((span) => ({
+      kind: 'text' as const,
+      text: span.text,
+      ...(span.style === undefined ? {} : { style: span.style }),
+      ...(span.link === undefined ? {} : { link: span.link })
+    })),
+    ...(index === layout.lines.length - 1 ? [] : [{ kind: 'text' as const, text: '\n' }])
+  ]);
+  const sourceContent = richText({
+    id: `preview-content-${buffer.id}`,
+    segments,
+    wrap: false,
+    meta: { accessibleName: `${buffer.label} rendered preview`, focus: { order: 4 } },
+    onActivate: (event): AppMessage => ({
+      kind: 'previewActivate', bufferId: buffer.id, row: event.row, column: event.column
+    })
   });
-}
-
-function makeWorkspace(
-  state: AppState,
-  document: MarkdownPreview,
-  metrics: PreviewMetrics | undefined,
-  editorGeometry: EditorMetrics | undefined,
-  layout: WorkspaceLayout
-) {
-  const sync = state.mode === 'split'
-    && layout !== 'single'
-    && metrics !== undefined
-    && editorGeometry !== undefined
-    ? {
-        editor: editorGeometry,
-        preview: metrics,
-        editorSourceOffsets: editorGeometry.sourceOffsets,
-        previewSourceOffsets: metrics.sourceOffsets
-      }
-    : undefined;
-  const editor = makeEditorPane(state, sync);
-
-  if (state.mode === 'edit') return editor;
-  if (layout === 'single' && state.mode === 'split' && state.activePane === 'editor') return editor;
-  if (metrics === undefined) return editor;
-  const preview = makePreviewPane(state, document, metrics, sync, state.mode === 'preview');
-  if (state.mode === 'preview' || layout === 'single') return preview;
-
-  const presentation = splitPanePresentation(state.splitPane);
-  return splitPane([editor, preview], {
-    id: VELLUM_IDS.split,
-    direction: layout,
-    ...presentation,
-    resizeStep: 0.04,
-    gap: 1,
-    onAction: (action: SplitPaneAction): AppMessage => ({ kind: 'resizeSplit', action }),
-    meta: {
-      accessibility: {
-        label: layout === 'horizontal' ? 'Source and preview split horizontally' : 'Source and preview stacked vertically'
-      }
-    }
+  if (buffer.preview.kind !== 'ready') return sourceContent;
+  const images = [...application.previewImages(buffer.id)].flatMap(([nodeId, result]) => {
+    if (result.kind !== 'ready') return [];
+    const node = buffer.preview.kind === 'ready' ? buffer.preview.treeIndex.node(nodeId) : undefined;
+    if (node?.kind !== 'image' && !(node?.kind === 'codeBlock' && node.language?.toLocaleLowerCase() === 'mermaid')) return [];
+    const label = node.kind === 'image'
+      ? node.title === null ? inlinePlainText(node.children) : `${inlinePlainText(node.children)} — ${node.title}`
+      : 'Mermaid diagram';
+    return [localImageComponent(result.image, label, layout.width, 12)];
   });
+  return images.length === 0 ? sourceContent : column([sourceContent, ...images], { gap: 1 });
 }
 
-function makeStatus(
-  state: AppState,
-  document: MarkdownPreview,
-  columns: number,
-  metrics: PreviewMetrics | undefined
-) {
-  const cursor = cursorLineColumn(state);
-  const modified = state.document.text !== state.document.savedText;
-  const fileState = state.document.path === undefined ? 'UNSAVED' : modified ? 'MODIFIED' : 'SAVED';
-
-  const leading: StatusBarItem[] = [
-    {
-      id: 'vellum-file-state',
-      kind: 'status',
-      text: `${state.document.label} · ${fileState}`,
-      status: fileState === 'SAVED' ? 'success' : 'warning'
-    }
-  ];
-
-  const previewActive = metrics !== undefined
-    && (state.mode === 'preview' || (state.mode === 'split' && state.activePane === 'preview'));
-  const center: StatusBarItem[] = [
-    previewActive
-      ? {
-          id: 'vellum-preview-position',
-          kind: 'text',
-          text: `Rows ${String(metrics.offsetRow + 1)}-${String(Math.min(metrics.contentRows, metrics.offsetRow + metrics.pageRows))}/${String(metrics.contentRows)}`
-        }
-      : {
-          id: 'vellum-cursor',
-          kind: 'text',
-          text: `Ln ${String(cursor.line)}, Col ${String(cursor.column)}`
-        },
-    ...(columns >= 72
-      ? [{
-          id: 'vellum-words',
-          kind: 'text' as const,
-          text: document.kind === 'ready'
-            ? `${String(document.wordCount)} words`
-            : 'Preview unavailable'
-        }]
-      : [])
-  ];
-
-  const notice = state.notice;
-  const trailing: StatusBarItem[] = notice === undefined
-    ? [{
-        id: 'vellum-shortcuts',
-        kind: 'text',
-        text: previewActive && columns < 100
-          ? columns >= 72 ? 'Ctrl+P Mode  F1 Help' : 'Ctrl+P  F1'
-          : columns >= 100
-            ? state.mode === 'split'
-              ? 'Ctrl+S Save  Ctrl+P Mode  Tab Pane  F1 Help'
-              : 'Ctrl+S Save  Ctrl+P Mode  F1 Help'
-            : columns >= 72
-              ? 'Ctrl+S Save  Ctrl+P Mode  F1 Help'
-              : 'Ctrl+S  Ctrl+P  F1'
-      }]
-    : [{
-        id: 'vellum-notice',
-        kind: 'status',
-        text: notice.text,
-        status: notice.status
-      }];
-
-  return statusBar({
-    id: 'vellum-status',
-    leading,
-    center,
-    trailing
-  });
-}
-
-function fileDialogTitle(operation: FileDialogOperation): string {
-  return operation === 'open' ? 'Open Markdown file' : 'Save Markdown file as';
-}
-
-function fileDialogDescription(operation: FileDialogOperation): string {
-  return operation === 'open'
-    ? 'Enter the path of a Markdown file to open.'
-    : 'Choose the destination path for this Markdown document.';
-}
-
-function makeFileDialog(state: AppState, columns: number, rows: number) {
-  if (state.dialog?.kind !== 'file') return undefined;
-  const operation = state.dialog.operation;
-  const title = fileDialogTitle(operation);
-  const compact = rows < 12;
-  const width = Math.max(1, Math.min(72, columns - 2));
-
-  const input = commandInput({
-    id: VELLUM_IDS.fileInput,
-    presentation: commandInputPresentation(state.dialog.command),
-    prompt: operation === 'open' ? 'Open › ' : 'Save › ',
-    placeholder: operation === 'open' ? './README.md' : './notes.md',
-    display: 'expanded',
-    ...(state.dialog.error === undefined
-      ? {}
-      : { validation: { message: state.dialog.error, level: 'error' as const } }),
-    footer: 'Enter confirms · Esc cancels',
-    meta: {
-      accessibleName: operation === 'open' ? 'Markdown file to open' : 'Markdown file destination',
-      focus: { order: 1 }
+function fileTree(state: AppState) {
+  const view = terminalFileTreeView(state.project.fileTree);
+  return tree({
+    id: VELLUM_IDS.fileTree,
+    view,
+    presentation: {
+      ...(state.project.fileTree.activeId === undefined ? {} : { activeId: state.project.fileTree.activeId }),
+      selection: state.project.fileTree.activeId === undefined
+        ? { mode: 'single' }
+        : { mode: 'single', selectedId: state.project.fileTree.activeId },
+      expandedIds: state.project.fileTree.expandedIds,
+      scroll: state.project.fileTree.scroll
     },
-    onTransition: (action: CommandInputTransition): AppMessage => ({ kind: 'editFileDialog', action }),
-    onSubmit: ({ value }): AppMessage => ({ kind: 'submitFileDialog', value })
+    emptyText: 'Project directory is empty',
+    meta: { accessibleName: 'File tree', focus: { order: 1 } },
+    onTransition: (transition: TreeTransition): AppMessage => ({ kind: 'fileTree', transition }),
+    onActivate: (event: TreeActivateEvent): AppMessage => ({ kind: 'activateFileTree', nodeId: event.id })
   });
+}
 
-  return dialog({
-    id: 'vellum-file-dialog',
-    title,
-    accessibleName: title,
-    modal: true,
-    width,
-    border: { kind: 'rounded' },
-    padding: compact ? 0 : 1,
-    gap: compact ? 0 : 1,
-    focusPolicy: {
-      initialFocus: { kind: 'element', elementId: VELLUM_IDS.fileInput },
-      returnFocus: 'restore'
-    },
-    dismissal: {
-      dismissOnEscape: true,
-      dismissOnOutsidePress: false
-    },
-    onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
-    slots: {
-      content: column([
-        ...(compact
-          ? []
-          : [text({ id: 'vellum-file-description', content: fileDialogDescription(operation), textRole: 'body' })]),
-        input
-      ], { gap: compact ? 0 : 1 }),
-      actions: row([
-        button({
-          id: VELLUM_IDS.dialogCancel,
-          label: 'Cancel',
-          tone: 'secondary',
-          onAction: (): AppMessage => ({ kind: 'dismissDialog' })
-        }),
-        button({
-          id: VELLUM_IDS.filePrimary,
-          label: operation === 'open' ? 'Open' : 'Save As',
-          tone: 'primary',
-          onAction: (): AppMessage => ({ kind: 'submitFileDialog' })
+function activeDialog(state: AppState, columns: number) {
+  const active = state.dialogState;
+  if (active?.kind === 'commandPalette' || active?.kind === 'quickOpen') {
+    const title = active.kind === 'commandPalette' ? 'Command Palette' : 'Quick Open';
+    return dialog({
+      id: `vellum-${active.kind}-dialog`,
+      title,
+      accessibleName: title,
+      modal: true,
+      width: Math.max(1, Math.min(76, columns - 2)),
+      border: { kind: 'rounded' },
+      padding: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.selection }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: commandInput({
+          id: VELLUM_IDS.selection,
+          presentation: commandInputPresentation(active.command),
+          prompt: active.kind === 'commandPalette' ? 'Command › ' : 'File › ',
+          placeholder: active.kind === 'commandPalette' ? 'Search commands' : 'Search the file tree',
+          display: 'expanded',
+          maxVisibleSuggestions: 12,
+          ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
+          footer: '↑/↓ selects · Enter opens · Esc cancels',
+          meta: { accessibleName: title, focus: { order: 1 } },
+          onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'selection', transition }),
+          onSubmit: ({ value }): AppMessage => ({ kind: 'submitSelection', value })
         })
-      ], {
-        gap: 1,
-        justify: 'end'
-      })
-    }
-  });
-}
-
-function makeConfirmDialog(state: AppState, columns: number, rows: number) {
-  if (state.dialog?.kind !== 'confirm') return undefined;
-  const opening = state.dialog.operation === 'open';
-  const title = 'Unsaved changes';
-  const compact = rows < 12;
-  const width = Math.max(1, Math.min(64, columns - 2));
-  const message = opening
-    ? 'Opening another file will discard the changes in the current document.'
-    : 'Quit Vellum and discard the changes in the current document?';
-
-  return dialog({
-    id: 'vellum-confirm-dialog',
-    title,
-    accessibleName: title,
-    modal: true,
-    width,
-    border: { kind: 'rounded' },
-    padding: compact ? 0 : 1,
-    gap: compact ? 0 : 1,
-    focusPolicy: {
-      initialFocus: { kind: 'element', elementId: VELLUM_IDS.confirmCancel },
-      returnFocus: 'restore'
-    },
-    dismissal: {
-      dismissOnEscape: true,
-      dismissOnOutsidePress: false
-    },
-    onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
-    slots: {
-      content: column([
-        text({ id: 'vellum-confirm-message', content: message, textRole: 'body' }),
-        ...(compact
-          ? []
-          : [text({
-              id: 'vellum-confirm-hint',
-              content: 'Save first to keep your work.',
-              textRole: 'caption',
-              styles: { root: muted }
-            })])
-      ], { gap: compact ? 0 : 1 }),
-      actions: row([
-        button({
-          id: VELLUM_IDS.confirmCancel,
-          label: 'Keep Editing',
-          tone: 'secondary',
-          onAction: (): AppMessage => ({ kind: 'dismissDialog' })
-        }),
-        button({
-          id: VELLUM_IDS.confirmDiscard,
-          label: opening ? 'Discard and Open' : 'Discard and Quit',
-          tone: 'destructive',
-          onAction: (): AppMessage => ({ kind: 'confirmDiscard' })
+      }
+    });
+  }
+  if (active?.kind === 'documentSearch') {
+    const count = active.matches.length;
+    const position = active.selectedIndex === undefined ? 0 : active.selectedIndex + 1;
+    return dialog({
+      id: 'vellum-document-search-dialog', title: active.replacement === undefined ? 'Find in Source Document' : 'Replace in Source Document',
+      accessibleName: active.replacement === undefined ? 'Find in source document' : 'Replace in source document', modal: true,
+      width: Math.max(1, Math.min(78, columns - 2)), border: { kind: 'rounded' }, padding: 1, gap: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.searchQuery }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: column([
+          commandInput({
+            id: VELLUM_IDS.searchQuery, presentation: commandInputPresentation(active.query), prompt: 'Find › ', display: 'compact',
+            ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
+            meta: { accessibleName: 'Search query', focus: { order: 1 } },
+            onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'documentSearch', field: 'query', transition }),
+            onSubmit: (): AppMessage => ({ kind: 'navigateDocumentSearch', direction: 'next' })
+          }),
+          ...(active.replacement === undefined ? [] : [commandInput({
+            id: VELLUM_IDS.searchReplacement, presentation: commandInputPresentation(active.replacement), prompt: 'Replace › ', display: 'compact',
+            meta: { accessibleName: 'Replacement text', focus: { order: 2 } },
+            onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'documentSearch', field: 'replacement', transition }),
+            onSubmit: (): AppMessage => ({ kind: 'replaceDocumentSearch', scope: 'current' })
+          })]),
+          row([
+            searchOptionButton('regexp', 'Regex', active.regularExpression, 'regularExpression'),
+            searchOptionButton('case', 'Case', active.caseSensitive, 'caseSensitive'),
+            searchOptionButton('word', 'Whole word', active.wholeWord, 'wholeWord'),
+            searchOptionButton('selection', 'Selection', active.selectionOnly, 'selectionOnly')
+          ], { gap: 1 }),
+          text({ id: 'vellum-search-count', content: `${String(position)} of ${String(count)} matches`, textRole: 'metadata' })
+        ], { gap: 1 }),
+        actions: row([
+          button({ id: VELLUM_IDS.dialogCancel, label: 'Cancel', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'dismissDialog' }) }),
+          button({ id: 'vellum-search-previous', label: 'Previous', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'navigateDocumentSearch', direction: 'previous' }) }),
+          button({ id: 'vellum-search-next', label: 'Next', tone: 'primary', onAction: (): AppMessage => ({ kind: 'navigateDocumentSearch', direction: 'next' }) }),
+          ...(active.replacement === undefined ? [] : [
+            button({ id: 'vellum-replace-current', label: 'Replace', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'replaceDocumentSearch', scope: 'current' }) }),
+            button({ id: 'vellum-replace-all', label: 'Replace All', tone: 'primary', onAction: (): AppMessage => ({ kind: 'replaceDocumentSearch', scope: 'all' }) })
+          ])
+        ], { gap: 1, justify: 'end' })
+      }
+    });
+  }
+  if (active?.kind === 'outline') {
+    return dialog({
+      id: 'vellum-outline-dialog', title: 'Outline', accessibleName: 'Source document outline', modal: true,
+      width: Math.max(1, Math.min(78, columns - 2)), border: { kind: 'rounded' }, padding: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.selection }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: commandInput({
+          id: VELLUM_IDS.selection, presentation: commandInputPresentation(active.query), prompt: 'Heading › ',
+          placeholder: 'Filter headings', display: 'expanded', maxVisibleSuggestions: 14,
+          footer: `${String(active.entries.length)} headings · Enter navigates`,
+          meta: { accessibleName: 'Heading hierarchy', focus: { order: 1 } },
+          onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'outline', transition }),
+          onSubmit: ({ value }): AppMessage => ({ kind: 'submitOutline', value })
         })
-      ], { gap: 1, justify: 'end' })
-    }
-  });
+      }
+    });
+  }
+  if (active?.kind === 'goToLine') {
+    return dialog({
+      id: 'vellum-go-to-line-dialog', title: 'Go to Line', accessibleName: 'Go to source line', modal: true,
+      width: Math.max(1, Math.min(48, columns - 2)), border: { kind: 'rounded' }, padding: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.selection }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: commandInput({
+          id: VELLUM_IDS.selection, presentation: commandInputPresentation(active.command), prompt: 'Line › ', display: 'compact',
+          ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
+          meta: { accessibleName: 'One-based source line', focus: { order: 1 } },
+          onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'goToLine', transition }),
+          onSubmit: ({ value }): AppMessage => ({ kind: 'submitGoToLine', value })
+        })
+      }
+    });
+  }
+  if (active?.kind === 'exportProfile') {
+    const title = active.scope === 'activeBuffer' ? 'Export Active Buffer' : 'Export Project Directory';
+    return dialog({
+      id: 'vellum-export-profile-dialog', title, accessibleName: title, modal: true,
+      width: Math.max(1, Math.min(64, columns - 2)), border: { kind: 'rounded' }, padding: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.selection }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: commandInput({
+          id: VELLUM_IDS.selection, presentation: commandInputPresentation(active.command), prompt: 'Profile › ',
+          placeholder: 'HTML, PDF, DOCX, or EPUB', display: 'expanded', maxVisibleSuggestions: 8,
+          ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
+          footer: 'Enter starts the export · existing outputs are never replaced',
+          meta: { accessibleName: 'Export profile', focus: { order: 1 } },
+          onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'exportProfile', transition }),
+          onSubmit: ({ value }): AppMessage => ({ kind: 'submitExportProfile', value })
+        })
+      }
+    });
+  }
+  if (active?.kind === 'projectDirectorySearch') {
+    return dialog({
+      id: 'vellum-project-directory-search-dialog', title: 'Search Project Directory', accessibleName: 'Search project directory', modal: true,
+      width: Math.max(1, Math.min(90, columns - 2)), border: { kind: 'rounded' }, padding: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.searchQuery }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: commandInput({
+          id: VELLUM_IDS.searchQuery, presentation: commandInputPresentation(active.query), prompt: 'Project › ',
+          placeholder: 'Search indexed text files', display: 'expanded', maxVisibleSuggestions: 14,
+          ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
+          footer: active.searching ? 'Searching…' : `${String(active.results.length)} matches · Enter searches or opens the selected result`,
+          meta: { accessibleName: 'Project directory search query and results', focus: { order: 1 } },
+          onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'projectDirectorySearch', transition }),
+          onSubmit: ({ value }): AppMessage => ({ kind: 'submitProjectDirectorySearch', value })
+        })
+      }
+    });
+  }
+  if (active?.kind === 'filePath') {
+    const title = active.operation === 'openFile' ? 'Open file' : active.operation === 'openProjectDirectory' ? 'Open project directory' : 'Save as';
+    return dialog({
+      id: 'vellum-file-path-dialog',
+      title,
+      accessibleName: title,
+      modal: true,
+      width: Math.max(1, Math.min(72, columns - 2)),
+      border: { kind: 'rounded' },
+      padding: 1,
+      gap: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.filePath }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
+      slots: {
+        content: commandInput({
+          id: VELLUM_IDS.filePath,
+          presentation: commandInputPresentation(active.command),
+          prompt: 'Path › ',
+          display: 'expanded',
+          ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
+          footer: 'Enter confirms · Esc cancels',
+          meta: { accessibleName: title, focus: { order: 1 } },
+          onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'filePath', transition }),
+          onSubmit: ({ value }): AppMessage => ({ kind: 'submitFilePath', value })
+        }),
+        actions: row([
+          button({ id: VELLUM_IDS.dialogCancel, label: 'Cancel', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'dismissDialog' }) }),
+          button({ id: VELLUM_IDS.dialogPrimary, label: 'Confirm', tone: 'primary', onAction: (): AppMessage => ({ kind: 'submitFilePath' }) })
+        ], { gap: 1, justify: 'end' })
+      }
+    });
+  }
+  if (active?.kind === 'dirtyBuffer') {
+    const multiple = active.bufferIds.length > 1;
+    return dialog({
+      id: 'vellum-dirty-dialog', title: 'Unsaved buffers', accessibleName: 'Unsaved buffers', modal: true,
+      width: Math.max(1, Math.min(64, columns - 2)), border: { kind: 'rounded' }, padding: 1, gap: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.dialogCancel }, returnFocus: 'restore' },
+      dismissal: { dismissOnEscape: true, dismissOnOutsidePress: false },
+      onAction: (): AppMessage => ({ kind: 'resolveDirty', action: 'cancel' }),
+      slots: {
+        content: text({ id: 'vellum-dirty-message', content: multiple ? 'Save all unsaved buffers before closing?' : 'Save this buffer before closing?', textRole: 'body' }),
+        actions: row([
+          button({ id: VELLUM_IDS.dialogCancel, label: 'Cancel', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'resolveDirty', action: 'cancel' }) }),
+          button({ id: 'vellum-discard', label: multiple ? 'Discard All' : 'Discard', tone: 'destructive', onAction: (): AppMessage => ({ kind: 'resolveDirty', action: 'discard' }) }),
+          button({ id: VELLUM_IDS.dialogPrimary, label: multiple ? 'Save All' : 'Save', tone: 'primary', onAction: (): AppMessage => ({ kind: 'resolveDirty', action: 'save' }) })
+        ], { gap: 1, justify: 'end' })
+      }
+    });
+  }
+  if (active?.kind === 'externalConflict') {
+    const buffer = state.project.buffers[active.bufferId];
+    const deleted = buffer?.externalFileState.kind === 'deleted';
+    const comparison = active.comparison?.map((line) => `${line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' '} ${line.text}`).join('\n');
+    return dialog({
+      id: 'vellum-external-file-dialog',
+      title: deleted ? 'File deleted on disk' : 'External file conflict',
+      accessibleName: deleted ? 'File deleted on disk' : 'External file conflict',
+      modal: true,
+      width: Math.max(1, Math.min(88, columns - 2)),
+      border: { kind: 'rounded' }, padding: 1, gap: 1,
+      focusPolicy: { initialFocus: { kind: 'element', elementId: VELLUM_IDS.dialogCancel }, returnFocus: 'restore' },
+      slots: {
+        content: column([
+          text({
+            id: 'vellum-external-file-message',
+            content: deleted
+              ? 'The external file was deleted. Choose how to handle the source document in this buffer.'
+              : 'The external file changed while this buffer has unsaved edits. No data has been overwritten.',
+            textRole: 'body'
+          }),
+          ...(comparison === undefined ? [] : [viewport(text({ id: 'vellum-external-comparison', content: comparison, textRole: 'body' }), {
+            id: 'vellum-external-comparison-viewport', maxHeight: 12,
+            meta: { accessibility: { label: 'Line comparison between buffer and disk' } }
+          })])
+        ], { gap: 1 }),
+        actions: deleted
+          ? row([
+            button({ id: VELLUM_IDS.dialogCancel, label: 'Close Buffer', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'closeBuffer' }) }),
+            button({ id: 'vellum-deleted-save-as', label: 'Save As', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'saveAs' }) }),
+            button({ id: VELLUM_IDS.dialogPrimary, label: 'Recreate', tone: 'primary', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'recreate' }) })
+          ], { gap: 1, justify: 'end' })
+          : column([
+            row([
+              button({ id: 'vellum-conflict-compare', label: 'Compare', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'compare' }) }),
+              button({ id: 'vellum-conflict-reload', label: 'Reload Disk', tone: 'destructive', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'reloadDisk' }) }),
+              button({ id: 'vellum-conflict-keep', label: 'Keep Buffer', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'keepBuffer' }) })
+            ], { gap: 1, justify: 'end' }),
+            row([
+              button({ id: 'vellum-conflict-save-as', label: 'Save As', tone: 'secondary', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'saveAs' }) }),
+              button({ id: VELLUM_IDS.dialogPrimary, label: 'Overwrite Disk', tone: 'destructive', onAction: (): AppMessage => ({ kind: 'externalFile', action: 'overwriteDisk' }) })
+            ], { gap: 1, justify: 'end' })
+          ], { gap: 1 })
+      }
+    });
+  }
+  return undefined;
 }
 
-function makeHelpDialog(state: AppState, columns: number, rows: number) {
-  if (state.dialog?.kind !== 'help') return undefined;
-  const compact = rows < 18;
-  const width = Math.max(1, Math.min(68, columns - 2));
-  const shortcuts = (compact ? [
-    'Ctrl+O Open · Ctrl+S Save · F2 Save As',
-    'Ctrl+P Mode · Tab Pane · ↑/↓ Scroll',
-    'PgUp/PgDn Page · Home/End Edge · Ctrl+Q Quit'
-  ] : [
-    'Ctrl+O       Open file',
-    'Ctrl+S       Save',
-    'F2 / Ctrl+Shift+S Save As',
-    'Ctrl+P       Edit → Split → Preview',
-    'Tab          Switch panes in Split mode',
-    'Arrow keys   Scroll Preview',
-    'PgUp / PgDn  Scroll Preview by page',
-    'Home / End   Preview start / end',
-    'Alt+Arrows   Resize a visible split',
-    'Ctrl+Q       Quit',
-    'F1           Show this help'
-  ]).join('\n');
-
-  return dialog({
-    id: 'vellum-help-dialog',
-    title: 'Vellum keyboard shortcuts',
-    accessibleName: 'Vellum keyboard shortcuts',
-    modal: true,
-    width,
-    border: { kind: 'rounded' },
-    padding: compact ? 0 : 1,
-    focusPolicy: {
-      initialFocus: { kind: 'element', elementId: VELLUM_IDS.helpClose },
-      returnFocus: 'restore'
-    },
-    dismissal: {
-      dismissOnEscape: true,
-      dismissOnOutsidePress: true
-    },
-    onAction: (): AppMessage => ({ kind: 'dismissDialog' }),
-    slots: {
-      content: text({
-        id: 'vellum-help-content',
-        content: shortcuts,
-        textRole: 'body'
-      }),
-      actions: button({
-        id: VELLUM_IDS.helpClose,
-        label: 'Close',
-        tone: 'primary',
-        onAction: (): AppMessage => ({ kind: 'dismissDialog' })
-      })
-    }
+function searchOptionButton(
+  id: string,
+  label: string,
+  selected: boolean,
+  option: 'regularExpression' | 'caseSensitive' | 'wholeWord' | 'selectionOnly'
+) {
+  return button({
+    id: `vellum-search-option-${id}`,
+    label: `${selected ? '☑' : '☐'} ${label}`,
+    tone: selected ? 'primary' : 'secondary',
+    onAction: (): AppMessage => ({ kind: 'configureDocumentSearch', option })
   });
-}
-
-function makeDialog(state: AppState, columns: number, rows: number) {
-  return makeFileDialog(state, columns, rows)
-    ?? makeConfirmDialog(state, columns, rows)
-    ?? makeHelpDialog(state, columns, rows);
-}
-
-export function view(state: AppState, context: Pick<TuiContext, 'terminalSize'>) {
-  const columns = Math.max(1, context.terminalSize.columns);
-  const rows = Math.max(1, context.terminalSize.rows);
-  const document = state.preview;
-  const layout = workspaceLayout(state, columns, rows);
-  const previewVisible = state.mode === 'preview'
-    || (state.mode === 'split' && (layout !== 'single' || state.activePane === 'preview'));
-  const metrics = previewVisible
-    ? previewMetrics(state, document, columns, rows, layout)
-    : undefined;
-  const editorGeometry = state.mode === 'split' && layout !== 'single'
-    ? editorScrollGeometry(state, columns, rows, layout)
-    : undefined;
-  const root = grid({
-    id: 'vellum-root',
-    areas: `
-      header
-      body
-      status
-    `,
-    rows: [
-      { kind: 'fixed', cells: 1 },
-      { kind: 'fill' },
-      { kind: 'fixed', cells: 1 }
-    ],
-    columns: [{ kind: 'fill' }],
-    children: {
-      header: makeHeader(state, columns),
-      body: makeWorkspace(state, document, metrics, editorGeometry, layout),
-      status: makeStatus(state, document, columns, metrics)
-    }
-  });
-  const activeDialog = makeDialog(state, columns, rows);
-  return activeDialog === undefined
-    ? root
-    : overlay([root, activeDialog], { id: 'vellum-root-overlay' });
 }

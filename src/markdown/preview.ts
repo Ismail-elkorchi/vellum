@@ -1,180 +1,186 @@
+import type { TextChangeSet } from '@ismail-elkorchi/terminal-ui/text';
 import {
   MarkdownBudgetExceededError,
+  applyMarkdownTextEdits,
+  collectMarkdownNodes,
   countMarkdownDocumentWords,
   createMarkdownDocumentSession,
+  createMarkdownTreeIndex,
+  type MarkdownBlockNode,
   type MarkdownDocumentSession,
-  type MarkdownSessionSnapshot,
+  type MarkdownParseOptions,
   type MarkdownSessionUpdate,
+  type MarkdownSyntaxExtension,
   type MarkdownTextEdit
 } from 'markspan';
+import type {
+  DocumentMetricUpdate,
+  DocumentMetrics,
+  FailedMarkdownPreview,
+  MarkdownPreview,
+  ReadyMarkdownPreview
+} from '../app/types.js';
 
-export interface MarkdownPreviewIdentity {
-  readonly documentId: number;
-  readonly generation: number;
-}
-
-export interface ReadyMarkdownPreview {
-  readonly kind: 'ready';
-  readonly documentId: number;
-  readonly sourceRevision: number;
-  readonly identity: MarkdownPreviewIdentity;
-  readonly snapshot: MarkdownSessionSnapshot;
+interface BlockMetric {
   readonly wordCount: number;
-  readonly update: MarkdownSessionUpdate | null;
+  readonly headingCount: number;
+  readonly linkCount: number;
+  readonly taskCount: number;
 }
 
-export interface FailedMarkdownPreview {
-  readonly kind: 'failed';
-  readonly documentId: number;
-  readonly sourceRevision: number;
-  readonly identity: MarkdownPreviewIdentity;
-  readonly source: string;
-  readonly message: string;
+export interface BufferParser {
+  readonly identity: object;
+  source(): string;
+  preview(): MarkdownPreview;
+  applyChanges(changeSet: TextChangeSet, sourceRevision: number): MarkdownPreview;
+  replaceSource(source: string, sourceRevision: number): MarkdownPreview;
 }
 
-export type MarkdownPreview = ReadyMarkdownPreview | FailedMarkdownPreview;
-
-export interface MarkdownPreviewEngine {
-  open(documentId: number, sourceRevision: number, source: string): MarkdownPreview;
-  update(documentId: number, sourceRevision: number, source: string): MarkdownPreview;
+export function markspanEdits(changeSet: TextChangeSet): readonly MarkdownTextEdit[] {
+  return Object.freeze(changeSet.changes.map((change) => Object.freeze({
+    span: Object.freeze({ start: change.startOffset, end: change.endOffsetExclusive }),
+    text: change.insertedText
+  })));
 }
 
-interface ActiveSession {
-  readonly documentId: number;
-  readonly identity: MarkdownPreviewIdentity;
-  readonly session: MarkdownDocumentSession;
-}
-
-function changedRange(previous: string, next: string): MarkdownTextEdit | null {
-  if (previous === next) return null;
-
-  const sharedLimit = Math.min(previous.length, next.length);
-  let start = 0;
-  while (start < sharedLimit && previous.charCodeAt(start) === next.charCodeAt(start)) start += 1;
-
-  let previousEnd = previous.length;
-  let nextEnd = next.length;
-  while (
-    previousEnd > start
-    && nextEnd > start
-    && previous.charCodeAt(previousEnd - 1) === next.charCodeAt(nextEnd - 1)
-  ) {
-    previousEnd -= 1;
-    nextEnd -= 1;
-  }
-
-  return Object.freeze({
-    span: Object.freeze({ start, end: previousEnd }),
-    text: next.slice(start, nextEnd)
-  });
-}
-
-function readyPreview(
-  active: ActiveSession,
-  sourceRevision: number,
-  snapshot: MarkdownSessionSnapshot,
-  update: MarkdownSessionUpdate | null
-): ReadyMarkdownPreview {
-  return Object.freeze({
-    kind: 'ready',
-    documentId: active.documentId,
-    sourceRevision,
-    identity: active.identity,
-    snapshot,
-    wordCount: countMarkdownDocumentWords(snapshot.document.tree),
-    update
-  });
-}
-
-function failedPreview(
-  documentId: number,
-  sourceRevision: number,
-  identity: MarkdownPreviewIdentity,
+export function createBufferParser(
   source: string,
-  error: MarkdownBudgetExceededError
-): FailedMarkdownPreview {
-  return Object.freeze({
-    kind: 'failed',
-    documentId,
-    sourceRevision,
-    identity,
-    source,
-    message: error.message
+  sourceRevision: number,
+  parseOptions: MarkdownParseOptions = {}
+): BufferParser {
+  const options: MarkdownParseOptions = Object.freeze({
+    dialect: 'gfm',
+    extensions: Object.freeze<readonly MarkdownSyntaxExtension[]>(['frontMatter', 'callouts', 'math']),
+    ...parseOptions,
+    sourceRetention: 'text'
   });
-}
+  const identity = Object.freeze({});
+  const metrics = new Map<number, BlockMetric>();
+  let currentSource = source;
+  let currentRevision = sourceRevision;
+  let session: MarkdownDocumentSession | undefined;
+  let current: MarkdownPreview;
 
-export function createMarkdownPreviewEngine(): MarkdownPreviewEngine {
-  let generation = 0;
-  let active: ActiveSession | undefined;
-  let current: MarkdownPreview | undefined;
-
-  const open = (
-    documentId: number,
-    sourceRevision: number,
-    source: string
-  ): MarkdownPreview => {
-    generation += 1;
-    const identity = Object.freeze({ documentId, generation });
+  const open = (nextSource: string, revision: number): MarkdownPreview => {
+    currentSource = nextSource;
+    currentRevision = revision;
     try {
-      const session = createMarkdownDocumentSession(source, { dialect: 'gfm' });
-      active = Object.freeze({ documentId, identity, session });
-      current = readyPreview(active, sourceRevision, session.snapshot(), null);
-      return current;
+      session = createMarkdownDocumentSession(nextSource, options);
+      current = ready(identity, session.snapshot(), revision, metrics);
     } catch (error) {
-      active = undefined;
-      if (error instanceof MarkdownBudgetExceededError) {
-        current = failedPreview(documentId, sourceRevision, identity, source, error);
-        return current;
-      }
-      throw error;
+      if (!(error instanceof MarkdownBudgetExceededError)) throw error;
+      session = undefined;
+      current = failed(revision, error);
     }
+    return current;
   };
 
+  open(source, sourceRevision);
   return Object.freeze({
-    open,
-    update(documentId: number, sourceRevision: number, source: string): MarkdownPreview {
-      if (current !== undefined) {
-        if (
-          documentId < current.documentId
-          || (documentId === current.documentId && sourceRevision < current.sourceRevision)
-        ) return current;
-        if (
-          documentId === current.documentId
-          && sourceRevision === current.sourceRevision
-        ) {
-          if (markdownPreviewSource(current) !== source) {
-            throw new TypeError('A source revision cannot identify different Markdown text.');
-          }
-          return current;
-        }
+    identity,
+    source: () => currentSource,
+    preview: () => current,
+    applyChanges(changeSet: TextChangeSet, revision: number) {
+      if (revision <= currentRevision) throw new RangeError('A source revision must increase after a text change.');
+      const edits = markspanEdits(changeSet);
+      if (edits.length === 0) throw new TypeError('A parser update requires a non-empty text change set.');
+      if (session === undefined) {
+        const nextSource = applyMarkdownTextEdits(currentSource, edits).source;
+        return open(nextSource, revision);
       }
-
-      if (active === undefined || active.documentId !== documentId) {
-        return open(documentId, sourceRevision, source);
+      if (session.snapshot().source !== currentSource) {
+        throw new Error('The buffer parser source revision is inconsistent.');
       }
-
-      const previous = active.session.snapshot();
-      const edit = changedRange(previous.source, source);
-      if (edit === null) {
-        current = readyPreview(active, sourceRevision, previous, null);
-        return current;
-      }
-
       try {
-        const update = active.session.applyEdits([edit]);
-        current = readyPreview(active, sourceRevision, update.snapshot, update);
+        const update = session.applyEdits(edits);
+        currentSource = update.snapshot.source;
+        currentRevision = revision;
+        current = ready(identity, update.snapshot, revision, metrics, update);
         return current;
       } catch (error) {
-        if (error instanceof MarkdownBudgetExceededError) {
-          current = failedPreview(documentId, sourceRevision, active.identity, source, error);
-          return current;
-        }
-        throw error;
+        if (!(error instanceof MarkdownBudgetExceededError)) throw error;
+        currentSource = applyMarkdownTextEdits(currentSource, edits).source;
+        currentRevision = revision;
+        session = undefined;
+        current = failed(revision, error);
+        return current;
       }
+    },
+    replaceSource(nextSource: string, revision: number) {
+      if (revision < currentRevision) throw new RangeError('A source revision cannot move backward.');
+      return open(nextSource, revision);
     }
   });
 }
 
-export function markdownPreviewSource(preview: MarkdownPreview): string {
-  return preview.kind === 'ready' ? preview.snapshot.source : preview.source;
+function ready(
+  identity: object,
+  snapshot: ReturnType<MarkdownDocumentSession['snapshot']>,
+  sourceRevision: number,
+  cache: Map<number, BlockMetric>,
+  update?: MarkdownSessionUpdate
+): ReadyMarkdownPreview {
+  const calculated = documentMetrics(snapshot.document.tree.children, cache);
+  return Object.freeze({
+    kind: 'ready',
+    sourceRevision,
+    identity,
+    snapshot,
+    treeIndex: createMarkdownTreeIndex(snapshot.document.tree),
+    metrics: calculated.metrics,
+    metricUpdate: calculated.update,
+    ...(update === undefined ? {} : { update })
+  });
+}
+
+function failed(sourceRevision: number, error: MarkdownBudgetExceededError): FailedMarkdownPreview {
+  return Object.freeze({
+    kind: 'failed',
+    sourceRevision,
+    message: error.message,
+    diagnostics: Object.freeze([])
+  });
+}
+
+function documentMetrics(
+  blocks: readonly MarkdownBlockNode[],
+  cache: Map<number, BlockMetric>
+): { readonly metrics: DocumentMetrics; readonly update: DocumentMetricUpdate } {
+  const active = new Set<number>();
+  let wordCount = 0;
+  let headingCount = 0;
+  let linkCount = 0;
+  let taskCount = 0;
+  let reusedBlocks = 0;
+  let recomputedBlocks = 0;
+  for (const block of blocks) {
+    active.add(block.id);
+    let metric = cache.get(block.id);
+    if (metric === undefined) {
+      metric = Object.freeze({
+        wordCount: countMarkdownDocumentWords(block),
+        headingCount: collectMarkdownNodes(block, 'heading').length,
+        linkCount: collectMarkdownNodes(block, 'link').length,
+        taskCount: collectMarkdownNodes(block, 'listItem').filter((item) => item.task !== null).length
+      });
+      cache.set(block.id, metric);
+      recomputedBlocks += 1;
+    } else {
+      reusedBlocks += 1;
+    }
+    wordCount += metric.wordCount;
+    headingCount += metric.headingCount;
+    linkCount += metric.linkCount;
+    taskCount += metric.taskCount;
+  }
+  let removedBlocks = 0;
+  for (const id of cache.keys()) {
+    if (active.has(id)) continue;
+    cache.delete(id);
+    removedBlocks += 1;
+  }
+  return Object.freeze({
+    metrics: Object.freeze({ wordCount, headingCount, linkCount, taskCount }),
+    update: Object.freeze({ reusedBlocks, recomputedBlocks, removedBlocks })
+  });
 }

@@ -17,6 +17,7 @@
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
     "noEmitOnError": true,
+    "declaration": true,
     "isolatedModules": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
