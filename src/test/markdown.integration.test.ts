@@ -579,7 +579,7 @@ test('local link resolution decodes paths and resolves unique duplicate heading 
   const encoded = resolveMarkdownLink('../target%20file.md#section_name', sourcePath, tree);
   assert.deepEqual(encoded, {
     kind: 'source',
-    path: path.join('/project', 'target file.md')
+    path: path.resolve(path.dirname(sourcePath), '..', 'target file.md')
   });
   assert.throws(() => resolveMarkdownLink('target%ZZ.md', sourcePath), /invalid percent encoding/u);
 });
