@@ -1,4 +1,5 @@
 import { readdir, stat } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import path from 'node:path';
 import {
   createScrollState,
@@ -9,6 +10,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TreeNode, TreeView } from '@ismail-elkorchi/terminal-ui/components';
 import type { FileTreeNode, FileTreeState } from '../app/types.js';
+import { compareText, compareTextCaseInsensitive } from '../order.js';
 
 export const defaultFileTreeExclusions: readonly string[] = Object.freeze([
   '.git',
@@ -58,6 +60,12 @@ export function markDirectoryLoading(state: FileTreeState, directoryId: string):
   return replaceNode(state, Object.freeze({ ...node, loading: true }));
 }
 
+export function clearDirectoryLoading(state: FileTreeState, directoryId: string): FileTreeState {
+  const node = state.nodes[directoryId];
+  if (node?.kind !== 'directory' || !node.loading) return state;
+  return replaceNode(state, Object.freeze({ ...node, loading: false }));
+}
+
 export async function readDirectoryNodes(
   state: FileTreeState,
   directoryId: string,
@@ -77,8 +85,8 @@ export async function readDirectoryNodes(
     if (entry.isDirectory()) kind = 'directory';
     else if (entry.isFile()) kind = 'file';
     else if (entry.isSymbolicLink()) {
-      const target = await stat(entryPath);
-      if (target.isFile()) kind = 'file';
+      const target = await statIfPresent(entryPath);
+      if (target?.isFile() === true) kind = 'file';
     }
     if (kind === undefined) continue;
     nodes.push(Object.freeze({
@@ -94,7 +102,7 @@ export async function readDirectoryNodes(
   }
   nodes.sort((left, right) => (
     (left.kind === right.kind ? 0 : left.kind === 'directory' ? -1 : 1)
-    || left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: 'base' })
+    || compareTextCaseInsensitive(left.label, right.label)
   ));
   return Object.freeze(nodes);
 }
@@ -121,28 +129,17 @@ export function commitDirectoryNodes(
     loading: false,
     children: Object.freeze(children.map((child) => child.id))
   });
+  const expandedIds = state.expandedIds.filter((id) => nextNodes[id]?.kind === 'directory');
+  const activeId = state.activeId !== undefined && nextNodes[state.activeId] !== undefined
+    ? state.activeId
+    : directoryId;
   return Object.freeze({
     ...state,
     nodes: Object.freeze(nextNodes),
+    expandedIds: Object.freeze(expandedIds),
+    activeId,
     revision: state.revision + 1
   });
-}
-
-export function selectFileTreeNode(state: FileTreeState, nodeId: string): FileTreeState {
-  if (state.nodes[nodeId] === undefined || state.activeId === nodeId) return state;
-  return Object.freeze({ ...state, activeId: nodeId });
-}
-
-export function setDirectoryExpanded(
-  state: FileTreeState,
-  directoryId: string,
-  expanded: boolean
-): FileTreeState {
-  if (state.nodes[directoryId]?.kind !== 'directory') return state;
-  const values = new Set(state.expandedIds);
-  if (expanded) values.add(directoryId);
-  else values.delete(directoryId);
-  return Object.freeze({ ...state, expandedIds: Object.freeze([...values]) });
 }
 
 export function indexedFilePaths(state: FileTreeState): readonly string[] {
@@ -162,7 +159,7 @@ export async function indexProjectFiles(
     const directory = pending.pop();
     if (directory === undefined) break;
     const entries = (await readdir(directory, { withFileTypes: true }))
-      .toSorted((left, right) => left.name.localeCompare(right.name));
+      .toSorted((left, right) => compareText(left.name, right.name));
     for (const entry of entries) {
       signal.throwIfAborted();
       const entryPath = path.join(directory, entry.name);
@@ -172,12 +169,13 @@ export async function indexProjectFiles(
         pending.push(entryPath);
       } else if (entry.isFile()) {
         files.push(entryPath);
-      } else if (entry.isSymbolicLink() && (await stat(entryPath)).isFile()) {
-        files.push(entryPath);
+      } else if (entry.isSymbolicLink()) {
+        const target = await statIfPresent(entryPath);
+        if (target?.isFile() === true) files.push(entryPath);
       }
     }
   }
-  return Object.freeze(files.toSorted((left, right) => left.localeCompare(right)));
+  return Object.freeze(files.toSorted(compareText));
 }
 
 export function commitIndexedFiles(
@@ -274,4 +272,17 @@ export function fileTreePathExcluded(relativePath: string, name: string, pattern
       .replaceAll('\u0000', '.*');
     return new RegExp(`^(?:${expression})$`, 'u').test(relativePath.replaceAll('\\', '/'));
   });
+}
+
+async function statIfPresent(filePath: string): Promise<Stats | undefined> {
+  try {
+    return await stat(filePath);
+  } catch (error) {
+    if (error instanceof Error
+      && 'code' in error
+      && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
 }

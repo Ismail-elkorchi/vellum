@@ -30,6 +30,7 @@ export function markdownCommandTransition(
   options: MarkdownCommandOptions = {},
   source: string = buffer.preview.kind === 'ready' ? buffer.preview.snapshot.source : ''
 ): MarkdownEditorTransition {
+  const lineEnding = buffer.format.lineEnding === 'crlf' ? '\r\n' : '\n';
   if (commandId === 'edit.undo') return Object.freeze({ action: Object.freeze({ kind: 'undo' }) });
   if (commandId === 'edit.redo') return Object.freeze({ action: Object.freeze({ kind: 'redo' }) });
   const selection = textDocumentSelectionRange(
@@ -59,19 +60,19 @@ export function markdownCommandTransition(
     case 'markdown.demoteHeading':
       return changeHeading(source, path, 1);
     case 'markdown.insertCodeFence':
-      return insertCodeFence(source, selectionSpan, options.codeLanguage ?? '');
+      return insertCodeFence(source, selectionSpan, options.codeLanguage ?? '', lineEnding);
     case 'markdown.moveBlockUp':
       return moveBlock(source, tree?.children ?? [], buffer.editor.caret.position.offset, -1);
     case 'markdown.moveBlockDown':
       return moveBlock(source, tree?.children ?? [], buffer.editor.caret.position.offset, 1);
     case 'markdown.duplicateBlock':
-      return duplicateBlock(source, tree?.children ?? [], buffer.editor.caret.position.offset);
+      return duplicateBlock(source, tree?.children ?? [], buffer.editor.caret.position.offset, lineEnding);
     case 'markdown.formatTable':
     case 'markdown.addTableRow':
     case 'markdown.addTableColumn':
     case 'markdown.deleteTableRow':
     case 'markdown.deleteTableColumn':
-      return editTable(source, path, commandId);
+      return editTable(source, path, commandId, lineEnding);
     case 'markdown.nextTableCell':
       return moveTableCell(path, buffer.editor.caret.position.offset, 1);
     case 'markdown.previousTableCell':
@@ -90,7 +91,15 @@ export function automaticMarkdownTransition(
   const tree = buffer.preview.kind === 'ready' ? buffer.preview.snapshot.document.tree : undefined;
   const path = tree === undefined ? [] : markdownPathAt(tree, caret, { includeEnd: true });
   if (operation.kind === 'insert' && operation.text === '\n') {
-    return continueContainer(source, caret, path, buffer.format.lineEnding === 'crlf' ? '\r\n' : '\n');
+    const range = textDocumentSelectionRange(buffer.editor.document, buffer.editor.selection, buffer.editor.caret);
+    const lineEnding = buffer.format.lineEnding === 'crlf' ? '\r\n' : '\n';
+    if (range.startOffset !== range.endOffsetExclusive) {
+      return lineEnding === '\n'
+        ? undefined
+        : replacement(range.startOffset, range.endOffsetExclusive, lineEnding, range.startOffset + lineEnding.length);
+    }
+    return continueContainer(source, caret, path, lineEnding)
+      ?? (lineEnding === '\n' ? undefined : replacement(caret, caret, lineEnding, caret + lineEnding.length));
   }
   if (operation.kind === 'insert' && ['*', '**', '_', '__', '`', '```', '[', '(', ']', ')'].includes(operation.text)) {
     return insertPair(buffer, source, operation.text, path);
@@ -116,7 +125,8 @@ export function listIndentTransition(
     if (removed === 0) return Object.freeze({});
     return replacement(lineStart + whitespace.length - removed, lineStart + whitespace.length, '', caret - removed);
   }
-  const indentation = source.includes('\t') ? '\t' : '    ';
+  const existingIndentation = source.slice(lineStart, item.markerSpan.start);
+  const indentation = existingIndentation.includes('\t') ? '\t' : '    ';
   return replacement(lineStart, lineStart, indentation, caret + indentation.length);
 }
 
@@ -194,8 +204,7 @@ function changeHeading(source: string, path: readonly MarkdownNode[], delta: -1 
   return replacement(heading.span.start, heading.span.end, inserted);
 }
 
-function insertCodeFence(source: string, range: SourceSpan, language: string): MarkdownEditorTransition {
-  const lineEnding = source.includes('\r\n') ? '\r\n' : '\n';
+function insertCodeFence(source: string, range: SourceSpan, language: string, lineEnding: string): MarkdownEditorTransition {
   const selected = source.slice(range.start, range.end);
   const inserted = `\`\`\`${language}${lineEnding}${selected}${lineEnding}\`\`\``;
   return replacement(range.start, range.end, inserted, range.start + inserted.length);
@@ -225,16 +234,21 @@ function moveBlock(
 function duplicateBlock(
   source: string,
   blocks: readonly MarkdownBlockNode[],
-  caret: number
+  caret: number,
+  lineEnding: string
 ): MarkdownEditorTransition {
   const block = blocks.find((candidate) => candidate.span.start <= caret && caret <= candidate.span.end);
   if (block === undefined) return Object.freeze({});
-  const lineEnding = source.includes('\r\n') ? '\r\n' : '\n';
   const raw = source.slice(block.span.start, block.span.end);
   return replacement(block.span.end, block.span.end, lineEnding + lineEnding + raw, block.span.end + lineEnding.length * 2);
 }
 
-function editTable(source: string, path: readonly MarkdownNode[], commandId: CommandId): MarkdownEditorTransition {
+function editTable(
+  source: string,
+  path: readonly MarkdownNode[],
+  commandId: CommandId,
+  lineEnding: string
+): MarkdownEditorTransition {
   const table = path.findLast((node): node is MarkdownTableNode => node.kind === 'table');
   if (table === undefined) return Object.freeze({});
   const rows = [table.header, ...table.rows].map((row) => row.cells.map((cell) => (
@@ -264,7 +278,6 @@ function editTable(source: string, path: readonly MarkdownNode[], commandId: Com
     const marker = '-'.repeat(width);
     return align[column] === 'center' ? `:${marker.slice(2)}:` : align[column] === 'left' ? `:${marker.slice(1)}` : align[column] === 'right' ? `${marker.slice(1)}:` : marker;
   }).join(' | ')} |`;
-  const lineEnding = source.includes('\r\n') ? '\r\n' : '\n';
   const inserted = [renderRow(rows[0] ?? []), delimiter, ...rows.slice(1).map(renderRow)].join(lineEnding);
   return replacement(table.span.start, table.span.end, inserted);
 }
@@ -335,7 +348,12 @@ function insertPair(
   }
   if (opening === '```') {
     if (range.startOffset !== range.endOffsetExclusive) {
-      return insertCodeFence(source, { start: range.startOffset, end: range.endOffsetExclusive }, '');
+      return insertCodeFence(
+        source,
+        { start: range.startOffset, end: range.endOffsetExclusive },
+        '',
+        buffer.format.lineEnding === 'crlf' ? '\r\n' : '\n'
+      );
     }
     const lineStart = source.lastIndexOf('\n', Math.max(0, range.startOffset - 1)) + 1;
     if (source.slice(lineStart, range.startOffset).trim().length > 0) return undefined;

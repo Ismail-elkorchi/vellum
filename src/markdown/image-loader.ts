@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { open, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { inflateSync } from 'node:zlib';
+import { crc32, inflateSync } from 'node:zlib';
 import { rasterImage, type RasterImage } from '@ismail-elkorchi/terminal-ui';
 
 export interface MarkdownImageSettings {
   readonly remoteImages: boolean;
   readonly requestTimeoutMilliseconds: number;
-  readonly maximumResponseBytes: number;
+  readonly maximumEncodedBytes: number;
   readonly maximumWidth: number;
   readonly maximumHeight: number;
 }
@@ -32,7 +32,7 @@ export interface MarkdownImageLoader {
 const defaults: MarkdownImageSettings = Object.freeze({
   remoteImages: false,
   requestTimeoutMilliseconds: 5_000,
-  maximumResponseBytes: 10_000_000,
+  maximumEncodedBytes: 10_000_000,
   maximumWidth: 4_096,
   maximumHeight: 4_096
 });
@@ -40,7 +40,7 @@ const defaults: MarkdownImageSettings = Object.freeze({
 export function createMarkdownImageLoader(
   settings: Partial<MarkdownImageSettings> = {}
 ): MarkdownImageLoader {
-  const configuration = Object.freeze({ ...defaults, ...settings });
+  const configuration = resolveSettings(settings);
   const decoded = new Map<string, RasterImage>();
   const remote = new Map<string, RemoteCacheEntry>();
   return Object.freeze({
@@ -62,8 +62,7 @@ export function createMarkdownImageLoader(
           ? destination
           : path.resolve(path.dirname(sourceDocumentPath as string), destination);
         const resolved = await realpath(requested);
-        signal?.throwIfAborted();
-        const bytes = await readFile(resolved, signal === undefined ? {} : { signal });
+        const bytes = await readBoundedFile(resolved, configuration.maximumEncodedBytes, signal);
         return ready(bytes, resolved, mimeFromPath(resolved), configuration, decoded);
       } catch (error) {
         if (signal?.aborted === true) throw signal.reason;
@@ -99,6 +98,9 @@ function ready(
   settings: MarkdownImageSettings,
   cache: Map<string, RasterImage>
 ): MarkdownImageResult {
+  if (bytes.length > settings.maximumEncodedBytes) {
+    throw new Error('Encoded image exceeds the configured size limit.');
+  }
   const key = createHash('sha256').update(bytes).digest('hex');
   let image = cache.get(key);
   if (image === undefined) {
@@ -132,7 +134,7 @@ async function fetchRemote(
       throw new Error(`Unsupported remote image content type: ${contentType || 'missing'}.`);
     }
     const declared = Number(response.headers.get('content-length'));
-    if (Number.isFinite(declared) && declared > settings.maximumResponseBytes) {
+    if (Number.isFinite(declared) && declared > settings.maximumEncodedBytes) {
       throw new Error('Remote image exceeds the configured size limit.');
     }
     if (response.body === null) throw new Error('Remote image response has no body.');
@@ -143,7 +145,7 @@ async function fetchRemote(
       const chunk = await reader.read();
       if (chunk.done) break;
       length += chunk.value.length;
-      if (length > settings.maximumResponseBytes) {
+      if (length > settings.maximumEncodedBytes) {
         await reader.cancel();
         throw new Error('Remote image exceeds the configured size limit.');
       }
@@ -178,14 +180,15 @@ function decodeImage(
   contentType: string,
   settings: MarkdownImageSettings
 ): { readonly width: number; readonly height: number; readonly format: 'rgba8'; readonly data: Uint8Array } {
-  const decoded = contentType === 'image/x-portable-pixmap' ? decodePpm(bytes) : decodePng(bytes);
-  if (decoded.width > settings.maximumWidth || decoded.height > settings.maximumHeight) {
-    throw new Error('Decoded image dimensions exceed the configured limits.');
-  }
-  return decoded;
+  return contentType === 'image/x-portable-pixmap'
+    ? decodePpm(bytes, settings)
+    : decodePng(bytes, settings);
 }
 
-function decodePpm(bytes: Uint8Array): { readonly width: number; readonly height: number; readonly format: 'rgba8'; readonly data: Uint8Array } {
+function decodePpm(
+  bytes: Uint8Array,
+  settings: MarkdownImageSettings
+): { readonly width: number; readonly height: number; readonly format: 'rgba8'; readonly data: Uint8Array } {
   let offset = 0;
   const token = (): string => {
     while (offset < bytes.length) {
@@ -203,6 +206,7 @@ function decodePpm(bytes: Uint8Array): { readonly width: number; readonly height
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || token() !== '255') {
     throw new Error('Invalid PPM header.');
   }
+  assertImageDimensions(width, height, settings);
   if ((bytes[offset] ?? 0) > 32 || offset >= bytes.length) throw new Error('Invalid PPM header separator.');
   offset += 1;
   const rgb = bytes.subarray(offset);
@@ -217,32 +221,56 @@ function decodePpm(bytes: Uint8Array): { readonly width: number; readonly height
   return Object.freeze({ width, height, format: 'rgba8', data: rgba });
 }
 
-function decodePng(bytes: Uint8Array): { readonly width: number; readonly height: number; readonly format: 'rgba8'; readonly data: Uint8Array } {
+function decodePng(
+  bytes: Uint8Array,
+  settings: MarkdownImageSettings
+): { readonly width: number; readonly height: number; readonly format: 'rgba8'; readonly data: Uint8Array } {
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (!signature.every((value, index) => bytes[index] === value)) throw new Error('Unsupported image format.');
   let offset = 8;
   let width = 0;
   let height = 0;
   let colorType = -1;
+  let headerSeen = false;
+  let endSeen = false;
   const compressed: Uint8Array[] = [];
   while (offset + 12 <= bytes.length) {
     const length = readUint32(bytes, offset);
+    if (length > bytes.length - offset - 12) throw new Error('Invalid PNG chunk length.');
     const kind = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
     const data = bytes.subarray(offset + 8, offset + 8 + length);
+    const expectedChecksum = readUint32(bytes, offset + 8 + length);
+    const actualChecksum = crc32(bytes.subarray(offset + 4, offset + 8 + length));
+    if (actualChecksum !== expectedChecksum) throw new Error(`Invalid PNG ${kind} checksum.`);
     if (kind === 'IHDR') {
+      if (headerSeen || length !== 13 || offset !== 8) throw new Error('Invalid PNG header chunk.');
+      headerSeen = true;
       width = readUint32(data, 0);
       height = readUint32(data, 4);
       if (data[8] !== 8 || data[12] !== 0) throw new Error('Only 8-bit non-interlaced PNG images are supported.');
       colorType = data[9] ?? -1;
-    } else if (kind === 'IDAT') compressed.push(data);
-    else if (kind === 'IEND') break;
+    } else if (kind === 'IDAT') {
+      if (!headerSeen) throw new Error('PNG image data precedes its header.');
+      compressed.push(data);
+    }
+    else if (kind === 'IEND') {
+      if (length !== 0) throw new Error('Invalid PNG end chunk.');
+      endSeen = true;
+      break;
+    }
     offset += length + 12;
   }
   const channels = colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 6 ? 4 : 0;
-  if (width < 1 || height < 1 || channels === 0) throw new Error('Unsupported PNG color type.');
-  const input = inflateSync(Buffer.concat(compressed.map((value) => Buffer.from(value))));
+  if (!headerSeen || !endSeen || compressed.length === 0 || width < 1 || height < 1 || channels === 0) {
+    throw new Error('Invalid or unsupported PNG image.');
+  }
+  assertImageDimensions(width, height, settings);
   const stride = width * channels;
-  if (input.length !== (stride + 1) * height) throw new Error('Invalid PNG scanline length.');
+  const expectedInflatedLength = (stride + 1) * height;
+  const input = inflateSync(Buffer.concat(compressed.map((value) => Buffer.from(value))), {
+    maxOutputLength: expectedInflatedLength
+  });
+  if (input.length !== expectedInflatedLength) throw new Error('Invalid PNG scanline length.');
   const raw = new Uint8Array(stride * height);
   for (let row = 0; row < height; row += 1) {
     const filter = input[row * (stride + 1)] ?? 0;
@@ -271,6 +299,53 @@ function decodePng(bytes: Uint8Array): { readonly width: number; readonly height
     }
   }
   return Object.freeze({ width, height, format: 'rgba8', data: rgba });
+}
+
+function assertImageDimensions(width: number, height: number, settings: MarkdownImageSettings): void {
+  if (width > settings.maximumWidth || height > settings.maximumHeight) {
+    throw new Error('Decoded image dimensions exceed the configured limits.');
+  }
+}
+
+function resolveSettings(settings: Partial<MarkdownImageSettings>): MarkdownImageSettings {
+  const value = Object.freeze({ ...defaults, ...settings });
+  if (typeof value.remoteImages !== 'boolean') throw new TypeError('remoteImages must be boolean.');
+  for (const key of ['requestTimeoutMilliseconds', 'maximumEncodedBytes', 'maximumWidth', 'maximumHeight'] as const) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 1) {
+      throw new RangeError(`${key} must be a positive integer.`);
+    }
+  }
+  return value;
+}
+
+async function readBoundedFile(
+  filePath: string,
+  maximumBytes: number,
+  signal?: AbortSignal
+): Promise<Uint8Array> {
+  signal?.throwIfAborted();
+  const handle = await open(filePath, 'r');
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error(`Image path is not a file: ${filePath}`);
+    if (metadata.size > maximumBytes) throw new Error('Encoded image exceeds the configured size limit.');
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      signal?.throwIfAborted();
+      const read = await handle.read(bytes, offset, Math.min(65_536, bytes.length - offset), offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    const extra = Buffer.alloc(1);
+    if ((await handle.read(extra, 0, 1, offset)).bytesRead > 0) {
+      throw new Error('Encoded image changed while it was being read or exceeds the configured size limit.');
+    }
+    signal?.throwIfAborted();
+    return new Uint8Array(bytes.subarray(0, offset));
+  } finally {
+    await handle.close();
+  }
 }
 
 function readUint32(bytes: Uint8Array, offset: number): number {

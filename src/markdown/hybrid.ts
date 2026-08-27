@@ -44,6 +44,11 @@ function hybridDecorationEntries(
   for (const offset of new Set([selectionStart, selectionEnd, caret])) {
     for (const node of markdownPathAt(tree, offset, { includeEnd: true })) activeIds.add(node.id);
   }
+  if (buffer.editor.selection !== undefined && selectionStart !== selectionEnd) {
+    for (const { node } of walkMarkdown(tree)) {
+      if (node.span.start < selectionEnd && node.span.end > selectionStart) activeIds.add(node.id);
+    }
+  }
   const decorations: TextAreaDecoration[] = [];
   for (const token of collectMarkdownSyntaxTokens(tree)) {
     const style = styleForToken(token.kind, theme);

@@ -4,6 +4,7 @@ export * from './commands/registry.js';
 export * from './cli-options.js';
 export * from './commands/keymap.js';
 export * from './commands/palette.js';
+export * from './config/paths.js';
 export * from './editing/markdown-editing.js';
 export * from './export/exporter.js';
 export * from './export/profiles.js';

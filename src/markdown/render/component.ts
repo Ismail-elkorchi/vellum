@@ -235,15 +235,30 @@ function previewActivation(
   span: MarkdownPreviewLayout['lines'][number]['inlineSpans'][number],
 ): MarkdownPreviewActivation {
   const sourceSpan = span.activation === undefined
-    ? layout.blocks.find((block) => (
-        block.sourceSpan.start <= sourceOffset && sourceOffset <= block.sourceSpan.end
-      ))?.sourceSpan ?? span.sourceSpan
+    ? blockSourceSpanAt(layout, sourceOffset) ?? span.sourceSpan
     : span.sourceSpan;
   return Object.freeze({
     row,
     sourceSpan,
     ...(span.activation === undefined ? {} : { activation: span.activation }),
   });
+}
+
+function blockSourceSpanAt(
+  layout: MarkdownPreviewLayout,
+  sourceOffset: number
+): MarkdownPreviewLayout['blocks'][number]['sourceSpan'] | undefined {
+  let low = 0;
+  let high = layout.blocks.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((layout.blocks[middle]?.sourceSpan.start ?? Number.POSITIVE_INFINITY) <= sourceOffset) low = middle + 1;
+    else high = middle;
+  }
+  const candidate = layout.blocks[Math.max(0, low - 1)];
+  return candidate !== undefined && sourceOffset <= candidate.sourceSpan.end
+    ? candidate.sourceSpan
+    : undefined;
 }
 
 function accessiblePreviewNode(

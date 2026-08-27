@@ -1,7 +1,13 @@
 import { performance } from 'node:perf_hooks';
+import type { Element } from '@ismail-elkorchi/terminal-ui';
 import { createTextAreaState, textAreaReducer } from '@ismail-elkorchi/terminal-ui/behavior';
-import { createTextAreaRowOffsetMap, richText } from '@ismail-elkorchi/terminal-ui/components';
-import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
+import { createTextAreaRowOffsetMap, text } from '@ismail-elkorchi/terminal-ui/components';
+import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
+import { column } from '@ismail-elkorchi/terminal-ui/layout';
+import { rasterImage } from '@ismail-elkorchi/terminal-ui/graphics';
+import { ignoreMessage, type IgnoredMessage } from '@ismail-elkorchi/terminal-ui/interaction';
+import { renderElementFrame } from '@ismail-elkorchi/terminal-ui/renderer';
+import { createTuiRuntime, defineTui } from '@ismail-elkorchi/terminal-ui/tui';
 import { defaultTextWidthProfile, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import {
   countMarkdownDocumentWords,
@@ -9,6 +15,8 @@ import {
 } from 'markspan';
 import { createBufferParser } from '../markdown/preview.js';
 import { createPreviewLayoutCache, layoutMarkdownPreview } from '../markdown/render/layout.js';
+import { markdownPreview } from '../markdown/render/component.js';
+import { localImageComponent } from '../markdown/render/image.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 
 interface BenchmarkFixture {
@@ -26,6 +34,7 @@ interface BenchmarkRow {
 const samples = 3;
 const fixtures = benchmarkFixtures();
 const rows: BenchmarkRow[] = [];
+const benchmarkImage = rasterImage({ width: 1, height: 1, format: 'rgb8', data: new Uint8Array([40, 90, 160]) });
 
 for (const fixture of fixtures) {
   const editor = createTextAreaState({ value: fixture.source });
@@ -64,11 +73,14 @@ for (const fixture of fixtures) {
     rows.push(measure(fixture.name, 'complete preview line assembly', () => (
       layout.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n')
     )));
-    const frameText = layout.lines.slice(0, 24).map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
-    rows.push(measure(fixture.name, 'terminal frame commit', () => renderElementSnapshot({
-      element: richText({ id: 'benchmark-preview', segments: [{ kind: 'text', text: frameText }] }),
-      terminalSize: { columns: 80, rows: 24 }
-    })));
+    const component = column([
+      markdownPreview({ id: 'benchmark-preview', label: 'Benchmark preview', layout, onAction: ignoreMessage }),
+      localImageComponent(benchmarkImage, 'Benchmark image', 4, 2)
+    ]);
+    rows.push(measure(fixture.name, 'preview component render', () => (
+      renderElementFrame(component, { columns: 80, rows: 24 })
+    )));
+    rows.push(await measureTerminalFrameCommit(fixture.name, component));
   }
   for (const position of ['beginning', 'middle', 'end'] as const) {
     const offset = position === 'beginning' ? 0 : position === 'middle' ? Math.floor(fixture.source.length / 2) : fixture.source.length;
@@ -123,8 +135,12 @@ const firstLayout = update.kind === 'ready'
   : undefined;
 process.stdout.write('\nDeterministic instrumentation:\n');
 process.stdout.write(JSON.stringify({
-  completeSourceScans: update.kind === 'ready' ? update.update?.instrumentation.completeSourceScans ?? 1 : 1,
+  parsedCodeUnits: update.kind === 'ready' ? update.update?.instrumentation.parsedCodeUnits ?? instrumentationSource.length : instrumentationSource.length,
+  sourceIndexCodeUnits: update.kind === 'ready' ? update.update?.instrumentation.sourceIndexCodeUnits ?? instrumentationSource.length : instrumentationSource.length,
   parsedNodes: update.kind === 'ready' ? update.update?.instrumentation.parsedNodes ?? 0 : 0,
+  reconciledNodes: update.kind === 'ready' ? update.update?.instrumentation.reconciledNodes ?? 0 : 0,
+  comparedCodeUnits: update.kind === 'ready' ? update.update?.instrumentation.comparedCodeUnits ?? 0 : 0,
+  sourceTraversalCodeUnits: update.kind === 'ready' ? update.update?.instrumentation.sourceTraversalCodeUnits ?? instrumentationSource.length : instrumentationSource.length,
   reusedSyntaxNodes: update.kind === 'ready' ? update.update?.instrumentation.reusedNodes ?? 0 : 0,
   fullParse: update.kind === 'ready' ? update.update?.instrumentation.fullParse ?? true : true,
   reusedBlockLayouts: firstLayout?.instrumentation.reusedBlockLayouts ?? 0,
@@ -167,6 +183,44 @@ function measurePrepared<T>(
   return Object.freeze({
     fixture,
     operation,
+    medianMilliseconds: percentile(durations, 0.5),
+    p95Milliseconds: percentile(durations, 0.95)
+  });
+}
+
+async function measureTerminalFrameCommit(
+  fixture: string,
+  component: Element<IgnoredMessage>
+): Promise<BenchmarkRow> {
+  const durations: number[] = [];
+  for (let index = -1; index < samples; index += 1) {
+    const host = createMemoryTerminalHost({
+      terminalSize: { columns: 80, rows: 24 },
+      capabilities: {
+        graphics: { kitty: 'supported', sixel: 'unsupported', cellPixels: { width: 8, height: 16 } }
+      }
+    });
+    const app = defineTui<
+      { readonly revision: number },
+      IgnoredMessage | { readonly kind: 'commit' }
+    >({
+      id: `vellum-benchmark-${fixture}`,
+      init: () => ({ state: Object.freeze({ revision: 0 }) }),
+      update: (state) => ({ state: Object.freeze({ revision: state.revision + 1 }) }),
+      view: (state) => column([component, text({ content: `Frame ${String(state.revision)}` })])
+    });
+    const runtime = createTuiRuntime({ app, host, graphics: 'kitty' });
+    await runtime.start();
+    const start = performance.now();
+    await runtime.dispatch({ kind: 'commit' });
+    const duration = performance.now() - start;
+    if (index >= 0) durations.push(duration);
+    await runtime.dispose();
+  }
+  durations.sort((left, right) => left - right);
+  return Object.freeze({
+    fixture,
+    operation: 'terminal frame commit',
     medianMilliseconds: percentile(durations, 0.5),
     p95Milliseconds: percentile(durations, 0.95)
   });

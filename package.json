@@ -12,6 +12,7 @@
   "files": [
     "dist/app",
     "dist/commands",
+    "dist/config",
     "dist/editing",
     "dist/export",
     "dist/files",
@@ -26,6 +27,8 @@
     "dist/cli.d.ts",
     "dist/main.js",
     "dist/main.d.ts",
+    "dist/order.js",
+    "dist/order.d.ts",
     "dist/tui.js",
     "dist/tui.d.ts",
     "dist/view.js",
@@ -44,12 +47,12 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#d4edd976c4edf8a5552aaafa3cc2a003dde04929",
-    "markspan": "git+https://github.com/Ismail-elkorchi/markspan.git#9a453ba000c69f19c6eb85bf0b8762e7263a44a1"
+    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#d83d01432056470d17f42793bb83f6d7c93e595d",
+    "markspan": "git+https://github.com/Ismail-elkorchi/markspan.git#c883b9a518cf96b967eadba31c3f2d08db1f5946"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "typescript": "^6.0.0"
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3"
   },
   "license": "MIT",
   "repository": {

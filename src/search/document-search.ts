@@ -83,16 +83,6 @@ export function replacementChangeSet(
   })));
 }
 
-export function nextDocumentMatch(
-  matches: readonly DocumentSearchMatch[],
-  sourceOffset: number,
-  direction: 'next' | 'previous'
-): DocumentSearchMatch | undefined {
-  if (matches.length === 0) return undefined;
-  if (direction === 'next') return matches.find((match) => match.start > sourceOffset) ?? matches[0];
-  return matches.toReversed().find((match) => match.end < sourceOffset) ?? matches.at(-1);
-}
-
 function escapeRegularExpression(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
@@ -100,7 +90,7 @@ function escapeRegularExpression(value: string): string {
 function wholeWord(source: string, start: number, end: number): boolean {
   const before = start === 0 ? '' : previousCodePoint(source, start);
   const after = end >= source.length ? '' : nextCodePoint(source, end);
-  return !/[\p{L}\p{N}_]/u.test(before) && !/[\p{L}\p{N}_]/u.test(after);
+  return !/[\p{L}\p{N}\p{M}_]/u.test(before) && !/[\p{L}\p{N}\p{M}_]/u.test(after);
 }
 
 function previousCodePoint(source: string, offset: number): string {

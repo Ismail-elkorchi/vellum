@@ -5,9 +5,9 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { BindableKeyName } from '@ismail-elkorchi/terminal-ui/input';
 import type { AppState, CommandId } from '../app/types.js';
-import { activeBuffer } from '../app/types.js';
-import { builtInExportProfiles } from '../export/profiles.js';
+import { activeBuffer, bufferIsDirty } from '../app/types.js';
 import { createFileTreeState } from '../project/file-tree.js';
+import { extractMarkdownOutline, markdownPathAt, type MarkdownNode } from 'markspan';
 
 export interface KeyBinding {
   readonly key: BindableKeyName;
@@ -44,7 +44,13 @@ export interface VellumCommand {
 const noBindings: readonly KeyBinding[] = Object.freeze([]);
 const enabled = (): boolean => true;
 const hasBuffer = (state: AppState): boolean => activeBuffer(state) !== undefined;
-const hasDirtyBuffer = (state: AppState): boolean => Object.values(state.project.buffers).some((buffer) => buffer.dirty);
+const hasDirtyActiveBuffer = (state: AppState): boolean => {
+  const buffer = activeBuffer(state);
+  return buffer !== undefined && bufferIsDirty(buffer);
+};
+const hasUndo = (state: AppState): boolean => (activeBuffer(state)?.editor.history.undo.length ?? 0) > 0;
+const hasRedo = (state: AppState): boolean => (activeBuffer(state)?.editor.history.redo.length ?? 0) > 0;
+const hasDirtyBuffer = (state: AppState): boolean => Object.values(state.project.buffers).some(bufferIsDirty);
 const effect = (state: AppState, value: VellumEffect): AppUpdate => Object.freeze({
   state,
   effects: Object.freeze([value])
@@ -73,17 +79,98 @@ const documentSearchDialog = (state: AppState, replace: boolean): AppUpdate => s
   })
 }));
 const exportDialog = (state: AppState, scope: 'activeBuffer' | 'projectDirectory'): AppUpdate => {
-  const suggestions = createCommandSuggestions(builtInExportProfiles.map((profile) => ({
-    id: profile.id,
-    label: profile.label,
-    description: profile.targetFormat,
-    completion: { range: { startOffset: 0, endOffsetExclusive: 0 }, text: profile.id }
-  })));
   return stateOnly(Object.freeze({
     ...state,
-    dialogState: Object.freeze({ kind: 'exportProfile', scope, command: createCommandInputState({ value: '', suggestions }) })
+    dialogState: Object.freeze({
+      kind: 'exportProfile',
+      scope,
+      command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
+    })
   }));
 };
+
+function syntaxPath(state: AppState): readonly MarkdownNode[] {
+  const buffer = activeBuffer(state);
+  return buffer?.preview.kind === 'ready'
+    ? markdownPathAt(buffer.preview.snapshot.document.tree, buffer.editor.caret.position.offset, { includeEnd: true })
+    : Object.freeze([]);
+}
+
+function hasSyntaxContext(state: AppState, kind: MarkdownNode['kind']): boolean {
+  return syntaxPath(state).some((node) => node.kind === kind);
+}
+
+function hasReadyBuffer(state: AppState): boolean {
+  return activeBuffer(state)?.preview.kind === 'ready';
+}
+
+function inlineMarkdownEnabled(state: AppState): boolean {
+  return hasReadyBuffer(state) && !syntaxPath(state).some((node) => (
+    node.kind === 'codeBlock' || node.kind === 'mathBlock' || node.kind === 'htmlBlock'
+  ));
+}
+
+function headingCommandEnabled(state: AppState, direction: 'promote' | 'demote'): boolean {
+  const heading = syntaxPath(state).findLast((node) => node.kind === 'heading');
+  return heading?.kind === 'heading' && (direction === 'promote' ? heading.depth > 1 : heading.depth < 6);
+}
+
+function moveBlockEnabled(state: AppState, direction: -1 | 1): boolean {
+  const buffer = activeBuffer(state);
+  if (buffer?.preview.kind !== 'ready') return false;
+  const caret = buffer.editor.caret.position.offset;
+  const blocks = buffer.preview.snapshot.document.tree.children;
+  const index = blocks.findIndex((block) => block.span.start <= caret && caret <= block.span.end);
+  return index >= 0 && index + direction >= 0 && index + direction < blocks.length;
+}
+
+function hasTopLevelBlock(state: AppState): boolean {
+  const buffer = activeBuffer(state);
+  if (buffer?.preview.kind !== 'ready') return false;
+  const caret = buffer.editor.caret.position.offset;
+  return buffer.preview.snapshot.document.tree.children.some((block) => (
+    block.span.start <= caret && caret <= block.span.end
+  ));
+}
+
+function tableCellMovementEnabled(state: AppState, direction: -1 | 1): boolean {
+  const path = syntaxPath(state);
+  const table = path.findLast((node) => node.kind === 'table');
+  const cell = path.findLast((node) => node.kind === 'tableCell');
+  if (table?.kind !== 'table' || cell?.kind !== 'tableCell') return false;
+  const cells = [table.header, ...table.rows].flatMap((row) => row.cells);
+  const index = cells.findIndex((candidate) => candidate.id === cell.id);
+  return cells[index + direction] !== undefined;
+}
+
+function tableRowDeletionEnabled(state: AppState): boolean {
+  const path = syntaxPath(state);
+  const table = path.findLast((node) => node.kind === 'table');
+  const row = path.findLast((node) => node.kind === 'tableRow');
+  return table?.kind === 'table' && row?.kind === 'tableRow'
+    && table.rows.some((candidate) => candidate.id === row.id);
+}
+
+function tableColumnDeletionEnabled(state: AppState): boolean {
+  const table = syntaxPath(state).findLast((node) => node.kind === 'table');
+  return table?.kind === 'table' && table.align.length > 1;
+}
+
+function hasHeadingDestination(state: AppState, direction: 'next' | 'previous'): boolean {
+  const buffer = activeBuffer(state);
+  if (buffer?.preview.kind !== 'ready') return false;
+  const caret = buffer.editor.caret.position.offset;
+  const headings = extractMarkdownOutline(buffer.preview.snapshot.document.tree).flatMap(flattenOutline);
+  return direction === 'next'
+    ? headings.some((heading) => heading.span.start > caret)
+    : headings.some((heading) => heading.span.start < caret);
+}
+
+function flattenOutline(
+  entry: ReturnType<typeof extractMarkdownOutline>[number]
+): readonly ReturnType<typeof extractMarkdownOutline>[number][] {
+  return Object.freeze([entry, ...entry.children.flatMap(flattenOutline)]);
+}
 
 function command(
   id: CommandId,
@@ -115,7 +202,7 @@ const definitions: readonly VellumCommand[] = Object.freeze([
   command('file.new', 'New File', 'File', [{ key: 'n', ctrl: true }], enabled, (state) => effect(state, { kind: 'newFile' })),
   command('file.open', 'Open File', 'File', [{ key: 'o', ctrl: true }], enabled, (state) => filePathDialog(state, 'openFile')),
   command('file.openDirectory', 'Open Project Directory', 'File', [{ key: 'o', ctrl: true, shift: true }], enabled, (state) => filePathDialog(state, 'openProjectDirectory')),
-  command('file.save', 'Save', 'File', [{ key: 's', ctrl: true }], hasBuffer, (state) => activeBuffer(state)?.path === undefined
+  command('file.save', 'Save', 'File', [{ key: 's', ctrl: true }], hasDirtyActiveBuffer, (state) => activeBuffer(state)?.path === undefined
     ? filePathDialog(state, 'saveAs')
     : effect(state, { kind: 'save' })),
   command('file.saveAs', 'Save As', 'File', [{ key: 's', ctrl: true, shift: true }], hasBuffer, (state) => filePathDialog(state, 'saveAs')),
@@ -133,22 +220,22 @@ const definitions: readonly VellumCommand[] = Object.freeze([
     ...state,
     dialogState: Object.freeze({ kind: 'projectDirectorySearch', query: searchInput(), searching: false, results: Object.freeze([]) })
   }))),
-  command('edit.undo', 'Undo', 'Edit', [{ key: 'z', ctrl: true }], hasBuffer, (state) => effect(state, { kind: 'textEdit', commandId: 'edit.undo' })),
-  command('edit.redo', 'Redo', 'Edit', [{ key: 'y', ctrl: true }], hasBuffer, (state) => effect(state, { kind: 'textEdit', commandId: 'edit.redo' })),
+  command('edit.undo', 'Undo', 'Edit', [{ key: 'z', ctrl: true }], hasUndo, (state) => effect(state, { kind: 'textEdit', commandId: 'edit.undo' })),
+  command('edit.redo', 'Redo', 'Edit', [{ key: 'y', ctrl: true }], hasRedo, (state) => effect(state, { kind: 'textEdit', commandId: 'edit.redo' })),
   command('edit.find', 'Find in Source Document', 'Edit', [{ key: 'f', ctrl: true }], hasBuffer, (state) => documentSearchDialog(state, false)),
   command('edit.replace', 'Replace in Source Document', 'Edit', [{ key: 'h', ctrl: true }], hasBuffer, (state) => documentSearchDialog(state, true)),
-  command('navigate.outline', 'Open Outline', 'Navigate', [{ key: 'o', ctrl: true, alt: true }], hasBuffer, (state) => stateOnly(Object.freeze({
+  command('navigate.outline', 'Open Outline', 'Navigate', [{ key: 'o', ctrl: true, alt: true }], hasReadyBuffer, (state) => stateOnly(Object.freeze({
     ...state,
     dialogState: Object.freeze({ kind: 'outline', query: searchInput(), entries: Object.freeze([]) })
   }))),
   command('navigate.back', 'Navigate Back', 'Navigate', [{ key: 'arrowLeft', alt: true }], (state) => state.commandState.navigation.back.length > 0, (state) => effect(state, { kind: 'navigate', commandId: 'navigate.back' })),
   command('navigate.forward', 'Navigate Forward', 'Navigate', [{ key: 'arrowRight', alt: true }], (state) => state.commandState.navigation.forward.length > 0, (state) => effect(state, { kind: 'navigate', commandId: 'navigate.forward' })),
-  command('navigate.goToLine', 'Go to Line', 'Navigate', [{ key: 'g', ctrl: true }], hasBuffer, (state) => stateOnly(Object.freeze({
+  command('navigate.goToLine', 'Go to Line', 'Navigate', [{ key: 'g', ctrl: true }], hasReadyBuffer, (state) => stateOnly(Object.freeze({
     ...state,
     dialogState: Object.freeze({ kind: 'goToLine', command: searchInput() })
   }))),
-  command('navigate.nextHeading', 'Next Heading', 'Navigate', [{ key: 'f6' }], hasBuffer, (state) => effect(state, { kind: 'navigate', commandId: 'navigate.nextHeading' })),
-  command('navigate.previousHeading', 'Previous Heading', 'Navigate', [{ key: 'f6', shift: true }], hasBuffer, (state) => effect(state, { kind: 'navigate', commandId: 'navigate.previousHeading' })),
+  command('navigate.nextHeading', 'Next Heading', 'Navigate', [{ key: 'f6' }], (state) => hasHeadingDestination(state, 'next'), (state) => effect(state, { kind: 'navigate', commandId: 'navigate.nextHeading' })),
+  command('navigate.previousHeading', 'Previous Heading', 'Navigate', [{ key: 'f6', shift: true }], (state) => hasHeadingDestination(state, 'previous'), (state) => effect(state, { kind: 'navigate', commandId: 'navigate.previousHeading' })),
   command('view.editorSource', 'Source Editor', 'View', noBindings, hasBuffer, (state) => stateOnly(Object.freeze({ ...state, editorMode: 'source', paneArrangement: 'editor' }))),
   command('view.editorHybrid', 'Hybrid Editor', 'View', noBindings, hasBuffer, (state) => stateOnly(Object.freeze({ ...state, editorMode: 'hybrid', paneArrangement: 'editor' }))),
   command('view.preview', 'Preview', 'View', [{ key: 'f7' }], hasBuffer, (state) => stateOnly(Object.freeze({ ...state, paneArrangement: 'preview' }))),
@@ -184,23 +271,72 @@ function markdownCommands(): readonly VellumCommand[] {
     title,
     'Markdown',
     bindings,
-    hasBuffer,
+    (state) => markdownCommandEnabled(state, id),
     (state) => effect(state, { kind: 'textEdit', commandId: id })
   )));
 }
 
-export const commandRegistry: ReadonlyMap<CommandId, VellumCommand> = new Map(
-  definitions.map((value) => [value.id, value])
-);
+function markdownCommandEnabled(state: AppState, id: CommandId): boolean {
+  switch (id) {
+    case 'markdown.toggleStrong':
+    case 'markdown.toggleEmphasis':
+    case 'markdown.toggleInlineCode':
+    case 'markdown.insertLink':
+      return inlineMarkdownEnabled(state);
+    case 'markdown.toggleTask':
+      return hasSyntaxContext(state, 'listItem');
+    case 'markdown.promoteHeading':
+      return headingCommandEnabled(state, 'promote');
+    case 'markdown.demoteHeading':
+      return headingCommandEnabled(state, 'demote');
+    case 'markdown.insertCodeFence':
+      return hasReadyBuffer(state) && !hasSyntaxContext(state, 'codeBlock');
+    case 'markdown.moveBlockUp':
+      return moveBlockEnabled(state, -1);
+    case 'markdown.moveBlockDown':
+      return moveBlockEnabled(state, 1);
+    case 'markdown.duplicateBlock':
+      return hasTopLevelBlock(state);
+    case 'markdown.formatTable':
+    case 'markdown.addTableRow':
+    case 'markdown.addTableColumn':
+      return hasSyntaxContext(state, 'tableCell');
+    case 'markdown.nextTableCell':
+      return tableCellMovementEnabled(state, 1);
+    case 'markdown.previousTableCell':
+      return tableCellMovementEnabled(state, -1);
+    case 'markdown.deleteTableRow':
+      return tableRowDeletionEnabled(state);
+    case 'markdown.deleteTableColumn':
+      return tableColumnDeletionEnabled(state);
+    default:
+      return false;
+  }
+}
+
+const commandsById = commandMap(definitions);
 
 export function allCommands(): readonly VellumCommand[] {
   return definitions;
 }
 
+export function commandById(id: string): VellumCommand | undefined {
+  return commandsById.get(id as CommandId);
+}
+
 export function executeCommand(state: AppState, id: CommandId): AppUpdate {
-  const value = commandRegistry.get(id);
+  const value = commandsById.get(id);
   if (value === undefined) throw new Error(`Unknown command identifier: ${id}`);
   return value.enabled(state) ? value.execute(state) : stateOnly(state);
+}
+
+function commandMap(values: readonly VellumCommand[]): ReadonlyMap<CommandId, VellumCommand> {
+  const result = new Map<CommandId, VellumCommand>();
+  for (const value of values) {
+    if (result.has(value.id)) throw new Error(`Duplicate command identifier: ${value.id}`);
+    result.set(value.id, value);
+  }
+  return result;
 }
 
 export function initialAppState(): AppState {
@@ -216,7 +352,6 @@ export function initialAppState(): AppState {
     editorMode: 'source',
     splitPane: createSplitPaneState(2, [0.5, 0.5]),
     commandState: Object.freeze({
-      activePane: 'editor',
       navigation: Object.freeze({ back: Object.freeze([]), forward: Object.freeze([]) })
     })
   });

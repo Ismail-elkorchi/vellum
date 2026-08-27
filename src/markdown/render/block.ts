@@ -2,12 +2,15 @@ import type { MarkdownBlockNode, SourceSpan } from 'markspan';
 import { measureTextCells, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownTheme } from '../theme.js';
 import { renderCodeBlock } from './code.js';
-import { inlinePlainText, renderInline, type MarkdownRenderSpan } from './inline.js';
+import { renderInline, type MarkdownRenderSpan } from './inline.js';
 import { renderTable } from './table.js';
-import { wrapMarkdownSpans, type MarkdownLayoutLine } from './wrap.js';
+import {
+  wrapMarkdownPreformattedSpans,
+  wrapMarkdownSpans,
+  type MarkdownLayoutLine
+} from './wrap.js';
 import type { MarkdownBlockResources } from './resources.js';
-
-export type { MarkdownBlockResources } from './resources.js';
+import { frontMatterPreviewRows } from './front-matter.js';
 
 export interface MarkdownRenderedBlock {
   readonly nodeId: number;
@@ -42,16 +45,16 @@ export function renderMarkdownBlock(
       );
       break;
     case 'codeBlock': {
-      const diagram = node.language === 'mermaid' ? resources.diagramText?.get(node.id) : undefined;
+      const diagram = resources.diagramText?.get(node.id);
       const spans = diagram === undefined
         ? renderCodeBlock(node, theme, resources.highlightedCode?.get(node.id))
         : [synthetic(diagram, node.id, node.contentSpan, theme.body)];
-      lines = wrapMarkdownSpans(spans, maximum, widthProfile);
+      lines = wrapMarkdownPreformattedSpans(spans, maximum, widthProfile);
       break;
     }
     case 'mathBlock': {
       const text = resources.mathText?.get(node.id) ?? `Math: ${node.value}`;
-      lines = wrapMarkdownSpans(
+      lines = wrapMarkdownPreformattedSpans(
         [synthetic(text, node.id, node.contentSpan, theme.math)],
         maximum,
         widthProfile,
@@ -68,11 +71,22 @@ export function renderMarkdownBlock(
       break;
     case 'frontMatter': {
       const spans: MarkdownRenderSpan[] = [];
-      for (const entry of node.entries) {
+      const diagnostics = resources.diagnostics?.filter((diagnostic) => (
+        diagnostic.span.start <= node.span.end && diagnostic.span.end >= node.span.start
+      )) ?? [];
+      for (const diagnostic of diagnostics) {
+        spans.push(synthetic(
+          `Front matter ${diagnostic.severity}: ${diagnostic.message}\n`,
+          node.id,
+          diagnostic.span,
+          theme.diagnostics[diagnostic.severity]
+        ));
+      }
+      for (const entry of frontMatterPreviewRows(node.value)) {
         spans.push(synthetic(`${entry.key}: `, node.id, entry.keySpan, theme.frontMatter));
         spans.push(synthetic(entry.value + '\n', node.id, entry.valueSpan, theme.frontMatter));
       }
-      if (spans.length === 0) spans.push(synthetic('Invalid front matter', node.id, node.span, theme.diagnostics.error));
+      if (spans.length === 0) spans.push(synthetic('Invalid front matter', node.id, node.span, theme.diagnostics['error']));
       lines = wrapMarkdownSpans(spans, maximum, widthProfile);
       break;
     }
@@ -90,7 +104,8 @@ export function renderMarkdownBlock(
         theme,
         widthProfile,
         synthetic('│ ', node.id, node.markerSpans[0] ?? node.span, theme.blockquote),
-        resources
+        resources,
+        true
       );
       break;
     case 'list': {
@@ -163,10 +178,12 @@ function prefixChildBlocks(
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
   prefix: MarkdownRenderSpan,
-  resources: MarkdownBlockResources
+  resources: MarkdownBlockResources,
+  repeatPrefix = false
 ): readonly MarkdownLayoutLine[] {
   const prefixWidth = Math.max(1, measureTextCells(prefix.text, { widthProfile }).cells);
   const lines: MarkdownLayoutLine[] = [];
+  let firstOutputLine = true;
   for (const child of children) {
     const rendered = renderMarkdownBlock(
       child,
@@ -179,11 +196,12 @@ function prefixChildBlocks(
     for (let row = 0; row < rendered.lines.length; row += 1) {
       const line = rendered.lines[row];
       if (line === undefined) continue;
-      const leader = row === 0
+      const leader = repeatPrefix || firstOutputLine
         ? prefix
         : synthetic(' '.repeat(prefixWidth), prefix.nodeId, prefix.sourceSpan, prefix.style ?? theme.body);
       const spans = Object.freeze([leader, ...line.inlineSpans]);
       lines.push(Object.freeze({ ...line, spans, inlineSpans: spans }));
+      firstOutputLine = false;
     }
   }
   if (lines.length === 0) return wrapMarkdownSpans([prefix], width, widthProfile);
@@ -197,30 +215,4 @@ function synthetic(
   style: MarkdownTheme['body']
 ): MarkdownRenderSpan {
   return Object.freeze({ text, nodeId, sourceSpan, style });
-}
-
-export function markdownBlockPlainText(node: MarkdownBlockNode): string {
-  switch (node.kind) {
-    case 'paragraph':
-    case 'heading':
-      return inlinePlainText(node.children);
-    case 'blockQuote':
-    case 'callout':
-    case 'footnoteDefinition':
-      return node.children.map(markdownBlockPlainText).join('\n');
-    case 'list':
-      return node.items.flatMap((item) => item.children.map(markdownBlockPlainText)).join('\n');
-    case 'table':
-      return [node.header, ...node.rows].flatMap((row) => row.cells.map((cell) => inlinePlainText(cell.children))).join(' ');
-    case 'frontMatter':
-      return node.entries.map((entry) => `${entry.key}: ${entry.value}`).join('\n');
-    case 'codeBlock':
-    case 'mathBlock':
-    case 'htmlBlock':
-      return node.value;
-    case 'linkDefinition':
-      return `${node.label}: ${node.destination}`;
-    case 'thematicBreak':
-      return '';
-  }
 }

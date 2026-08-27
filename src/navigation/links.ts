@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { extractMarkdownOutline, type MarkdownDocumentNode } from 'markspan';
 
 export type ResolvedMarkdownLink =
@@ -16,8 +17,11 @@ export function resolveMarkdownLink(
     return Object.freeze({ kind: 'external', url: external });
   }
   const hashIndex = destination.indexOf('#');
-  const rawPath = hashIndex < 0 ? destination : destination.slice(0, hashIndex);
-  const fragment = hashIndex < 0 ? '' : decodeURIComponent(destination.slice(hashIndex + 1));
+  const encodedPath = hashIndex < 0 ? destination : destination.slice(0, hashIndex);
+  const fragment = hashIndex < 0 ? '' : decodeLinkComponent(destination.slice(hashIndex + 1), 'fragment');
+  const rawPath = external?.protocol === 'file:'
+    ? fileURLToPath(external)
+    : decodeLinkComponent(encodedPath, 'path');
   if (sourceDocumentPath === undefined && rawPath.length > 0 && !path.isAbsolute(rawPath)) {
     throw new Error('A relative link requires a saved source document.');
   }
@@ -54,8 +58,13 @@ export function openExternalMarkdownLink(url: URL, signal?: AbortSignal): Promis
 
 function headingOffset(tree: MarkdownDocumentNode, fragment: string): number | undefined {
   const wanted = normalizeFragment(fragment);
+  const used = new Set<string>();
   for (const entry of flatten(extractMarkdownOutline(tree))) {
-    if (normalizeFragment(entry.text) === wanted) return entry.span.start;
+    const base = normalizeFragment(entry.text);
+    let slug = base;
+    for (let suffix = 1; used.has(slug); suffix += 1) slug = `${base}-${String(suffix)}`;
+    used.add(slug);
+    if (slug === wanted) return entry.span.start;
   }
   return undefined;
 }
@@ -65,9 +74,17 @@ function flatten(entries: ReturnType<typeof extractMarkdownOutline>): ReturnType
 }
 
 function normalizeFragment(value: string): string {
-  return value.trim().toLocaleLowerCase().replaceAll(/[^\p{Letter}\p{Number}\s-]/gu, '').replaceAll(/\s+/gu, '-');
+  return value.trim().toLowerCase().replaceAll(/[^\p{Letter}\p{Number}\s_-]/gu, '').replaceAll(/\s+/gu, '-');
 }
 
 function isWindowsDrivePath(value: string): boolean {
   return /^[A-Za-z]:[\\/]/u.test(value);
+}
+
+function decodeLinkComponent(value: string, label: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new Error(`Markdown link ${label} contains invalid percent encoding.`);
+  }
 }

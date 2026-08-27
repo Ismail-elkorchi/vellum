@@ -1,9 +1,13 @@
 import {
   defineTui,
+  replaceableSourceMessage,
   runTui,
   type TuiApp,
   type TuiEffect,
   type TuiInputBinding,
+  type TuiEventSource,
+  type TuiSourceSink,
+  type TuiSubscriptionContext,
   type TuiUpdateResult
 } from '@ismail-elkorchi/terminal-ui/tui';
 import { tabsReducer } from '@ismail-elkorchi/terminal-ui/behavior';
@@ -58,6 +62,13 @@ export function createVellumTui(
     id: 'vellum-markdown-editor',
     init: () => ({ state: application.state() }),
     inputBindings: inputBindings(keymap),
+    subscriptions: () => applicationUpdateSources(application),
+    resizeMessage: (_state, context) => Object.freeze({
+      kind: 'terminalResize' as const,
+      previousTerminalSize: context.previousTerminalSize,
+      terminalSize: context.terminalSize,
+      widthProfile: context.capabilities.unicode.widthProfile
+    }),
     update: (_state, message) => updateVellum(application, message),
     view: (state, context) => viewVellum(application, state, context),
     nonTty: {
@@ -193,6 +204,11 @@ function updateVellum(
           if (state.project.buffers[id]?.path !== undefined) await application.checkExternalFile(id);
         }
       });
+    case 'applicationUpdate':
+      return { state: application.state() };
+    case 'terminalResize':
+      application.resizeTerminal(message.previousTerminalSize, message.terminalSize, message.widthProfile);
+      return { state: application.state() };
     case 'resolveDirty': {
       const dialog = application.state().dialogState;
       if (dialog?.kind !== 'dirtyBuffer') return { state: application.state() };
@@ -222,6 +238,33 @@ function updateVellum(
     case 'exit':
       return { state: application.state(), exit: { reason: 'quit' } };
   }
+}
+
+function applicationUpdateSources(
+  application: VellumApplication
+): readonly TuiEventSource<AppMessage>[] {
+  return Object.freeze([Object.freeze({
+    id: 'vellum-application-updates',
+    generation: 0,
+    source: 'external' as const,
+    channel: Object.freeze({ capacity: 64, cadenceMs: 8 }),
+    async run(context: TuiSubscriptionContext, sink: TuiSourceSink<AppMessage>) {
+      await new Promise<void>((resolve, reject) => {
+        const unsubscribe = application.subscribe((update) => {
+          void sink.emit(replaceableSourceMessage(
+            update.bufferId ?? update.reason,
+            Object.freeze({ kind: 'applicationUpdate' as const, update })
+          )).catch((error: unknown) => {
+            if (!context.signal.aborted) reject(error);
+          });
+        });
+        context.signal.addEventListener('abort', () => {
+          unsubscribe();
+          resolve();
+        }, { once: true });
+      });
+    }
+  })]);
 }
 
 function requiresEffect(effect: VellumEffect): boolean {

@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { isThemeColorToken, themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import type { TerminalColor, TerminalStyle } from '@ismail-elkorchi/terminal-ui/renderer';
 import type { MarkdownCalloutKind, MarkdownDiagnosticSeverity } from 'markspan';
+import { defaultVellumConfigurationDirectory } from '../config/paths.js';
 
 export interface MarkdownTheme {
   readonly body: TerminalStyle;
@@ -88,13 +88,7 @@ export const darkTerminalMarkdownTheme = builtIn('dark');
 export const lightTerminalMarkdownTheme = builtIn('light');
 
 export function defaultUserMarkdownThemePath(platform: NodeJS.Platform = process.platform): string {
-  if (platform === 'win32') {
-    return path.join(process.env['APPDATA'] ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'vellum', 'markdown-theme.json');
-  }
-  if (platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'vellum', 'markdown-theme.json');
-  }
-  return path.join(process.env['XDG_CONFIG_HOME'] ?? path.join(os.homedir(), '.config'), 'vellum', 'markdown-theme.json');
+  return path.join(defaultVellumConfigurationDirectory(platform), 'markdown-theme.json');
 }
 
 export async function loadUserMarkdownTheme(
@@ -197,25 +191,23 @@ function styleValue(
     return base;
   }
   const record = value as Record<string, unknown>;
-  const unsupported = Object.keys(record).find((candidate) => !styleKeys.has(candidate));
-  if (unsupported !== undefined) {
+  const merged: Record<string, unknown> = { ...base };
+  for (const unsupported of Object.keys(record).filter((candidate) => !styleKeys.has(candidate))) {
     diagnostics.push(Object.freeze({ key: `${key}.${unsupported}`, message: `Unknown terminal style key: ${unsupported}` }));
-    return base;
   }
   for (const flag of ['bold', 'dim', 'italic', 'underline', 'inverse', 'hidden', 'strikethrough']) {
-    if (record[flag] !== undefined && typeof record[flag] !== 'boolean') {
+    const supplied = record[flag];
+    if (supplied !== undefined && typeof supplied !== 'boolean') {
       diagnostics.push(Object.freeze({ key: `${key}.${flag}`, message: `Markdown theme ${key}.${flag} must be boolean.` }));
-      return base;
-    }
+    } else if (supplied !== undefined) merged[flag] = supplied;
   }
   const foreground = styleColor(record['fg'], base.fg, `${key}.fg`, diagnostics);
   const background = styleColor(record['bg'], base.bg, `${key}.bg`, diagnostics);
-  return Object.freeze({
-    ...base,
-    ...record,
-    ...(foreground === undefined ? {} : { fg: foreground }),
-    ...(background === undefined ? {} : { bg: background })
-  }) as TerminalStyle;
+  if (foreground === undefined) delete merged['fg'];
+  else merged['fg'] = foreground;
+  if (background === undefined) delete merged['bg'];
+  else merged['bg'] = background;
+  return Object.freeze(merged) as TerminalStyle;
 }
 
 function styleColor(

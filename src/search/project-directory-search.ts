@@ -1,10 +1,11 @@
-import { open, readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import type { FileTreeState } from '../app/types.js';
 import { indexedFilePaths } from '../project/file-tree.js';
 import {
   findDocumentMatches,
   type DocumentSearchOptions
 } from './document-search.js';
+import { compareText } from '../order.js';
 
 export interface ProjectDirectorySearchOptions extends DocumentSearchOptions {
   readonly maximumFileBytes?: number;
@@ -37,11 +38,8 @@ export async function searchProjectDirectory(
       cursor += 1;
       const filePath = paths[index];
       if (filePath === undefined) return;
-      const metadata = await stat(filePath);
-      if (!metadata.isFile() || metadata.size > maximumFileBytes) continue;
-      if (await isBinaryFile(filePath, signal)) continue;
-      signal.throwIfAborted();
-      const bytes = await readFile(filePath, { signal });
+      const bytes = await readBoundedProjectFile(filePath, maximumFileBytes, signal);
+      if (bytes === undefined || bytes.subarray(0, 8_192).includes(0)) continue;
       let source: string;
       try {
         source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -67,23 +65,49 @@ export async function searchProjectDirectory(
   });
   await Promise.all(workers);
   return Object.freeze(results.toSorted((left, right) => (
-    left.path.localeCompare(right.path)
+    compareText(left.path, right.path)
     || left.span.start - right.span.start
     || left.span.end - right.span.end
   )));
 }
 
-async function isBinaryFile(filePath: string, signal: AbortSignal): Promise<boolean> {
+async function readBoundedProjectFile(
+  filePath: string,
+  maximumBytes: number,
+  signal: AbortSignal
+): Promise<Uint8Array | undefined> {
   signal.throwIfAborted();
-  const handle = await open(filePath, 'r');
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    const bytes = Buffer.alloc(8_192);
-    const read = await handle.read(bytes, 0, bytes.length, 0);
+    handle = await open(filePath, 'r');
+  } catch (error) {
+    if (fileErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > maximumBytes) return undefined;
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      signal.throwIfAborted();
+      const read = await handle.read(bytes, offset, Math.min(65_536, bytes.length - offset), offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    const extra = Buffer.alloc(1);
+    if ((await handle.read(extra, 0, 1, offset)).bytesRead > 0) return undefined;
     signal.throwIfAborted();
-    return bytes.subarray(0, read.bytesRead).includes(0);
+    return new Uint8Array(bytes.subarray(0, offset));
   } finally {
     await handle.close();
   }
+}
+
+function fileErrorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
 }
 
 function sourceLineStarts(source: string): readonly number[] {

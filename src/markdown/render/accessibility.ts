@@ -2,12 +2,14 @@ import type {
   MarkdownBlockNode,
   MarkdownDocumentNode,
   MarkdownInlineNode,
+  MarkdownDiagnostic,
   MarkdownListItemNode,
   MarkdownTableCellNode,
   MarkdownTableRowNode,
   SourceSpan
 } from 'markspan';
 import { inlinePlainText } from './inline.js';
+import { frontMatterPreviewRows } from './front-matter.js';
 
 export type MarkdownAccessibleRole =
   | 'document'
@@ -52,17 +54,20 @@ function accessibleMarkdownNode(
   return Object.freeze({ id, role, label, sourceSpan, children: Object.freeze(children), ...state });
 }
 
-export function accessibleMarkdownDocument(tree: MarkdownDocumentNode): MarkdownAccessibleNode {
+export function accessibleMarkdownDocument(
+  tree: MarkdownDocumentNode,
+  diagnostics: readonly MarkdownDiagnostic[] = []
+): MarkdownAccessibleNode {
   return accessibleMarkdownNode(
     `markdown-${String(tree.id)}`,
     'document',
     'Markdown preview',
     tree.span,
-    tree.children.map(accessibleBlock)
+    tree.children.map((node) => accessibleBlock(node, diagnostics))
   );
 }
 
-function accessibleBlock(node: MarkdownBlockNode): MarkdownAccessibleNode {
+function accessibleBlock(node: MarkdownBlockNode, diagnostics: readonly MarkdownDiagnostic[] = []): MarkdownAccessibleNode {
   const id = `markdown-${String(node.id)}`;
   switch (node.kind) {
     case 'paragraph':
@@ -77,20 +82,35 @@ function accessibleBlock(node: MarkdownBlockNode): MarkdownAccessibleNode {
         { headingLevel: node.depth },
       );
     case 'blockQuote':
-      return accessibleMarkdownNode(id, 'blockquote', 'Blockquote', node.span, node.children.map(accessibleBlock));
+      return accessibleMarkdownNode(id, 'blockquote', 'Blockquote', node.span, node.children.map((child) => accessibleBlock(child, diagnostics)));
     case 'callout':
-      return accessibleMarkdownNode(id, 'note', `${calloutLabel(node.calloutKind)} callout`, node.span, node.children.map(accessibleBlock));
+      return accessibleMarkdownNode(id, 'note', `${calloutLabel(node.calloutKind)} callout`, node.span, node.children.map((child) => accessibleBlock(child, diagnostics)));
     case 'frontMatter':
-      return accessibleMarkdownNode(id, 'frontMatter', 'Front matter', node.span, node.entries.map((entry, index) => (
+      return accessibleMarkdownNode(id, 'frontMatter', 'Front matter', node.span, [
+        ...diagnostics.filter((diagnostic) => (
+          diagnostic.span.start <= node.span.end && diagnostic.span.end >= node.span.start
+        )).map((diagnostic, index) => accessibleMarkdownNode(
+          `${id}-diagnostic-${String(index)}`,
+          'diagnostic',
+          `${diagnostic.severity}: ${diagnostic.message}`,
+          diagnostic.span
+        )),
+        ...frontMatterPreviewRows(node.value).map((entry, index) => (
         accessibleMarkdownNode(`${id}-entry-${String(index)}`, 'cell', `${entry.key}: ${entry.value}`, {
           start: entry.keySpan.start,
           end: entry.valueSpan.end
         })
-      )));
+        ))
+      ]);
     case 'list':
-      return accessibleMarkdownNode(id, 'list', node.ordered ? 'Ordered list' : 'Unordered list', node.span, node.items.map(accessibleListItem));
+      return accessibleMarkdownNode(id, 'list', node.ordered ? 'Ordered list' : 'Unordered list', node.span, node.items.map((item) => accessibleListItem(item, diagnostics)));
     case 'codeBlock':
-      return accessibleMarkdownNode(id, node.language === 'mermaid' ? 'diagram' : 'code', node.language === null ? 'Code block' : `${node.language} code block`, node.span);
+      return accessibleMarkdownNode(
+        id,
+        node.language?.trim().toLowerCase() === 'mermaid' ? 'diagram' : 'code',
+        node.language === null ? 'Code block' : `${node.language} code block`,
+        node.span
+      );
     case 'mathBlock':
       return accessibleMarkdownNode(id, 'math', `Math: ${node.value}`, node.span);
     case 'thematicBreak':
@@ -100,13 +120,13 @@ function accessibleBlock(node: MarkdownBlockNode): MarkdownAccessibleNode {
     case 'linkDefinition':
       return accessibleMarkdownNode(id, 'link', `Link definition ${node.label}: ${node.destination}`, node.span);
     case 'footnoteDefinition':
-      return accessibleMarkdownNode(id, 'footnote', `Footnote ${node.label}`, node.span, node.children.map(accessibleBlock));
+      return accessibleMarkdownNode(id, 'footnote', `Footnote ${node.label}`, node.span, node.children.map((child) => accessibleBlock(child, diagnostics)));
     case 'table':
       return accessibleMarkdownNode(id, 'table', 'Table', node.span, [node.header, ...node.rows].map(accessibleTableRow));
   }
 }
 
-function accessibleListItem(node: MarkdownListItemNode): MarkdownAccessibleNode {
+function accessibleListItem(node: MarkdownListItemNode, diagnostics: readonly MarkdownDiagnostic[]): MarkdownAccessibleNode {
   const task = node.task === null ? [] : [accessibleMarkdownNode(
     `markdown-${String(node.id)}-task`,
     'checkbox',
@@ -120,7 +140,7 @@ function accessibleListItem(node: MarkdownListItemNode): MarkdownAccessibleNode 
     'listItem',
     'List item',
     node.span,
-    [...task, ...node.children.map(accessibleBlock)]
+    [...task, ...node.children.map((child) => accessibleBlock(child, diagnostics))]
   );
 }
 
@@ -173,5 +193,5 @@ function accessibleInline(nodes: readonly MarkdownInlineNode[]): readonly Markdo
 }
 
 function calloutLabel(kind: 'note' | 'tip' | 'important' | 'warning' | 'caution'): string {
-  return kind.charAt(0).toLocaleUpperCase() + kind.slice(1);
+  return kind.charAt(0).toUpperCase() + kind.slice(1);
 }

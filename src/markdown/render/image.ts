@@ -3,16 +3,19 @@ import type { MarkdownImageNode } from 'markspan';
 import type { MarkdownTheme } from '../theme.js';
 import { image as terminalImage, type Element, type RasterImage } from '@ismail-elkorchi/terminal-ui';
 import type { MarkdownRenderSpan } from './inline.js';
+import type { MarkdownImageResult } from '../image-loader.js';
 
 export function imageFallbackSpan(
   node: MarkdownImageNode,
   altText: string,
-  theme: MarkdownTheme
+  theme: MarkdownTheme,
+  result?: MarkdownImageResult
 ): MarkdownRenderSpan {
   const label = altText.length === 0 ? 'Image' : `Image: ${altText}`;
   const title = node.title === null ? '' : ` — ${node.title}`;
+  const failure = result?.kind === 'failed' ? ` — failed: ${result.message}` : '';
   const span: RenderSpan = {
-    text: `[${label}${title}]`,
+    text: `[${label}${title}${failure}]`,
     style: theme.imageLabel,
     ...(node.destination.length === 0 ? {} : { link: { href: node.destination } })
   };
@@ -29,7 +32,7 @@ export function localImageComponent(
   altText: string,
   maximumWidth: number,
   maximumHeight: number
-): Element {
+): Element<never> {
   const label = altText.trim().length === 0 ? 'Markdown image' : altText;
   return terminalImage({
     image,

@@ -62,6 +62,12 @@ callouts, inline and block math, fenced-code highlighting, local images, and
 Mermaid diagram fences. Raw HTML is shown as inert source placeholders. Remote
 images are disabled unless explicitly enabled. Unsupported highlighting,
 graphics, math, and diagram rendering retain labeled source fallbacks.
+Fenced-code languages are loaded lazily from one canonical language registry;
+aliases resolve to the same tokenizer, concurrent requests are deduplicated,
+large blocks yield cooperatively, and stale or cancelled results cannot update a
+newer source revision. Highlight ranges remain code-value offsets and are mapped
+to source exclusively through Markspan's code-value source map. Math is parsed
+and laid out locally without a network service or text-substitution formatter.
 
 Editor and preview scrolling is synchronized through source offsets. The editor
 row-offset map comes from the actual terminal text layout, including wrapping,
@@ -102,8 +108,8 @@ change set and one undo entry.
 Vellum reads `keymap.json` from the platform configuration directory:
 
 - Linux: `$XDG_CONFIG_HOME/vellum/keymap.json` or `~/.config/vellum/keymap.json`
-- macOS: `~/Library/Application Support/vellum/keymap.json`
-- Windows: `%APPDATA%\vellum\keymap.json`
+- macOS: `~/Library/Application Support/Vellum/keymap.json`
+- Windows: `%APPDATA%\Vellum\keymap.json`
 
 The file is an array of command bindings:
 
@@ -142,6 +148,27 @@ configured executable directly with an argument array; it never interpolates a
 shell command. User profiles specify an identifier, label, target format,
 extension, executable, arguments, and resource paths. Existing outputs require
 `--overwrite`. Project-directory export follows stable path order.
+
+Both the interactive application and CLI load `export-profiles.json` from the
+platform configuration directory beside `keymap.json` and
+`markdown-theme.json`. The file is an array:
+
+```json
+[
+  {
+    "id": "company-html",
+    "label": "Company HTML",
+    "targetFormat": "html5",
+    "outputExtension": ".html",
+    "executable": "pandoc",
+    "arguments": ["--standalone"],
+    "resourcePaths": ["assets"]
+  }
+]
+```
+
+Malformed entries, unknown fields, and identifiers that conflict with built-in
+profiles are reported before export or editor startup.
 
 ## Markdown theme
 

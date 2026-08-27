@@ -104,7 +104,7 @@ export function renderInline(
         break;
       }
       case 'image':
-        spans.push(imageFallbackSpan(node, inlinePlainText(node.children), theme));
+        spans.push(imageFallbackSpan(node, inlinePlainText(node.children), theme, resources.images?.get(node.id)));
         break;
       case 'softBreak':
         spans.push(valueSpan(' ', node.id, node.span, style, link));

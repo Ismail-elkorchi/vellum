@@ -6,7 +6,8 @@ import {
 } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownDocumentNode, SourceSpan } from 'markspan';
 import type { MarkdownTheme } from '../theme.js';
-import { renderMarkdownBlock, type MarkdownBlockResources, type MarkdownRenderedBlock } from './block.js';
+import { renderMarkdownBlock, type MarkdownRenderedBlock } from './block.js';
+import type { MarkdownBlockResources } from './resources.js';
 import {
   createMarkdownBlockLayoutCache,
   type MarkdownBlockLayoutCache,
@@ -107,7 +108,7 @@ export function layoutMarkdownPreview(
     blocks: Object.freeze(blocks),
     rowOffsetMap,
     activations: Object.freeze(activations),
-    accessibility: accessibleMarkdownDocument(tree),
+    accessibility: accessibleMarkdownDocument(tree, resources.diagnostics),
     instrumentation: Object.freeze({
       reusedBlockLayouts,
       rebuiltBlockLayouts,

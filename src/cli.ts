@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 import { stat } from 'node:fs/promises';
 import { stdin, stderr, stdout } from 'node:process';
-import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import {
   createVellumApplication,
   restoreVellumApplication,
   type VellumApplication
 } from './app/application.js';
 import { commandHelp, parseCliArguments, type CliArguments, type OpenCliArguments } from './cli-options.js';
-import { builtInExportProfiles } from './export/profiles.js';
+import { builtInExportProfiles, loadUserExportProfiles, type ExportProfile } from './export/profiles.js';
 import { exportProjectDirectory, exportSourceDocument } from './export/exporter.js';
 import { createRecoveryStore } from './recovery/recovery.js';
 import { runVellum } from './tui.js';
@@ -35,8 +34,15 @@ async function runCli(
     return 0;
   }
   try {
+    const userProfiles = await loadUserExportProfiles();
+    if (userProfiles.diagnostics.length > 0) {
+      throw new Error(userProfiles.diagnostics.map((diagnostic) => (
+        `Export profile ${diagnostic.profileId}: ${diagnostic.message}`
+      )).join('\n'));
+    }
+    const exportProfiles = Object.freeze([...builtInExportProfiles, ...userProfiles.profiles]);
     if (parsed.kind === 'export') {
-      const profile = builtInExportProfiles.find((candidate) => candidate.id === parsed.profileId);
+      const profile = exportProfiles.find((candidate) => candidate.id === parsed.profileId);
       if (profile === undefined) throw new Error(`Unknown export profile: ${parsed.profileId}`);
       const status = await stat(parsed.path);
       if (status.isDirectory()) {
@@ -56,11 +62,11 @@ async function runCli(
         `${diagnostic.key.length === 0 ? 'Markdown theme' : `Markdown theme ${diagnostic.key}`}: ${diagnostic.message}`
       )).join('\n'));
     }
-    const application = await prepareApplication(parsed, streams.input, userTheme.theme);
     const keymap = await loadUserKeymap();
     if (keymap.diagnostics.length > 0) {
       throw new Error(keymap.diagnostics.map((diagnostic) => `Keymap entry ${String(diagnostic.index + 1)}: ${diagnostic.message}`).join('\n'));
     }
+    const application = await prepareApplication(parsed, streams.input, userTheme.theme, userProfiles.profiles);
     await runVellum(application, keymap);
     return 0;
   } catch (error) {
@@ -72,27 +78,35 @@ async function runCli(
 async function prepareApplication(
   parsed: OpenCliArguments,
   input: NodeJS.ReadableStream,
-  markdownTheme: MarkdownTheme
+  markdownTheme: MarkdownTheme,
+  exportProfiles: readonly ExportProfile[]
 ): Promise<VellumApplication> {
+  const requestedStatus = parsed.path === undefined || parsed.path === '-'
+    ? undefined
+    : await stat(parsed.path);
   const recoveryStore = createRecoveryStore();
   const application = parsed.path === undefined
-    ? await restoreVellumApplication(recoveryStore, { markdownTheme })
-    : createVellumApplication({ recoveryStore, markdownTheme });
-  if (parsed.path === '-') {
-    application.openSource(await readStandardInput(input));
-  } else if (parsed.path !== undefined) {
-    const status = await stat(parsed.path);
-    if (status.isDirectory()) await application.openProjectDirectory(parsed.path);
-    else if (status.isFile()) await application.openFile(parsed.path);
-    else throw new Error(`The requested path is neither a file nor a directory: ${parsed.path}`);
-  } else if (application.state().project.bufferOrder.length === 0) {
-    application.newBuffer();
+    ? await restoreVellumApplication(recoveryStore, { markdownTheme, exportProfiles })
+    : createVellumApplication({ recoveryStore, markdownTheme, exportProfiles });
+  try {
+    if (parsed.path === '-') {
+      application.openSource(await readStandardInput(input));
+    } else if (parsed.path !== undefined) {
+      if (requestedStatus?.isDirectory() === true) await application.openProjectDirectory(parsed.path);
+      else if (requestedStatus?.isFile() === true) await application.openFile(parsed.path);
+      else throw new Error(`The requested path is neither a file nor a directory: ${parsed.path}`);
+    } else if (application.state().project.bufferOrder.length === 0) {
+      application.newBuffer();
+    }
+    if (parsed.editorMode === 'hybrid') application.dispatchCommand('view.editorHybrid');
+    else if (parsed.editorMode === 'source') application.dispatchCommand('view.editorSource');
+    if (parsed.paneArrangement === 'preview') application.dispatchCommand('view.preview');
+    if (parsed.line !== undefined) placeCaretAtLine(application, parsed.line);
+    return application;
+  } catch (error) {
+    await application.dispose();
+    throw error;
   }
-  if (parsed.editorMode === 'hybrid') application.dispatchCommand('view.editorHybrid');
-  else application.dispatchCommand('view.editorSource');
-  if (parsed.paneArrangement === 'preview') application.dispatchCommand('view.preview');
-  if (parsed.line !== undefined) placeCaretAtLine(application, parsed.line);
-  return application;
 }
 
 function placeCaretAtLine(application: VellumApplication, line: number): void {
@@ -100,16 +114,10 @@ function placeCaretAtLine(application: VellumApplication, line: number): void {
   const id = state.project.activeBufferId;
   const buffer = id === undefined ? undefined : state.project.buffers[id];
   if (id === undefined || buffer === undefined) throw new Error('--line requires an open source document.');
-  let offset = 0;
-  let currentLine = 1;
-  const source = textDocumentText(buffer.editor.document);
-  while (currentLine < line && offset < source.length) {
-    const next = source.indexOf('\n', offset);
-    if (next < 0) break;
-    offset = next + 1;
-    currentLine += 1;
+  if (buffer.preview.kind !== 'ready' || line > buffer.preview.snapshot.document.sourceIndex.lineCount) {
+    throw new Error(`Source line ${String(line)} does not exist.`);
   }
-  if (currentLine !== line) throw new Error(`Source line ${String(line)} does not exist.`);
+  const offset = buffer.preview.snapshot.document.sourceIndex.lineSpan(line - 1).start;
   application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset } });
 }
 

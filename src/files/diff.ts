@@ -10,7 +10,7 @@ export async function compareSourceLines(
 ): Promise<readonly DiffLine[]> {
   const left = lines(bufferSource);
   const right = lines(diskSource);
-  const matches = patienceMatches(left, right);
+  const matches = await lineMatches(left, right, signal);
   const result: DiffLine[] = [];
   let leftIndex = 0;
   let rightIndex = 0;
@@ -43,17 +43,29 @@ function lines(source: string): readonly string[] {
   return source.split(/\r\n|\n|\r/u);
 }
 
-function patienceMatches(left: readonly string[], right: readonly string[]): readonly (readonly [number, number])[] {
-  const leftPositions = uniquePositions(left);
-  const rightPositions = uniquePositions(right);
-  const candidates = [...leftPositions].flatMap(([text, leftIndex]) => {
-    const rightIndex = rightPositions.get(text);
-    return rightIndex === undefined ? [] : [[leftIndex, rightIndex] as const];
-  }).sort((first, second) => first[0] - second[0]);
+async function lineMatches(
+  left: readonly string[],
+  right: readonly string[],
+  signal?: AbortSignal
+): Promise<readonly (readonly [number, number])[]> {
+  let prefix = 0;
+  while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) {
+    prefix += 1;
+    if ((prefix & 0xfff) === 0) await checkpoint(signal);
+  }
+  let leftEnd = left.length;
+  let rightEnd = right.length;
+  while (leftEnd > prefix && rightEnd > prefix && left[leftEnd - 1] === right[rightEnd - 1]) {
+    leftEnd -= 1;
+    rightEnd -= 1;
+    if (((left.length - leftEnd) & 0xfff) === 0) await checkpoint(signal);
+  }
+  const candidates = await matchCandidates(left, right, prefix, leftEnd, prefix, rightEnd, signal);
   const tails: number[] = [];
   const previous = new Array<number>(candidates.length).fill(-1);
   const indices: number[] = [];
   for (let index = 0; index < candidates.length; index += 1) {
+    if ((index & 0xfff) === 0) await checkpoint(signal);
     const rightIndex = candidates[index]?.[1] ?? 0;
     let low = 0;
     let high = tails.length;
@@ -66,23 +78,67 @@ function patienceMatches(left: readonly string[], right: readonly string[]): rea
     previous[index] = low === 0 ? -1 : indices[low - 1] ?? -1;
     indices[low] = index;
   }
-  const result: (readonly [number, number])[] = [];
+  const middle: (readonly [number, number])[] = [];
   let index = indices[tails.length - 1] ?? -1;
   while (index >= 0) {
     const candidate = candidates[index];
-    if (candidate !== undefined) result.push(candidate);
+    if (candidate !== undefined) middle.push(candidate);
     index = previous[index] ?? -1;
   }
-  return Object.freeze(result.reverse());
+  const result: (readonly [number, number])[] = Array.from(
+    { length: prefix },
+    (_, offset) => [offset, offset] as const
+  );
+  result.push(...middle.reverse());
+  for (let offset = 0; offset < left.length - leftEnd; offset += 1) {
+    result.push([leftEnd + offset, rightEnd + offset]);
+  }
+  return Object.freeze(result);
 }
 
-function uniquePositions(values: readonly string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  const positions = new Map<string, number>();
-  values.forEach((value, index) => {
-    counts.set(value, (counts.get(value) ?? 0) + 1);
-    positions.set(value, index);
-  });
-  for (const [value, count] of counts) if (count !== 1) positions.delete(value);
-  return positions;
+async function matchCandidates(
+  left: readonly string[],
+  right: readonly string[],
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+  signal?: AbortSignal
+): Promise<readonly (readonly [number, number])[]> {
+  const rightPositions = new Map<string, number[]>();
+  for (let index = rightStart; index < rightEnd; index += 1) {
+    const value = right[index] ?? '';
+    const positions = rightPositions.get(value) ?? [];
+    positions.push(index);
+    rightPositions.set(value, positions);
+    if ((index & 0xfff) === 0) await checkpoint(signal);
+  }
+  let pairCount = 0;
+  const leftCounts = new Map<string, number>();
+  for (let index = leftStart; index < leftEnd; index += 1) {
+    const value = left[index] ?? '';
+    leftCounts.set(value, (leftCounts.get(value) ?? 0) + 1);
+    pairCount += rightPositions.get(value)?.length ?? 0;
+    if ((index & 0xfff) === 0) await checkpoint(signal);
+  }
+  const bounded = pairCount <= 1_000_000;
+  const candidates: (readonly [number, number])[] = [];
+  for (let leftIndex = leftStart; leftIndex < leftEnd; leftIndex += 1) {
+    const value = left[leftIndex] ?? '';
+    const positions = rightPositions.get(value);
+    if (positions !== undefined && (bounded || (positions.length === 1 && leftCounts.get(value) === 1))) {
+      for (let offset = positions.length - 1; offset >= 0; offset -= 1) {
+        const rightIndex = positions[offset];
+        if (rightIndex !== undefined) candidates.push([leftIndex, rightIndex]);
+      }
+    }
+    if ((leftIndex & 0xfff) === 0) await checkpoint(signal);
+  }
+  return candidates;
+}
+
+async function checkpoint(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  signal?.throwIfAborted();
 }

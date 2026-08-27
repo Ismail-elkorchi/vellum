@@ -1,13 +1,13 @@
 import { readFile } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import type { BindableKeyName } from '@ismail-elkorchi/terminal-ui/input';
 import type { CommandId } from '../app/types.js';
 import {
   allCommands,
-  commandRegistry,
+  commandById,
   type KeyBinding
 } from './registry.js';
+import { defaultVellumConfigurationDirectory } from '../config/paths.js';
 
 export interface KeymapEntry {
   readonly command: CommandId;
@@ -83,7 +83,12 @@ export function validateKeymap(value: unknown): ValidatedKeymap {
       continue;
     }
     const record = candidate as Record<string, unknown>;
-    if (typeof record['command'] !== 'string' || !commandRegistry.has(record['command'] as CommandId)) {
+    const unknownFields = Object.keys(record).filter((key) => key !== 'command' && key !== 'key');
+    if (unknownFields.length > 0) {
+      diagnostics.push({ index, message: `Unknown keymap fields: ${unknownFields.join(', ')}.` });
+      continue;
+    }
+    if (typeof record['command'] !== 'string' || commandById(record['command']) === undefined) {
       diagnostics.push({ index, message: `Unknown command identifier: ${String(record['command'])}` });
       continue;
     }
@@ -96,7 +101,12 @@ export function validateKeymap(value: unknown): ValidatedKeymap {
       const text = keyBindingText(binding);
       const previous = bindings.get(text);
       if (previous !== undefined) {
-        diagnostics.push({ index, message: `Conflicting key binding ${text}: ${previous} and ${record['command']}` });
+        diagnostics.push({
+          index,
+          message: previous === record['command']
+            ? `Duplicate key binding ${text} for ${previous}.`
+            : `Conflicting key binding ${text}: ${previous} and ${record['command']}.`
+        });
         continue;
       }
       const command = record['command'] as CommandId;
@@ -128,12 +138,7 @@ export async function readUserKeymap(filePath: string): Promise<ValidatedKeymap>
 }
 
 export function defaultUserKeymapPath(platform: NodeJS.Platform = process.platform): string {
-  const directory = platform === 'win32'
-    ? process.env['APPDATA'] ?? path.join(os.homedir(), 'AppData', 'Roaming')
-    : platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : process.env['XDG_CONFIG_HOME'] ?? path.join(os.homedir(), '.config');
-  return path.join(directory, 'vellum', 'keymap.json');
+  return path.join(defaultVellumConfigurationDirectory(platform), 'keymap.json');
 }
 
 export async function loadUserKeymap(filePath = defaultUserKeymapPath()): Promise<ValidatedKeymap> {
@@ -150,12 +155,4 @@ export function defaultKeymap(): ValidatedKeymap {
     command: command.id,
     key: keyBindingText(binding)
   }))));
-}
-
-export function commandForBinding(
-  keymap: ValidatedKeymap,
-  binding: KeyBinding
-): CommandId | undefined {
-  const text = keyBindingText(binding);
-  return keymap.entries.find((entry) => keyBindingText(entry.binding) === text)?.command;
 }

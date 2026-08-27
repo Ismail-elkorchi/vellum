@@ -70,6 +70,48 @@ export function wrapMarkdownSpans(
   return Object.freeze(lines);
 }
 
+export function wrapMarkdownPreformattedSpans(
+  spans: readonly MarkdownRenderSpan[],
+  width: number,
+  widthProfile?: TextWidthProfile
+): readonly MarkdownLayoutLine[] {
+  const maximum = Math.max(1, Math.floor(width));
+  const lines: MarkdownLayoutLine[] = [];
+  let row: GraphemeSpan[] = [];
+  let cells = 0;
+  const flush = (force = false, emptyRowSourceOffset?: number): void => {
+    if (!force && row.length === 0) return;
+    const first = row[0];
+    const inlineSpans = mergeGraphemes(row);
+    lines.push(Object.freeze({
+      spans: inlineSpans,
+      sourceOffset: first?.sourceOffset ?? emptyRowSourceOffset ?? spans[0]?.sourceSpan.start ?? 0,
+      nodeId: first?.span.nodeId ?? spans[0]?.nodeId ?? 0,
+      inlineSpans
+    }));
+    row = [];
+    cells = 0;
+  };
+  for (const span of spans) {
+    const measured = measureTextCells(span.text, { ...(widthProfile === undefined ? {} : { widthProfile }) });
+    for (const grapheme of measured.graphemes) {
+      const sourceOffset = span.sourceSpan.end - span.sourceSpan.start === span.text.length
+        ? span.sourceSpan.start + grapheme.startOffset
+        : span.sourceSpan.start;
+      if (grapheme.text === '\n') {
+        flush(true, sourceOffset);
+        continue;
+      }
+      if (row.length > 0 && cells + grapheme.cells > maximum) flush();
+      row.push({ span, text: grapheme.text, cells: grapheme.cells, sourceOffset });
+      cells += grapheme.cells;
+      if (cells >= maximum) flush();
+    }
+  }
+  flush(lines.length === 0);
+  return Object.freeze(lines);
+}
+
 function mergeGraphemes(values: readonly GraphemeSpan[]): readonly MarkdownRenderSpan[] {
   const spans: MarkdownRenderSpan[] = [];
   for (const value of values) {

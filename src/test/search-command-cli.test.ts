@@ -7,12 +7,13 @@ import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { parseCliArguments, commandHelp } from '../cli-options.js';
 import { commandPaletteEntries } from '../commands/palette.js';
 import { defaultKeymap, parseKeyBinding, validateKeymap } from '../commands/keymap.js';
-import { initialAppState } from '../commands/registry.js';
+import { commandById, initialAppState } from '../commands/registry.js';
 import { findDocumentMatches, replacementChangeSet } from '../search/document-search.js';
 import { createVellumApplication } from '../app/application.js';
 import { quickOpenEntries } from '../project/quick-open.js';
 
 test('CLI definitions parse POSIX, Windows, stdin, presentation, line, and export forms', () => {
+  assert.deepEqual(parseCliArguments([]), { kind: 'open', help: false });
   assert.deepEqual(parseCliArguments(['README.md', '--line', '72', '--hybrid']), {
     kind: 'open', path: 'README.md', line: 72, editorMode: 'hybrid', paneArrangement: 'editor', help: false
   });
@@ -45,11 +46,28 @@ test('keymap validation reports malformed, unknown, duplicate, and conflicting e
   const result = validateKeymap([
     { command: 'file.new', key: 'ctrl+n' },
     { command: 'file.open', key: 'ctrl+n' },
+    { command: 'file.new', key: 'ctrl+n' },
     { command: 'missing.command', key: 'ctrl+x' },
-    { command: 'file.save', key: 'ctrl+?' }
+    { command: 'file.save', key: 'ctrl+?' },
+    { command: 'file.save', key: 'ctrl+s', typo: true }
   ]);
   assert.equal(result.entries.length, 1);
-  assert.equal(result.diagnostics.length, 3);
+  assert.equal(result.diagnostics.length, 5);
+  assert.equal(result.diagnostics.some((diagnostic) => /Duplicate/u.test(diagnostic.message)), true);
+  assert.equal(result.diagnostics.some((diagnostic) => /Unknown keymap fields/u.test(diagnostic.message)), true);
+});
+
+test('submitting a disabled command keeps the command palette open with a validation error', async () => {
+  const application = createVellumApplication({ watchFiles: false });
+  try {
+    application.dispatchCommand('application.commandPalette');
+    await application.submitSelectionDialog('file.save');
+    const dialog = application.state().dialogState;
+    assert.equal(dialog?.kind, 'commandPalette');
+    assert.match(dialog?.kind === 'commandPalette' ? dialog.error ?? '' : '', /not available/u);
+  } finally {
+    await application.dispose();
+  }
 });
 
 test('command palette keeps disabled commands visible and ranks fuzzy title matches', () => {
@@ -58,6 +76,37 @@ test('command palette keeps disabled commands visible and ranks fuzzy title matc
   assert.equal(save?.enabled, false);
   assert.equal(entries[0]?.commandId, 'file.save');
   assert.ok(entries.every((entry) => entry.category.length > 0));
+});
+
+test('command availability follows undo, redo, and Markspan syntax context', async () => {
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'commands' });
+  try {
+    const source = '# Heading\n\n| A | B |\n| --- | --- |\n| x | y |';
+    const id = application.openSource(source);
+    assert.equal(commandById('edit.undo')?.enabled(application.state()), false);
+    assert.equal(commandById('edit.redo')?.enabled(application.state()), false);
+    assert.equal(commandById('markdown.promoteHeading')?.enabled(application.state()), false);
+    assert.equal(commandById('markdown.demoteHeading')?.enabled(application.state()), true);
+    assert.equal(commandById('markdown.deleteTableColumn')?.enabled(application.state()), false);
+
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'X' } });
+    assert.equal(commandById('edit.undo')?.enabled(application.state()), true);
+    assert.equal(commandById('edit.redo')?.enabled(application.state()), false);
+    application.executeMarkdownCommand(id, 'edit.undo');
+    assert.equal(commandById('edit.undo')?.enabled(application.state()), false);
+    assert.equal(commandById('edit.redo')?.enabled(application.state()), true);
+
+    const tableValue = source.indexOf('x');
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer', transition: { kind: 'placeCaret', offset: tableValue }
+    });
+    assert.equal(commandById('markdown.nextTableCell')?.enabled(application.state()), true);
+    assert.equal(commandById('markdown.previousTableCell')?.enabled(application.state()), true);
+    assert.equal(commandById('markdown.deleteTableColumn')?.enabled(application.state()), true);
+    assert.equal(commandById('markdown.deleteTableRow')?.enabled(application.state()), true);
+  } finally {
+    await application.dispose();
+  }
 });
 
 test('document Replace All applies one exact multi-range change set and one undo entry', async () => {
@@ -75,6 +124,33 @@ test('document Replace All applies one exact multi-range change set and one undo
     assert.deepEqual(changed?.preview.kind === 'ready' ? changed.preview.update?.changedOldSpan : undefined, { start: 0, end: 29 });
     application.executeMarkdownCommand(id, 'edit.undo');
     assert.equal(textDocumentText(application.state().project.buffers[id]?.editor.document as never), 'alpha 😀 alpha alphabet alpha');
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('selection-only replacement retains its original source range while match navigation changes the editor selection', async () => {
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'selection-search' });
+  try {
+    const bufferId = application.openSource('one one outside one');
+    application.dispatchCommand('edit.replace');
+    application.configureDocumentSearch('selectionOnly');
+    const missingSelection = application.state().dialogState;
+    assert.equal(missingSelection?.kind === 'documentSearch' ? missingSelection.selectionOnly : undefined, false);
+    assert.match(missingSelection?.kind === 'documentSearch' ? missingSelection.error ?? '' : '', /Select a nonempty/u);
+    application.dismissDialog();
+    application.applyTextAreaTransition(bufferId, {
+      kind: 'pointer', transition: { kind: 'extendSelection', anchor: 0, offset: 7 }
+    });
+    application.dispatchCommand('edit.replace');
+    application.configureDocumentSearch('selectionOnly');
+    application.updateDocumentSearch('query', { kind: 'setValue', value: 'one' });
+    application.updateDocumentSearch('replacement', { kind: 'setValue', value: 'x' });
+    application.navigateDocumentSearch('next');
+    application.replaceDocumentSearch('all');
+    assert.equal(textDocumentText(application.state().project.buffers[bufferId]?.editor.document as never), 'x x outside one');
+    const dialog = application.state().dialogState;
+    assert.deepEqual(dialog?.kind === 'documentSearch' ? dialog.selectionSpan : undefined, { start: 0, end: 3 });
   } finally {
     await application.dispose();
   }
@@ -114,6 +190,20 @@ test('project-directory search opens a result and selects its exact UTF-16 sourc
       await application.dispose();
     }
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed lazy file-tree read clears its loading state so the directory can be retried', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-file-tree-failure-'));
+  const application = createVellumApplication({ watchFiles: false });
+  try {
+    await application.openProjectDirectory(directory);
+    await rm(directory, { recursive: true, force: true });
+    await assert.rejects(() => application.loadFileTreeDirectory(directory), /ENOENT|not found|no such/iu);
+    assert.equal(application.state().project.fileTree.nodes[directory]?.loading, false);
+  } finally {
+    await application.dispose();
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -21,8 +21,8 @@ export interface OpenCliArguments {
   readonly kind: 'open';
   readonly path?: string;
   readonly line?: number;
-  readonly editorMode: EditorMode;
-  readonly paneArrangement: PaneArrangement;
+  readonly editorMode?: EditorMode;
+  readonly paneArrangement?: PaneArrangement;
   readonly help: boolean;
 }
 
@@ -46,8 +46,8 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
   let profileId: string | undefined;
   let outputPath: string | undefined;
   let overwrite = false;
-  let editorMode: EditorMode = 'source';
-  let paneArrangement: PaneArrangement = 'editor';
+  let editorMode: EditorMode | undefined;
+  let paneArrangement: PaneArrangement | undefined;
   let presentationOption: string | undefined;
   const positional: string[] = [];
   for (let index = 0; index < values.length; index += 1) {
@@ -99,8 +99,8 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
     kind: 'open',
     ...(positional[0] === undefined ? {} : { path: positional[0] }),
     ...(line === undefined ? {} : { line }),
-    editorMode,
-    paneArrangement,
+    ...(editorMode === undefined ? {} : { editorMode }),
+    ...(paneArrangement === undefined ? {} : { paneArrangement }),
     help
   });
 }

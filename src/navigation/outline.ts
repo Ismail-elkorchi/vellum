@@ -15,7 +15,7 @@ export function documentOutline(
   sourceOffset: number,
   query = ''
 ): readonly OutlineItem[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const normalizedQuery = query.trim().toLowerCase();
   const entries = extractMarkdownOutline(preview.snapshot.document.tree);
   const flat = flatten(entries);
   let activeNodeId: number | undefined;
@@ -25,7 +25,7 @@ export function documentOutline(
       const mapped = map(child);
       return mapped === undefined ? [] : [mapped];
     });
-    if (normalizedQuery.length > 0 && !entry.text.toLocaleLowerCase().includes(normalizedQuery) && children.length === 0) {
+    if (normalizedQuery.length > 0 && !entry.text.toLowerCase().includes(normalizedQuery) && children.length === 0) {
       return undefined;
     }
     return Object.freeze({

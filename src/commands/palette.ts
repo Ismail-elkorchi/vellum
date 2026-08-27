@@ -1,6 +1,7 @@
 import type { AppState, CommandId } from '../app/types.js';
 import { allCommands } from './registry.js';
 import { defaultKeymap, keyBindingText, type ValidatedKeymap } from './keymap.js';
+import { compareText } from '../order.js';
 
 export interface CommandPaletteEntry {
   readonly commandId: CommandId;
@@ -16,9 +17,9 @@ export function commandPaletteEntries(
   query: string,
   keymap: ValidatedKeymap = defaultKeymap()
 ): readonly CommandPaletteEntry[] {
-  const normalized = query.trim().toLocaleLowerCase();
+  const normalized = query.trim().toLowerCase();
   const entries = allCommands().map((command) => {
-    const score = fuzzyScore(command.title.toLocaleLowerCase(), normalized);
+    const score = fuzzyScore(command.title.toLowerCase(), normalized);
     const binding = keymap.entries.find((entry) => entry.command === command.id)?.binding;
     return Object.freeze({
       commandId: command.id,
@@ -31,8 +32,8 @@ export function commandPaletteEntries(
   }).filter((entry) => normalized.length === 0 || entry.score > Number.NEGATIVE_INFINITY);
   return Object.freeze(entries.toSorted((left, right) => (
     right.score - left.score
-    || left.category.localeCompare(right.category)
-    || left.title.localeCompare(right.title)
+    || compareText(left.category, right.category)
+    || compareText(left.title, right.title)
   )));
 }
 

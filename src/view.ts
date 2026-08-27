@@ -25,13 +25,16 @@ import {
 import { column, grid, overlay, row, splitPane, surface, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import type { RowOffsetMap, TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
+import type { TerminalSize } from '@ismail-elkorchi/terminal-ui/host';
 import type { AppState, BufferId, BufferState, CommandId } from './app/types.js';
-import type { VellumApplication } from './app/application.js';
+import { bufferIsDirty } from './app/types.js';
+import type { VellumApplication, VellumApplicationUpdate } from './app/application.js';
 import { markdownPreview, type MarkdownPreviewAction } from './markdown/render/component.js';
 import type { MarkdownPreviewLayout } from './markdown/render/layout.js';
 import { inlinePlainText } from './markdown/render/inline.js';
 import { localImageComponent } from './markdown/render/image.js';
 import { terminalFileTreeView } from './project/file-tree.js';
+import { vellumBodyGeometry, vellumPaneGeometry } from './app/viewport-geometry.js';
 
 export const VELLUM_IDS = Object.freeze({
   editor: 'vellum-editor',
@@ -76,6 +79,8 @@ export type AppMessage =
   | { readonly kind: 'resolveDirty'; readonly action: 'save' | 'discard' | 'cancel' }
   | { readonly kind: 'externalFile'; readonly action: 'compare' | 'reloadDisk' | 'keepBuffer' | 'saveAs' | 'overwriteDisk' | 'recreate' | 'closeBuffer' }
   | { readonly kind: 'checkExternalFiles' }
+  | { readonly kind: 'applicationUpdate'; readonly update: VellumApplicationUpdate }
+  | { readonly kind: 'terminalResize'; readonly previousTerminalSize: TerminalSize; readonly terminalSize: TerminalSize; readonly widthProfile: TextWidthProfile }
   | { readonly kind: 'exit' }
   | { readonly kind: 'refresh' };
 
@@ -85,10 +90,7 @@ export function viewVellum(
   context: Pick<TuiContext, 'terminalSize' | 'capabilities'>
 ) {
   const columns = Math.max(1, context.terminalSize.columns);
-  const rows = Math.max(1, context.terminalSize.rows);
-  const fileTreeWidth = state.project.rootDirectory === undefined || columns < 72 ? 0 : Math.min(28, Math.floor(columns * 0.25));
-  const bodyWidth = Math.max(1, columns - fileTreeWidth - (fileTreeWidth > 0 ? 1 : 0));
-  const bodyRows = Math.max(1, rows - 2);
+  const geometry = vellumBodyGeometry(state, context.terminalSize);
   const widthProfile = context.capabilities.unicode.widthProfile;
   const root = grid({
     id: 'vellum-root',
@@ -97,12 +99,12 @@ export function viewVellum(
     columns: [{ kind: 'fill' }],
     children: {
       header: header(state),
-      body: fileTreeWidth === 0
-        ? bufferTabs(application, state, bodyWidth, bodyRows, widthProfile)
+      body: geometry.fileTreeWidth === 0
+        ? bufferTabs(application, state, geometry.bodyWidth, geometry.bodyRows, widthProfile)
         : row([
           fileTree(state),
-          bufferTabs(application, state, bodyWidth, bodyRows, widthProfile)
-        ], { sizes: [{ kind: 'fixed', cells: fileTreeWidth }, { kind: 'fill' }], gap: 1 }),
+          bufferTabs(application, state, geometry.bodyWidth, geometry.bodyRows, widthProfile)
+        ], { sizes: [{ kind: 'fixed', cells: geometry.fileTreeWidth }, { kind: 'fill' }], gap: 1 }),
       status: status(state)
     }
   });
@@ -126,9 +128,11 @@ function header(state: AppState) {
 function status(state: AppState) {
   const activeId = state.project.activeBufferId;
   const buffer = activeId === undefined ? undefined : state.project.buffers[activeId];
-  const textValue = buffer === undefined
-    ? 'Ctrl+N new file · Ctrl+O open file · Ctrl+Shift+O open project directory'
-    : `${buffer.label} · ${buffer.dirty ? 'UNSAVED' : 'SAVED'} · ${buffer.preview.kind === 'ready' ? `${String(buffer.preview.metrics.wordCount)} words` : 'PREVIEW FAILED'}`;
+  const textValue = state.notice !== undefined
+    ? `${state.notice.status.toUpperCase()}: ${state.notice.message}`
+    : buffer === undefined
+      ? 'Ctrl+N new file · Ctrl+O open file · Ctrl+Shift+O open project directory'
+      : `${buffer.label} · ${bufferIsDirty(buffer) ? 'UNSAVED' : 'SAVED'} · ${buffer.preview.kind === 'ready' ? `${String(buffer.preview.metrics.wordCount)} words` : 'PREVIEW FAILED'}`;
   return surface(text({ id: 'vellum-status-text', content: textValue, textRole: 'metadata' }), {
     id: 'vellum-status', appearance: 'bar', border: { kind: 'none' }, padding: { left: 1, right: 1 }
   });
@@ -148,8 +152,8 @@ function bufferTabs(
     return [{
       id,
       label: buffer.label,
-      ...(conflict ? { badge: '!' } : buffer.dirty ? { badge: '●' } : {}),
-      description: conflict ? 'External file conflict' : buffer.dirty ? 'Unsaved source document' : 'Saved source document',
+      ...(conflict ? { badge: '!' } : bufferIsDirty(buffer) ? { badge: '●' } : {}),
+      description: conflict ? 'External file conflict' : bufferIsDirty(buffer) ? 'Unsaved source document' : 'Saved source document',
       closable: true,
       panel: applicationContent(
         application,
@@ -197,32 +201,31 @@ function applicationContent(
   if (state.paneArrangement === 'preview') {
     return previewPane(application, state, buffer, width, rows, widthProfile);
   }
-  const horizontal = width >= 96;
-  const editorWidth = horizontal ? Math.max(1, Math.floor((width - 1) * (state.splitPane.shares[0] ?? 0.5))) : width;
-  const previewWidth = horizontal ? Math.max(1, width - editorWidth - 1) : width;
-  const editorRows = horizontal ? rows : Math.max(1, Math.floor((rows - 1) * (state.splitPane.shares[0] ?? 0.5)));
-  const previewRows = horizontal ? rows : Math.max(1, rows - editorRows - 1);
+  const geometry = vellumPaneGeometry(state, width, rows);
+  const editorSize = geometry.editor;
+  const previewSize = geometry.preview;
+  if (editorSize === undefined || previewSize === undefined) throw new Error('Editor and preview geometry is incomplete.');
   const editor = editorPane(
     application,
     state,
     buffer,
-    editorWidth,
-    editorRows,
+    editorSize.width,
+    editorSize.rows,
     widthProfile,
-    previewWidth,
+    previewSize.width,
   );
   const preview = previewPane(
     application,
     state,
     buffer,
-    previewWidth,
-    previewRows,
+    previewSize.width,
+    previewSize.rows,
     widthProfile,
-    editorWidth,
+    editorSize.width,
   );
   return splitPane([editor, preview], {
     id: `vellum-split-${buffer.id}`,
-    direction: horizontal ? 'horizontal' : 'vertical',
+    direction: geometry.direction,
     ...splitPaneLayout(state.splitPane),
     gap: 1,
     resizeStep: 0.04,
@@ -350,7 +353,7 @@ function previewContent(application: VellumApplication, buffer: BufferState, lay
   const images = [...application.previewImages(buffer.id)].flatMap(([nodeId, result]) => {
     if (result.kind !== 'ready') return [];
     const node = buffer.preview.kind === 'ready' ? buffer.preview.treeIndex.node(nodeId) : undefined;
-    if (node?.kind !== 'image' && !(node?.kind === 'codeBlock' && node.language?.toLocaleLowerCase() === 'mermaid')) return [];
+    if (node?.kind !== 'image' && !(node?.kind === 'codeBlock' && node.language?.toLowerCase() === 'mermaid')) return [];
     const label = node.kind === 'image'
       ? node.title === null ? inlinePlainText(node.children) : `${inlinePlainText(node.children)} — ${node.title}`
       : 'Mermaid diagram';

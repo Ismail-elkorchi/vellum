@@ -15,7 +15,6 @@ import type {
 export type BufferId = string;
 export type EditorMode = 'source' | 'hybrid';
 export type PaneArrangement = 'editor' | 'preview' | 'editorPreview';
-export type ActivePane = 'editor' | 'preview' | 'fileTree';
 export type CommandId =
   | 'application.commandPalette'
   | 'application.quit'
@@ -71,12 +70,6 @@ export interface DocumentMetrics {
   readonly taskCount: number;
 }
 
-export interface PreviewBlock {
-  readonly nodeId: number;
-  readonly kind: string;
-  readonly sourceSpan: SourceSpan;
-}
-
 export interface ReadyMarkdownPreview {
   readonly kind: 'ready';
   readonly sourceRevision: number;
@@ -89,9 +82,9 @@ export interface ReadyMarkdownPreview {
 }
 
 export interface DocumentMetricUpdate {
-  readonly reusedBlocks: number;
-  readonly recomputedBlocks: number;
-  readonly removedBlocks: number;
+  readonly reusedNodes: number;
+  readonly recomputedNodes: number;
+  readonly removedNodes: number;
 }
 
 export interface FailedMarkdownPreview {
@@ -131,8 +124,9 @@ export interface BufferState {
   readonly editor: TextAreaState;
   readonly sourceRevision: number;
   readonly savedRevision: number;
-  readonly dirty: boolean;
   readonly preview: MarkdownPreview;
+  /** Monotonic identity for asynchronously completed preview resources. */
+  readonly previewResourceRevision: number;
   readonly previewScroll: ScrollState;
   readonly externalFileState: ExternalFileState;
   readonly format: FileFormat;
@@ -227,6 +221,7 @@ export interface DocumentSearchDialogState {
   readonly caseSensitive: boolean;
   readonly wholeWord: boolean;
   readonly selectionOnly: boolean;
+  readonly selectionSpan?: SourceSpan;
   readonly matches: readonly SourceSpan[];
   readonly selectedIndex?: number;
   readonly error?: string;
@@ -295,7 +290,6 @@ export type DialogState =
   | FilePathDialogState;
 
 export interface CommandState {
-  readonly activePane: ActivePane;
   readonly navigation: NavigationHistory;
 }
 
@@ -317,4 +311,8 @@ export interface AppState {
 export function activeBuffer(state: AppState): BufferState | undefined {
   const id = state.project.activeBufferId;
   return id === undefined ? undefined : state.project.buffers[id];
+}
+
+export function bufferIsDirty(buffer: BufferState): boolean {
+  return buffer.sourceRevision !== buffer.savedRevision;
 }

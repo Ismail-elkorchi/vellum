@@ -14,7 +14,7 @@ import {
   measureTextCells,
   textDocumentText,
 } from '@ismail-elkorchi/terminal-ui/text';
-import { countMarkdownDocumentWords, extractMarkdownOutline } from 'markspan';
+import { collectMarkdownNodes, countMarkdownDocumentWords, extractMarkdownOutline, parseMarkdown } from 'markspan';
 import { createVellumApplication } from '../app/application.js';
 import { createHybridTextDecorations } from '../markdown/hybrid.js';
 import {
@@ -23,6 +23,8 @@ import {
   type MarkdownPreviewAction,
 } from '../markdown/render/component.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
+import { vellumBodyGeometry, vellumPaneGeometry } from '../app/viewport-geometry.js';
+import { resolveMarkdownLink } from '../navigation/links.js';
 
 test('incremental document metrics and preview block layout equal a fresh parse while reusing identities', async () => {
   const source = [
@@ -47,11 +49,12 @@ test('incremental document metrics and preview block layout equal a fresh parse 
     const buffer = application.state().project.buffers[id];
     assert.equal(buffer?.preview.kind, 'ready');
     if (buffer?.preview.kind !== 'ready') return;
-    assert.ok(buffer.preview.metricUpdate.reusedBlocks > 0);
-    assert.ok(buffer.preview.metricUpdate.recomputedBlocks > 0);
+    assert.ok(buffer.preview.metricUpdate.reusedNodes > 0);
+    assert.ok(buffer.preview.metricUpdate.recomputedNodes > 0);
     assert.equal(buffer.preview.metrics.wordCount, countMarkdownDocumentWords(buffer.preview.snapshot.document.tree));
     assert.equal(buffer.preview.metrics.headingCount, flatten(extractMarkdownOutline(buffer.preview.snapshot.document.tree)).length);
-    assert.equal(buffer.preview.update?.instrumentation.completeSourceScans, 0);
+    assert.ok((buffer.preview.update?.instrumentation.parsedCodeUnits ?? source.length) < source.length);
+    assert.ok((buffer.preview.update?.instrumentation.sourceIndexCodeUnits ?? source.length) < source.length);
     assert.equal(buffer.preview.update?.instrumentation.fullParse, false);
     assert.ok((buffer.preview.update?.instrumentation.parsedNodes ?? 0) > 0);
     assert.ok((buffer.preview.update?.instrumentation.reusedNodes ?? 0) > 0);
@@ -59,6 +62,38 @@ test('incremental document metrics and preview block layout equal a fresh parse 
     assert.ok((nextLayout?.instrumentation.reusedBlockLayouts ?? 0) > 0);
     assert.ok((nextLayout?.instrumentation.rebuiltBlockLayouts ?? 0) > 0);
     assert.equal(nextLayout?.instrumentation.fullPreviewLayout, false);
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('incremental metrics preserve words across inline boundaries and release removed syntax nodes', async () => {
+  const source = 'hel*lo* [link](./target.md)\n\n- [ ] task\n\n[^one]: hidden words';
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'metric-boundaries' });
+  try {
+    const bufferId = application.openSource(source);
+    const taskStart = source.indexOf('- [ ] task');
+    const taskEnd = source.indexOf('\n\n[^one]');
+    application.applyTextAreaTransition(bufferId, {
+      kind: 'applyChanges',
+      changeSet: { changes: [{ startOffset: taskStart, endOffsetExclusive: taskEnd, insertedText: '' }] }
+    });
+    const preview = application.state().project.buffers[bufferId]?.preview;
+    assert.equal(preview?.kind, 'ready');
+    if (preview?.kind !== 'ready') return;
+    const fresh = parseMarkdown(preview.snapshot.source, {
+      dialect: 'gfm',
+      extensions: ['frontMatter', 'callouts', 'math']
+    });
+    assert.deepEqual(preview.metrics, {
+      wordCount: countMarkdownDocumentWords(fresh.tree),
+      headingCount: collectMarkdownNodes(fresh.tree, 'heading').length,
+      linkCount: collectMarkdownNodes(fresh.tree, 'link').length,
+      taskCount: collectMarkdownNodes(fresh.tree, 'listItem').filter((item) => item.task !== null).length
+    });
+    assert.equal(preview.metrics.wordCount, 2);
+    assert.ok(preview.metricUpdate.reusedNodes > 0);
+    assert.ok(preview.metricUpdate.removedNodes > 0);
   } finally {
     await application.dispose();
   }
@@ -110,6 +145,51 @@ test('editor and preview row-offset maps remain source anchored through wrapping
       assert.ok(narrowEditor.sourceOffsetAtRow(narrowEditor.rowAtSourceOffset(offset)) <= offset);
       assert.ok(narrowPreview.sourceOffsetAtRow(narrowPreview.rowAtSourceOffset(offset)) <= offset);
     }
+    application.dispatchCommand('view.editorPreview');
+    const previousSize = { columns: 80, rows: 24 };
+    const nextSize = { columns: 120, rows: 24 };
+    const previousBody = vellumBodyGeometry(application.state(), previousSize);
+    const previousPanes = vellumPaneGeometry(application.state(), previousBody.bodyWidth, previousBody.contentRows);
+    assert.ok(previousPanes.editor && previousPanes.preview);
+    const previousEditorMap = createTextAreaRowOffsetMap({
+      document: buffer.editor.document,
+      terminalWidth: previousPanes.editor.width,
+      terminalRows: previousPanes.editor.rows,
+      lineNumbers: { minWidth: 3 }, wrap: { mode: 'soft' }, scrollbar: { visible: 'auto' }
+    });
+    const previousPreviewMap = application.previewLayout(id, previousPanes.preview.width)?.rowOffsetMap;
+    assert.ok(previousPreviewMap);
+    const anchor = source.indexOf('const');
+    application.applyTextAreaTransition(id, { kind: 'scroll', request: {
+      nextState: { offsetRow: previousEditorMap.rowAtSourceOffset(anchor), offsetColumn: 0, followTail: false },
+      source: 'keyboard', target: 'content'
+    } });
+    application.updatePreviewScroll(id, {
+      nextState: { offsetRow: previousPreviewMap.rowAtSourceOffset(anchor), offsetColumn: 0, followTail: false },
+      source: 'keyboard', target: 'content'
+    });
+    const previousEditorAnchor = previousEditorMap.sourceOffsetAtRow(application.state().project.buffers[id]?.editor.scroll.offsetRow ?? 0);
+    const previousPreviewAnchor = previousPreviewMap.sourceOffsetAtRow(application.state().project.buffers[id]?.previewScroll.offsetRow ?? 0);
+    application.resizeTerminal(previousSize, nextSize, defineTextWidthProfile({ ambiguous: 'narrow', emoji: 'wide' }));
+    const nextBody = vellumBodyGeometry(application.state(), nextSize);
+    const nextPanes = vellumPaneGeometry(application.state(), nextBody.bodyWidth, nextBody.contentRows);
+    assert.ok(nextPanes.editor && nextPanes.preview);
+    const resized = application.state().project.buffers[id];
+    assert.ok(resized);
+    const nextEditorMap = createTextAreaRowOffsetMap({
+      document: resized.editor.document,
+      terminalWidth: nextPanes.editor.width,
+      terminalRows: nextPanes.editor.rows,
+      lineNumbers: { minWidth: 3 }, wrap: { mode: 'soft' }, scrollbar: { visible: 'auto' }
+    });
+    const nextPreviewMap = application.previewLayout(id, nextPanes.preview.width)?.rowOffsetMap;
+    assert.ok(nextPreviewMap);
+    const nextEditorAnchor = nextEditorMap.sourceOffsetAtRow(resized.editor.scroll.offsetRow);
+    const nextPreviewAnchor = nextPreviewMap.sourceOffsetAtRow(resized.previewScroll.offsetRow);
+    const tree = resized.preview.kind === 'ready' ? resized.preview.snapshot.document.tree : undefined;
+    const blockAt = (offset: number) => tree?.children.find((node) => node.span.start <= offset && offset <= node.span.end)?.id;
+    assert.equal(blockAt(nextEditorAnchor), blockAt(previousEditorAnchor));
+    assert.equal(blockAt(nextPreviewAnchor), blockAt(previousPreviewAnchor));
   } finally {
     await application.dispose();
   }
@@ -177,6 +257,55 @@ test('fenced code blank lines retain monotonic preview source geometry', async (
   }
 });
 
+test('preview code layout preserves leading, repeated, and blank-line whitespace', async () => {
+  const source = '```text\n  alpha  beta\n\n    gamma\n```';
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'preformatted-code' });
+  try {
+    const bufferId = application.openSource(source);
+    await application.refreshPreviewResources(bufferId);
+    const lines = application.previewLayout(bufferId, 80)?.lines.map((line) => (
+      line.inlineSpans.map((span) => span.text).join('')
+    ));
+    assert.deepEqual(lines, ['text', '  alpha  beta', '', '    gamma']);
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('list and blockquote prefixes follow container semantics across child blocks', async () => {
+  const source = '- first\n\n  second paragraph\n\n> quoted first\n>\n> quoted second';
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'container-prefixes' });
+  try {
+    const bufferId = application.openSource(source);
+    const lines = application.previewLayout(bufferId, 80)?.lines.map((line) => (
+      line.inlineSpans.map((span) => span.text).join('')
+    )) ?? [];
+    assert.equal(lines.filter((line) => line.startsWith('- ')).length, 1);
+    assert.equal(lines.filter((line) => line.startsWith('│ ')).length, 2);
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('table preview wraps cells within grid width and uses a narrow-terminal fallback', async () => {
+  const source = '| First | Second |\n| --- | --- |\n| alphabet soup | another long value |';
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'table-width' });
+  try {
+    const bufferId = application.openSource(source);
+    for (const width of [18, 8]) {
+      const layout = application.previewLayout(bufferId, width);
+      assert.ok(layout);
+      assert.equal(layout.lines.every((line) => (
+        measureTextCells(line.inlineSpans.map((span) => span.text).join('')).cells <= width
+      )), true);
+      const offsets = layout.lines.map((line) => line.sourceOffset);
+      assert.deepEqual(offsets, offsets.toSorted((left, right) => left - right));
+    }
+  } finally {
+    await application.dispose();
+  }
+});
+
 test('extension preview and accessibility retain front matter, callout, math, task, table, link, image, and footnote semantics', async () => {
   const source = [
     '---', 'title: Example', 'owner: Editor', '---', '',
@@ -220,6 +349,22 @@ test('extension preview and accessibility retain front matter, callout, math, ta
   }
 });
 
+test('malformed front matter renders Markspan diagnostics without changing the source document', async () => {
+  const source = '---\nroot:\n    valid: true\n  invalid: indentation\n---';
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'invalid-front-matter' });
+  try {
+    const id = application.openSource(source);
+    const layout = application.previewLayout(id, 60);
+    assert.ok(layout);
+    const rendered = layout.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
+    assert.match(rendered, /Front matter error: Unexpected YAML indentation/u);
+    assert.equal(accessibleRoles(layout.accessibility).has('diagnostic'), true);
+    assert.equal(sourceText(application, id), source);
+  } finally {
+    await application.dispose();
+  }
+});
+
 test('Markdown-aware editing makes one exact undo entry and round-trips nested operations', async () => {
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'editing' });
   try {
@@ -247,8 +392,8 @@ test('Markdown-aware editing makes one exact undo entry and round-trips nested o
   }
 });
 
-test('hybrid decorations conceal inactive delimiters and retain exact Markdown source', async () => {
-  const source = '**bold** and [link](target.md) with `code`\n- [x] task';
+test('hybrid editing preserves exact source through concealed ranges, selection, paste, undo, redo, wide graphemes, and resizing', async () => {
+  const source = '**bold 👩🏽‍💻** and [link](target.md) with `code 界`\n- [x] task';
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'hybrid' });
   try {
     const id = application.openSource(source);
@@ -271,11 +416,28 @@ test('hybrid decorations conceal inactive delimiters and retain exact Markdown s
         meta: { accessibleName: 'Hybrid source' },
         onTransition: (transition: TextAreaTransition) => transition,
       }),
-      terminalSize: { columns: 72, rows: 2 },
+      terminalSize: { columns: 36, rows: 3 },
     });
     assert.match(rendered.plainTextFrame, /link with code/u);
     assert.doesNotMatch(rendered.plainTextFrame, /\*\*bold\*\*/u);
     assert.match(rendered.plainTextFrame, /☑ task/u);
+    const strongEnd = source.indexOf(' and ');
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer', transition: { kind: 'extendSelection', anchor: 0, offset: strongEnd }
+    });
+    const enclosingSelection = application.state().project.buffers[id];
+    assert.ok(enclosingSelection);
+    const selectedStrong = renderElementSnapshot({
+      element: textArea({
+        id: 'selected-strong-source',
+        state: enclosingSelection.editor,
+        decorations: createHybridTextDecorations(enclosingSelection, darkTerminalMarkdownTheme),
+        meta: { accessibleName: 'Selected strong source' },
+        onTransition: (transition: TextAreaTransition) => transition
+      }),
+      terminalSize: { columns: 72, rows: 2 }
+    });
+    assert.match(selectedStrong.plainTextFrame, /\*\*bold 👩🏽‍💻\*\*/u);
     application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 3 } });
     const activeBuffer = application.state().project.buffers[id];
     assert.ok(activeBuffer);
@@ -289,11 +451,55 @@ test('hybrid decorations conceal inactive delimiters and retain exact Markdown s
       }),
       terminalSize: { columns: 72, rows: 2 },
     });
-    assert.match(active.plainTextFrame, /\*\*bold\*\*/u);
+    assert.match(active.plainTextFrame, /\*\*bold 👩🏽‍💻\*\*/u);
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer', transition: { kind: 'placeCaret', offset: source.indexOf('target.md') + 2 }
+    });
+    const linkBuffer = application.state().project.buffers[id];
+    assert.ok(linkBuffer);
+    const activeLink = renderElementSnapshot({
+      element: textArea({
+        id: 'active-hybrid-link', state: linkBuffer.editor,
+        decorations: createHybridTextDecorations(linkBuffer, darkTerminalMarkdownTheme),
+        meta: { accessibleName: 'Active hybrid link source' },
+        onTransition: (transition: TextAreaTransition) => transition
+      }),
+      terminalSize: { columns: 72, rows: 2 }
+    });
+    assert.match(activeLink.plainTextFrame, /\[link\]\(target\.md\)/u);
     assert.equal(sourceText(application, id), source);
-    application.executeMarkdownCommand(id, 'markdown.toggleStrong');
+    const selectionStart = source.indexOf('bold');
+    const selectionEnd = source.indexOf('code') + 'code 界'.length;
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer', transition: { kind: 'extendSelection', anchor: selectionStart, offset: selectionEnd }
+    });
+    const selected = application.state().project.buffers[id]?.editor.selection;
+    assert.ok(selected);
+    const copyStart = Math.min(selected.anchor.offset, selected.focus.offset);
+    const copyEnd = Math.max(selected.anchor.offset, selected.focus.offset);
+    assert.equal(source.slice(copyStart, copyEnd), 'bold 👩🏽‍💻** and [link](target.md) with `code 界');
+    application.applyTextAreaTransition(id, {
+      kind: 'edit', operation: { kind: 'replaceSelection', text: 'pasted 👩🏽‍💻 source' }
+    });
+    const pasted = sourceText(application, id);
     application.executeMarkdownCommand(id, 'edit.undo');
     assert.equal(sourceText(application, id), source);
+    application.executeMarkdownCommand(id, 'edit.redo');
+    assert.equal(sourceText(application, id), pasted);
+    const resizedBuffer = application.state().project.buffers[id];
+    assert.ok(resizedBuffer);
+    for (const columns of [22, 72]) {
+      assert.doesNotThrow(() => renderElementSnapshot({
+        element: textArea({
+          id: `resized-hybrid-${String(columns)}`,
+          state: resizedBuffer.editor,
+          decorations: createHybridTextDecorations(resizedBuffer, darkTerminalMarkdownTheme),
+          meta: { accessibleName: 'Resized hybrid source' },
+          onTransition: (transition: TextAreaTransition) => transition
+        }),
+        terminalSize: { columns, rows: 4 }
+      }));
+    }
   } finally {
     await application.dispose();
   }
@@ -362,6 +568,20 @@ test('preview activation maps terminal cells to exact inline spans and navigates
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('local link resolution decodes paths and resolves unique duplicate heading fragments', () => {
+  const sourcePath = path.join('/project', 'notes', 'source.md');
+  const tree = parseMarkdown('# Repeat\n\n# Repeat-1\n\n# Repeat\n').tree;
+  const duplicate = resolveMarkdownLink('#repeat-2', sourcePath, tree);
+  assert.equal(duplicate.kind, 'source');
+  if (duplicate.kind === 'source') assert.equal(duplicate.sourceOffset, tree.children[2]?.span.start);
+  const encoded = resolveMarkdownLink('../target%20file.md#section_name', sourcePath, tree);
+  assert.deepEqual(encoded, {
+    kind: 'source',
+    path: path.join('/project', 'target file.md')
+  });
+  assert.throws(() => resolveMarkdownLink('target%ZZ.md', sourcePath), /invalid percent encoding/u);
 });
 
 test('automatic marker pairing handles strong markers, closing markers, code fences, and literal code context', async () => {

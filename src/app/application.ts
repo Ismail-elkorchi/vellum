@@ -12,8 +12,10 @@ import {
   splitPaneReducer,
   textAreaReducer,
   type ScrollRequest,
+  type ScrollState,
   type SplitPaneTransition,
   type CommandInputTransition,
+  type TextAreaState,
   type TextAreaTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TreeTransition } from '@ismail-elkorchi/terminal-ui/behavior';
@@ -23,8 +25,9 @@ import {
   textDocumentSelectionBetween,
   textDocumentText
 } from '@ismail-elkorchi/terminal-ui/text';
-import type { RowOffsetMap, TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import type { TextAreaDecorations } from '@ismail-elkorchi/terminal-ui/components';
+import type { RowOffsetMap, TextChangeSet, TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
+import { createTextAreaRowOffsetMap, type TextAreaDecorations } from '@ismail-elkorchi/terminal-ui/components';
+import type { TerminalSize } from '@ismail-elkorchi/terminal-ui/host';
 import { walkMarkdown, type MarkdownParseOptions } from 'markspan';
 import type {
   AppState,
@@ -32,16 +35,16 @@ import type {
   BufferState,
   ClosedBufferRecord,
   ExternalFileFingerprint,
+  ExternalFileState,
   FileFormat,
   FilePathDialogState,
-  MarkdownPreview,
   NavigationLocation
 } from './types.js';
-import { activeBuffer } from './types.js';
+import { activeBuffer, bufferIsDirty } from './types.js';
 import {
   executeCommand as reduceCommand,
   initialAppState,
-  commandRegistry,
+  commandById,
   type AppUpdate
 } from '../commands/registry.js';
 import { commandPaletteEntries } from '../commands/palette.js';
@@ -76,6 +79,7 @@ import {
 import {
   commitDirectoryNodes,
   commitIndexedFiles,
+  clearDirectoryLoading,
   createFileTreeState,
   indexProjectFiles,
   indexedFilePaths,
@@ -100,11 +104,18 @@ import {
 import type { MarkdownBlockLayoutCache } from '../markdown/render/cache.js';
 import type { MarkdownRenderedBlock } from '../markdown/render/block.js';
 import type { MarkdownBlockResources } from '../markdown/render/resources.js';
+import { vellumBodyGeometry, vellumPaneGeometry } from './viewport-geometry.js';
 import { darkTerminalMarkdownTheme, type MarkdownTheme } from '../markdown/theme.js';
 import {
   createHybridTextDecorations,
 } from '../markdown/hybrid.js';
-import { createCodeHighlighter, type CodeHighlighter } from '../markdown/highlight.js';
+import {
+  createCodeHighlighter,
+  builtInCodeHighlightLanguages,
+  type CodeHighlighter,
+  type CodeHighlightLanguage,
+  type CodeHighlightSettings
+} from '../markdown/highlight.js';
 import { createMathRenderer, type MathRenderer } from '../markdown/math.js';
 import {
   createDiagramRendererRegistry,
@@ -141,6 +152,12 @@ interface BufferRuntime {
   lastPreviewLayout: MarkdownPreviewLayout | undefined;
   hybridDecorations: HybridDecorationCache | undefined;
 }
+
+type PreviewResourceCompletion =
+  | { readonly kind: 'highlight'; readonly value: import('../markdown/render/code.js').HighlightedCode }
+  | { readonly kind: 'math'; readonly value: string }
+  | { readonly kind: 'image'; readonly value: MarkdownImageResult }
+  | { readonly kind: 'diagram'; readonly text: string; readonly image?: MarkdownImageResult };
 
 interface HybridDecorationCache {
   readonly document: BufferState['editor']['document'];
@@ -186,15 +203,27 @@ export interface VellumApplicationOptions {
   readonly watchFiles?: boolean;
   readonly createBufferId?: () => BufferId;
   readonly initialState?: AppState;
-  readonly onExternalChange?: (bufferId: BufferId) => void;
   readonly recoveryStore?: RecoveryStore;
   readonly recoveryDelayMilliseconds?: number;
   readonly diagramRenderers?: readonly DiagramRendererDefinition[];
   readonly imageSettings?: Partial<MarkdownImageSettings>;
-  readonly onPreviewResourceUpdate?: (bufferId: BufferId) => void;
+  readonly highlightLanguages?: readonly CodeHighlightLanguage[];
+  readonly highlightSettings?: Partial<CodeHighlightSettings>;
   readonly openExternalLink?: (url: URL, signal?: AbortSignal) => Promise<void>;
   readonly exportProfiles?: readonly ExportProfile[];
   readonly markdownTheme?: MarkdownTheme;
+}
+
+export type VellumApplicationUpdateReason =
+  | 'previewResource'
+  | 'externalFileRevision'
+  | 'recoveryFailure'
+  | 'backgroundFailure';
+
+export interface VellumApplicationUpdate {
+  readonly revision: number;
+  readonly reason: VellumApplicationUpdateReason;
+  readonly bufferId?: BufferId;
 }
 
 export interface RuntimeBufferInfo {
@@ -205,6 +234,7 @@ export interface RuntimeBufferInfo {
 
 export interface VellumApplication {
   state(): AppState;
+  subscribe(listener: (update: VellumApplicationUpdate) => void): () => void;
   newBuffer(label?: string, source?: string): BufferId;
   openSource(source: string, label?: string): BufferId;
   openFile(filePath: string, signal?: AbortSignal): Promise<BufferId>;
@@ -236,6 +266,7 @@ export interface VellumApplication {
   submitExportProfile(value?: string, signal?: AbortSignal): Promise<void>;
   dismissDialog(): void;
   resizeSplitPane(transition: SplitPaneTransition): void;
+  resizeTerminal(previous: TerminalSize, next: TerminalSize, widthProfile: TextWidthProfile): void;
   updatePreviewScroll(bufferId: BufferId, request: ScrollRequest, editorMap?: RowOffsetMap, previewMap?: RowOffsetMap): void;
   synchronizeFromEditor(bufferId: BufferId, editorMap: RowOffsetMap, previewMap: RowOffsetMap): void;
   applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition): void;
@@ -248,8 +279,8 @@ export interface VellumApplication {
   reopenRecentlyClosed(): BufferId | undefined;
   requestCloseApplication(): boolean;
   resolveCloseApplication(action: 'saveAll' | 'discardAll' | 'cancel'): Promise<boolean>;
-  checkExternalFile(bufferId: BufferId): Promise<void>;
-  reloadExternalFile(bufferId: BufferId): Promise<void>;
+  checkExternalFile(bufferId: BufferId): Promise<boolean>;
+  reloadExternalFile(bufferId: BufferId): Promise<boolean>;
   keepBuffer(bufferId: BufferId): void;
   compareExternalFile(bufferId: BufferId, signal?: AbortSignal): Promise<readonly DiffLine[]>;
   overwriteExternalFile(bufferId: BufferId, signal?: AbortSignal): Promise<void>;
@@ -297,13 +328,55 @@ function instantiateVellumApplication(
   const createId = options.createBufferId ?? randomUUID;
   let disposed = false;
   let recoveryTimer: NodeJS.Timeout | undefined;
+  let recoveryWriteQueue = Promise.resolve();
+  let applicationRevision = 0;
+  const listeners = new Set<(update: VellumApplicationUpdate) => void>();
+
+  const publishApplicationUpdate = (
+    reason: VellumApplicationUpdateReason,
+    bufferId?: BufferId
+  ): void => {
+    applicationRevision += 1;
+    const update = Object.freeze({
+      revision: applicationRevision,
+      reason,
+      ...(bufferId === undefined ? {} : { bufferId })
+    });
+    for (const listener of listeners) listener(update);
+  };
+
+  const publishFailure = (
+    reason: Extract<VellumApplicationUpdateReason, 'recoveryFailure' | 'backgroundFailure'>,
+    error: unknown,
+    bufferId?: BufferId
+  ): void => {
+    state = Object.freeze({
+      ...state,
+      notice: Object.freeze({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+    });
+    publishApplicationUpdate(reason, bufferId);
+  };
+
+  const writeRecovery = async (): Promise<void> => {
+    const recoveryStore = options.recoveryStore;
+    if (recoveryStore === undefined) return;
+    const snapshot = state;
+    const operation = recoveryWriteQueue.then(() => recoveryStore.write(snapshot));
+    recoveryWriteQueue = operation.catch(() => undefined);
+    try {
+      await operation;
+    } catch (error) {
+      if (!disposed) publishFailure('recoveryFailure', error);
+      throw error;
+    }
+  };
 
   const scheduleRecovery = (): void => {
     if (options.recoveryStore === undefined) return;
     if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
     recoveryTimer = setTimeout(() => {
       recoveryTimer = undefined;
-      void options.recoveryStore?.write(state);
+      void writeRecovery().catch(() => undefined);
     }, options.recoveryDelayMilliseconds ?? 500);
     recoveryTimer.unref();
   };
@@ -337,7 +410,10 @@ function instantiateVellumApplication(
     watcher: undefined,
     pending: new Set(),
     previewLayouts: createPreviewLayoutCache(),
-    highlighter: createCodeHighlighter(),
+    highlighter: createCodeHighlighter(
+      options.highlightLanguages ?? builtInCodeHighlightLanguages(),
+      options.highlightSettings
+    ),
     mathRenderer: createMathRenderer(),
     diagramRenderers: createDiagramRendererRegistry(options.diagramRenderers ?? []),
     imageLoader: createMarkdownImageLoader(options.imageSettings),
@@ -357,10 +433,7 @@ function instantiateVellumApplication(
       void api.refreshPreviewResources(bufferId).catch((error) => {
         if (error instanceof Error && error.name === 'AbortError') return;
         if (state.project.buffers[bufferId] === undefined) return;
-        state = Object.freeze({
-          ...state,
-          notice: Object.freeze({ status: 'error', message: error instanceof Error ? error.message : String(error) })
-        });
+        publishFailure('backgroundFailure', error, bufferId);
       });
     });
   };
@@ -400,12 +473,7 @@ function instantiateVellumApplication(
     const buffer = activeBuffer(state);
     const runtime = buffer === undefined ? undefined : runtimes.get(buffer.id);
     if (dialog?.kind !== 'documentSearch' || buffer === undefined || runtime === undefined) return;
-    const selection = dialog.selectionOnly && buffer.editor.selection !== undefined
-      ? {
-          start: Math.min(buffer.editor.selection.anchor.offset, buffer.editor.selection.focus.offset),
-          end: Math.max(buffer.editor.selection.anchor.offset, buffer.editor.selection.focus.offset)
-        }
-      : undefined;
+    const selection = dialog.selectionOnly ? dialog.selectionSpan : undefined;
     const options: DocumentSearchOptions = {
       regularExpression: dialog.regularExpression,
       caseSensitive: dialog.caseSensitive,
@@ -464,9 +532,9 @@ function instantiateVellumApplication(
     const dialog = state.dialogState;
     if (dialog?.kind !== 'exportProfile') return;
     const query = dialog.command.editor.input.text;
-    const normalized = query.trim().toLocaleLowerCase();
+    const normalized = query.trim().toLowerCase();
     const suggestions = createCommandSuggestions(exportProfiles
-      .filter((profile) => normalized.length === 0 || profile.id.includes(normalized) || profile.label.toLocaleLowerCase().includes(normalized))
+      .filter((profile) => normalized.length === 0 || profile.id.includes(normalized) || profile.label.toLowerCase().includes(normalized))
       .map((profile) => ({
         id: `export-profile-${profile.id}`,
         label: profile.label,
@@ -487,24 +555,32 @@ function instantiateVellumApplication(
     readonly label: string;
     readonly path?: string;
     readonly format: FileFormat;
-    readonly fingerprint?: ExternalFileFingerprint;
+    readonly sourceRevision: number;
+    readonly savedRevision: number;
+    readonly externalFileState: ExternalFileState;
+    readonly editor?: TextAreaState;
+    readonly previewScroll?: ScrollState;
   }): BufferId => {
     const id = createId();
     if (state.project.buffers[id] !== undefined) throw new Error(`Duplicate buffer identifier: ${id}`);
-    const parser = createBufferParser(input.source, 0, options.parseOptions);
+    if ((input.path === undefined) !== (input.externalFileState.kind === 'untracked')) {
+      throw new Error('A buffer path and its external file state must describe the same source document.');
+    }
+    if (input.editor !== undefined && textDocumentText(input.editor.document) !== input.source) {
+      throw new Error('A restored editor must contain the buffer source document.');
+    }
+    const parser = createBufferParser(input.source, input.sourceRevision, options.parseOptions);
     const buffer: BufferState = Object.freeze({
       id,
       ...(input.path === undefined ? {} : { path: input.path }),
       label: input.label,
-      editor: createTextAreaState({ value: input.source }),
-      sourceRevision: 0,
-      savedRevision: 0,
-      dirty: input.path === undefined && input.source.length > 0,
+      editor: input.editor ?? createTextAreaState({ value: input.source }),
+      sourceRevision: input.sourceRevision,
+      savedRevision: input.savedRevision,
       preview: parser.preview(),
-      previewScroll: createScrollState(),
-      externalFileState: input.fingerprint === undefined
-        ? Object.freeze({ kind: 'untracked' })
-        : Object.freeze({ kind: 'current', fingerprint: input.fingerprint }),
+      previewResourceRevision: 0,
+      previewScroll: input.previewScroll ?? createScrollState(),
+      externalFileState: input.externalFileState,
       format: input.format
     });
     runtimes.set(id, createRuntime(parser));
@@ -540,20 +616,59 @@ function instantiateVellumApplication(
     });
   };
 
+  const commitPreviewResource = (
+    bufferId: BufferId,
+    sourceRevision: number,
+    nodeId: number,
+    topLevelNodeId: number | undefined,
+    completion: PreviewResourceCompletion,
+    controller: AbortController
+  ): boolean => {
+    const buffer = state.project.buffers[bufferId];
+    const runtime = runtimes.get(bufferId);
+    if (controller.signal.aborted
+      || buffer === undefined
+      || runtime === undefined
+      || buffer.sourceRevision !== sourceRevision) return false;
+    switch (completion.kind) {
+      case 'highlight':
+        runtime.highlightedCode.set(nodeId, completion.value);
+        break;
+      case 'math':
+        runtime.mathText.set(nodeId, completion.value);
+        break;
+      case 'image':
+        runtime.images.set(nodeId, completion.value);
+        break;
+      case 'diagram':
+        runtime.diagramText.set(nodeId, completion.text);
+        if (completion.image !== undefined) runtime.images.set(nodeId, completion.image);
+        break;
+    }
+    if (topLevelNodeId !== undefined) runtime.previewLayouts.delete(topLevelNodeId);
+    replaceBuffer(Object.freeze({
+      ...buffer,
+      previewResourceRevision: buffer.previewResourceRevision + 1
+    }));
+    publishApplicationUpdate('previewResource', bufferId);
+    return true;
+  };
+
   const attachWatcher = (bufferId: BufferId, filePath: string): void => {
     const runtime = runtimes.get(bufferId);
     if (runtime === undefined) return;
     runtime.watcher?.close();
     try {
       runtime.watcher = watch(filePath, { persistent: false }, () => {
-        options.onExternalChange?.(bufferId);
-        void api.checkExternalFile(bufferId).catch((error) => {
-          if (state.project.buffers[bufferId] === undefined) return;
-          state = Object.freeze({
-            ...state,
-            notice: Object.freeze({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+        void api.checkExternalFile(bufferId)
+          .then((changed) => {
+            if (changed && state.project.buffers[bufferId] !== undefined) {
+              publishApplicationUpdate('externalFileRevision', bufferId);
+            }
+          })
+          .catch((error: unknown) => {
+            if (state.project.buffers[bufferId] !== undefined) publishFailure('backgroundFailure', error, bufferId);
           });
-        });
       });
     } catch {
       runtime.watcher = undefined;
@@ -576,6 +691,19 @@ function instantiateVellumApplication(
     runtime.diagramText.clear();
     runtime.images.clear();
     runtimes.delete(bufferId);
+  };
+
+  const resetSessionScopedPreviewCaches = (runtime: BufferRuntime): void => {
+    for (const controller of runtime.pending) controller.abort();
+    runtime.pending.clear();
+    runtime.previewLayouts.clear();
+    runtime.highlightedCode.clear();
+    runtime.mathText.clear();
+    runtime.diagramText.clear();
+    runtime.images.clear();
+    runtime.resourceRevision = undefined;
+    runtime.lastPreviewLayout = undefined;
+    runtime.hybridDecorations = undefined;
   };
 
   const closeBuffer = (bufferId: BufferId): void => {
@@ -606,9 +734,17 @@ function instantiateVellumApplication(
     };
     if (activeBufferId === undefined) delete project.activeBufferId;
     else project.activeBufferId = activeBufferId;
+    const navigation = state.commandState.navigation;
     state = clearDialog(Object.freeze({
       ...state,
-      project: Object.freeze(project)
+      project: Object.freeze(project),
+      commandState: Object.freeze({
+        ...state.commandState,
+        navigation: Object.freeze({
+          back: Object.freeze(navigation.back.filter((entry) => entry.bufferId !== bufferId)),
+          forward: Object.freeze(navigation.forward.filter((entry) => entry.bufferId !== bufferId))
+        })
+      })
     }));
     releaseBuffer(bufferId);
     scheduleRecovery();
@@ -642,15 +778,30 @@ function instantiateVellumApplication(
     }
     const sourceRevision = buffer.sourceRevision + 1;
     const preview = runtime.parser.applyChanges(reduction.changeSet, sourceRevision);
-    runtime.lastPreviewLayout = undefined;
+    if (buffer.preview.kind !== 'ready'
+      || preview.kind !== 'ready'
+      || preview.identity !== buffer.preview.identity) {
+      resetSessionScopedPreviewCaches(runtime);
+    } else {
+      runtime.lastPreviewLayout = undefined;
+    }
     const nextBuffer = Object.freeze({
       ...buffer,
       editor,
       sourceRevision,
-      dirty: true,
       preview
     });
     replaceBuffer(nextBuffer);
+    const dialog = state.dialogState;
+    if (dialog?.kind === 'documentSearch' && dialog.selectionOnly && dialog.selectionSpan !== undefined) {
+      state = Object.freeze({
+        ...state,
+        dialogState: Object.freeze({
+          ...dialog,
+          selectionSpan: mapSearchSelection(dialog.selectionSpan, reduction.changeSet)
+        })
+      });
+    }
     runtime.hybridDecorations = undefined;
     schedulePreviewResources(bufferId);
     scheduleRecovery();
@@ -658,24 +809,45 @@ function instantiateVellumApplication(
 
   const api: VellumApplication = {
     state: () => state,
+    subscribe(listener) {
+      assertActive();
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     newBuffer(label = 'untitled.md', source = '') {
       assertActive();
-      return addBuffer({ source, label, format: defaultFormat });
+      const sourceRevision = source.length === 0 ? 0 : 1;
+      return addBuffer({
+        source, label, format: defaultFormat, sourceRevision, savedRevision: 0,
+        externalFileState: Object.freeze({ kind: 'untracked' })
+      });
     },
     openSource(source, label = 'standard-input.md') {
       assertActive();
-      return addBuffer({ source, label, format: defaultFormat });
+      const sourceRevision = source.length === 0 ? 0 : 1;
+      return addBuffer({
+        source, label, format: defaultFormat, sourceRevision, savedRevision: 0,
+        externalFileState: Object.freeze({ kind: 'untracked' })
+      });
     },
     async openFile(filePath, signal) {
       assertActive();
       const file = await readSourceFile(filePath, signal);
+      assertActive();
       const existing = Object.values(state.project.buffers).find((buffer) => {
         const external = buffer.externalFileState;
-        return (external.kind === 'current' && external.fingerprint.realPath === file.realPath)
+        return buffer.path === file.path
+          || (external.kind === 'current' && external.fingerprint.realPath === file.realPath)
           || (external.kind === 'conflict' && external.disk.realPath === file.realPath);
       });
       if (existing !== undefined) {
         api.activateBuffer(existing.id);
+        const existingFingerprint = existing.externalFileState.kind === 'untracked'
+          ? undefined
+          : externalFileStateFingerprint(existing.externalFileState);
+        if (existingFingerprint === undefined || !sameExternalFileRevision(existingFingerprint, file.fingerprint)) {
+          await api.checkExternalFile(existing.id);
+        }
         return existing.id;
       }
       return addBuffer({
@@ -683,7 +855,9 @@ function instantiateVellumApplication(
         path: file.path,
         label: file.label,
         format: file.format,
-        fingerprint: file.fingerprint
+        sourceRevision: 0,
+        savedRevision: 0,
+        externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint })
       });
     },
     async openProjectDirectory(directoryPath, signal) {
@@ -691,6 +865,7 @@ function instantiateVellumApplication(
       signal?.throwIfAborted();
       const exact = path.resolve(directoryPath);
       const resolved = await realpath(exact);
+      assertActive();
       if (!(await stat(resolved)).isDirectory()) throw new Error(`The project directory is not a directory: ${exact}`);
       for (const controller of directoryReads.values()) controller.abort();
       directoryReads.clear();
@@ -725,6 +900,17 @@ function instantiateVellumApplication(
             fileTree: commitDirectoryNodes(state.project.fileTree, directoryId, children)
           })
         });
+      } catch (error) {
+        if (directoryReads.get(directoryId) === controller) {
+          state = Object.freeze({
+            ...state,
+            project: Object.freeze({
+              ...state.project,
+              fileTree: clearDirectoryLoading(state.project.fileTree, directoryId)
+            })
+          });
+        }
+        throw error;
       } finally {
         if (directoryReads.get(directoryId) === controller) directoryReads.delete(directoryId);
       }
@@ -798,8 +984,8 @@ function instantiateVellumApplication(
     async submitFilePathDialog(value) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'filePath') return false;
-      const entered = (value ?? dialog.command.editor.input.text).trim();
-      if (entered.length === 0) {
+      const entered = value ?? dialog.command.editor.input.text;
+      if (entered.trim().length === 0) {
         state = Object.freeze({
           ...state,
           dialogState: Object.freeze({ ...dialog, error: 'Enter a path.' })
@@ -821,7 +1007,10 @@ function instantiateVellumApplication(
           closeBuffer(dialog.afterSave.bufferId);
           await api.persistRecoveryRecord();
         } else if (dialog.afterSave?.kind === 'closeApplication') {
-          const remaining = dialog.afterSave.bufferIds.filter((bufferId) => state.project.buffers[bufferId]?.dirty === true);
+          const remaining = dialog.afterSave.bufferIds.filter((bufferId) => {
+            const buffer = state.project.buffers[bufferId];
+            return buffer !== undefined && bufferIsDirty(buffer);
+          });
           const nextUnsaved = remaining.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
           if (nextUnsaved !== undefined) {
             state = Object.freeze({
@@ -837,7 +1026,10 @@ function instantiateVellumApplication(
           await api.persistRecoveryRecord();
           return true;
         } else if (dialog.afterSave?.kind === 'saveAll') {
-          const remaining = dialog.afterSave.bufferIds.filter((bufferId) => state.project.buffers[bufferId]?.dirty === true);
+          const remaining = dialog.afterSave.bufferIds.filter((bufferId) => {
+            const buffer = state.project.buffers[bufferId];
+            return buffer !== undefined && bufferIsDirty(buffer);
+          });
           const nextUnsaved = remaining.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
           if (nextUnsaved !== undefined) {
             state = Object.freeze({
@@ -880,7 +1072,14 @@ function instantiateVellumApplication(
       const dialog = state.dialogState;
       if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen') return;
       if (dialog.kind === 'commandPalette') {
-        const candidate = value === undefined ? undefined : commandRegistry.get(value as import('./types.js').CommandId);
+        const candidate = value === undefined ? undefined : commandById(value);
+        if (candidate !== undefined && !candidate.enabled(state)) {
+          state = Object.freeze({
+            ...state,
+            dialogState: Object.freeze({ ...dialog, error: 'The selected command is not available in the current context.' })
+          });
+          return;
+        }
         const entry = candidate ?? commandPaletteEntries(state, dialog.command.editor.input.text).find((item) => item.enabled);
         if (entry === undefined) {
           state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No enabled command matches the query.' }) });
@@ -923,7 +1122,31 @@ function instantiateVellumApplication(
     configureDocumentSearch(option) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'documentSearch') return;
-      state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, [option]: !dialog[option] }) });
+      if (option === 'selectionOnly') {
+        if (dialog.selectionOnly) {
+          const next = { ...dialog, selectionOnly: false };
+          delete next.selectionSpan;
+          state = Object.freeze({ ...state, dialogState: Object.freeze(next) });
+        } else {
+          const buffer = activeBuffer(state);
+          const selection = buffer?.editor.selection;
+          const start = selection === undefined ? 0 : Math.min(selection.anchor.offset, selection.focus.offset);
+          const end = selection === undefined ? 0 : Math.max(selection.anchor.offset, selection.focus.offset);
+          if (selection === undefined || start === end) {
+            state = Object.freeze({
+              ...state,
+              dialogState: Object.freeze({ ...dialog, error: 'Select a nonempty source range before enabling selection-only search.' })
+            });
+            return;
+          }
+          state = Object.freeze({
+            ...state,
+            dialogState: Object.freeze({ ...dialog, selectionOnly: true, selectionSpan: Object.freeze({ start, end }) })
+          });
+        }
+      } else {
+        state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, [option]: !dialog[option] }) });
+      }
       refreshDocumentSearch();
     },
     navigateDocumentSearch(direction) {
@@ -949,9 +1172,7 @@ function instantiateVellumApplication(
       const buffer = activeBuffer(state);
       const runtime = buffer === undefined ? undefined : runtimes.get(buffer.id);
       if (dialog?.kind !== 'documentSearch' || dialog.replacement === undefined || buffer === undefined || runtime === undefined) return;
-      const selection = dialog.selectionOnly && buffer.editor.selection !== undefined
-        ? { start: Math.min(buffer.editor.selection.anchor.offset, buffer.editor.selection.focus.offset), end: Math.max(buffer.editor.selection.anchor.offset, buffer.editor.selection.focus.offset) }
-        : undefined;
+      const selection = dialog.selectionOnly ? dialog.selectionSpan : undefined;
       const found = findDocumentMatches(runtime.parser.source(), dialog.query.editor.input.text, {
         regularExpression: dialog.regularExpression,
         caseSensitive: dialog.caseSensitive,
@@ -975,10 +1196,19 @@ function instantiateVellumApplication(
     async runProjectDirectorySearch(searchOptions = {}, signal = new AbortController().signal) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'projectDirectorySearch') return;
+      const query = dialog.query.editor.input.text;
+      const indexedFiles = state.project.fileTree.indexedFiles;
       state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, searching: true, results: Object.freeze([]) }) });
       try {
-        const results = await searchProjectDirectory(state.project.fileTree, dialog.query.editor.input.text, searchOptions, signal);
+        const results = await searchProjectDirectory(state.project.fileTree, query, searchOptions, signal);
         if (state.dialogState?.kind !== 'projectDirectorySearch') return;
+        if (state.dialogState.query.editor.input.text !== query || state.project.fileTree.indexedFiles !== indexedFiles) {
+          state = Object.freeze({
+            ...state,
+            dialogState: Object.freeze({ ...state.dialogState, searching: false, results: Object.freeze([]) })
+          });
+          return;
+        }
         const queryText = state.dialogState.query.editor.input.text;
         const suggestions = createCommandSuggestions(results.map((result, index) => ({
           id: `project-result-${String(index)}`,
@@ -1109,9 +1339,9 @@ function instantiateVellumApplication(
       const dialog = state.dialogState;
       if (dialog?.kind !== 'exportProfile') return;
       const entered = value ?? dialog.command.editor.input.text;
-      const normalized = entered.trim().toLocaleLowerCase();
+      const normalized = entered.trim().toLowerCase();
       const profile = exportProfiles.find((candidate) => candidate.id === entered)
-        ?? exportProfiles.find((candidate) => candidate.id.includes(normalized) || candidate.label.toLocaleLowerCase().includes(normalized));
+        ?? exportProfiles.find((candidate) => candidate.id.includes(normalized) || candidate.label.toLowerCase().includes(normalized));
       if (profile === undefined) {
         state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'Select an export profile.' }) });
         return;
@@ -1120,7 +1350,7 @@ function instantiateVellumApplication(
         if (dialog.scope === 'activeBuffer') {
           const buffer = activeBuffer(state);
           if (buffer?.path === undefined) throw new Error('Save the active buffer before exporting it.');
-          if (buffer.dirty) throw new Error('Save the active buffer before exporting its current source document.');
+          if (bufferIsDirty(buffer)) throw new Error('Save the active buffer before exporting its current source document.');
           await exportSourceDocument(buffer.path, profile, { ...(signal === undefined ? {} : { signal }) });
         } else {
           const root = state.project.rootDirectory;
@@ -1147,6 +1377,70 @@ function instantiateVellumApplication(
         constraints: Object.freeze([{ minShare: 0.2, maxShare: 0.8 }, { minShare: 0.2, maxShare: 0.8 }])
       });
       if (splitPane !== state.splitPane) state = Object.freeze({ ...state, splitPane });
+    },
+    resizeTerminal(previous, next, widthProfile) {
+      const previousBody = vellumBodyGeometry(state, previous);
+      const nextBody = vellumBodyGeometry(state, next);
+      const previousPanes = vellumPaneGeometry(state, previousBody.bodyWidth, previousBody.contentRows);
+      const nextPanes = vellumPaneGeometry(state, nextBody.bodyWidth, nextBody.contentRows);
+      for (const bufferId of state.project.bufferOrder) {
+        const buffer = state.project.buffers[bufferId];
+        if (buffer === undefined) continue;
+        let editor = buffer.editor;
+        let previewScroll = buffer.previewScroll;
+        if (previousPanes.editor !== undefined && nextPanes.editor !== undefined) {
+          const decorations = state.editorMode === 'hybrid' ? api.hybridDecorations(bufferId) : undefined;
+          const previousMap = createTextAreaRowOffsetMap({
+            document: buffer.editor.document,
+            terminalWidth: previousPanes.editor.width,
+            terminalRows: previousPanes.editor.rows,
+            widthProfile,
+            ...(decorations === undefined ? {} : { decorations }),
+            lineNumbers: { minWidth: 3 },
+            wrap: { mode: 'soft' },
+            scrollbar: { visible: 'auto' }
+          });
+          const nextMap = createTextAreaRowOffsetMap({
+            document: buffer.editor.document,
+            terminalWidth: nextPanes.editor.width,
+            terminalRows: nextPanes.editor.rows,
+            widthProfile,
+            ...(decorations === undefined ? {} : { decorations }),
+            lineNumbers: { minWidth: 3 },
+            wrap: { mode: 'soft' },
+            scrollbar: { visible: 'auto' }
+          });
+          const sourceOffset = sourceOffsetAtScrollRow(previousMap, buffer.editor.scroll.offsetRow);
+          editor = Object.freeze({
+            ...buffer.editor,
+            scroll: scrollReducer(buffer.editor.scroll, {
+              kind: 'setOffset', rows: nextMap.rowAtSourceOffset(sourceOffset)
+            })
+          });
+        }
+        if (previousPanes.preview !== undefined && nextPanes.preview !== undefined) {
+          const previousMap = api.previewLayout(
+            bufferId,
+            previousPanes.preview.width,
+            markdownTheme,
+            widthProfile
+          )?.rowOffsetMap;
+          const nextMap = api.previewLayout(
+            bufferId,
+            nextPanes.preview.width,
+            markdownTheme,
+            widthProfile
+          )?.rowOffsetMap;
+          if (previousMap !== undefined && nextMap !== undefined) {
+            const sourceOffset = sourceOffsetAtScrollRow(previousMap, buffer.previewScroll.offsetRow);
+            previewScroll = scrollReducer(buffer.previewScroll, {
+              kind: 'setOffset', rows: nextMap.rowAtSourceOffset(sourceOffset)
+            });
+          }
+        }
+        replaceBuffer(Object.freeze({ ...buffer, editor, previewScroll }));
+      }
+      scheduleRecovery();
     },
     updatePreviewScroll(bufferId, request, editorMap, previewMap) {
       const buffer = state.project.buffers[bufferId];
@@ -1209,41 +1503,47 @@ function instantiateVellumApplication(
     },
     async saveBuffer(bufferId, destination, overwriteConflict = false, signal) {
       assertActive();
-      const buffer = state.project.buffers[bufferId];
-      if (buffer === undefined) return false;
-      const target = destination ?? buffer.path;
+      const snapshot = state.project.buffers[bufferId];
+      if (snapshot === undefined) return false;
+      const target = destination ?? snapshot.path;
       if (target === undefined) throw new Error('A destination path is required for an unsaved buffer.');
-      const savingSamePath = destination === undefined || path.resolve(target) === buffer.path;
-      if (savingSamePath && buffer.externalFileState.kind === 'conflict' && !overwriteConflict) {
+      const savingSamePath = destination === undefined || path.resolve(target) === snapshot.path;
+      if (savingSamePath && snapshot.externalFileState.kind === 'conflict' && !overwriteConflict) {
         state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
         return false;
       }
-      const expected = savingSamePath && buffer.externalFileState.kind === 'current'
-        ? buffer.externalFileState.fingerprint
+      const expected = savingSamePath && snapshot.externalFileState.kind === 'current'
+        ? snapshot.externalFileState.fingerprint
         : undefined;
-      const file = await saveSourceFile(target, textDocumentText(buffer.editor.document), {
-        format: buffer.format,
+      const savedRevision = snapshot.sourceRevision;
+      const file = await saveSourceFile(target, textDocumentText(snapshot.editor.document), {
+        format: snapshot.format,
         ...(expected === undefined ? {} : { expectedFingerprint: expected }),
         overwriteExisting: overwriteConflict,
         ...(signal === undefined ? {} : { signal })
       });
-      replaceBuffer({
-        ...buffer,
-        path: file.path,
-        label: file.label,
-        savedRevision: buffer.sourceRevision,
-        dirty: false,
-        externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
-        format: file.format
-      });
-      schedulePreviewResources(bufferId);
-      if (buffer.path !== file.path) attachWatcher(bufferId, file.path);
+      assertActive();
+      const current = state.project.buffers[bufferId];
+      if (current !== undefined) {
+        replaceBuffer({
+          ...current,
+          path: file.path,
+          label: file.label,
+          savedRevision,
+          externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
+          format: file.format
+        });
+        if (current.path !== file.path) attachWatcher(bufferId, file.path);
+      }
       await api.refreshFileTree();
       await api.persistRecoveryRecord();
       return true;
     },
     async saveAll(signal) {
-      const dirty = state.project.bufferOrder.filter((bufferId) => state.project.buffers[bufferId]?.dirty === true);
+      const dirty = state.project.bufferOrder.filter((bufferId) => {
+        const buffer = state.project.buffers[bufferId];
+        return buffer !== undefined && bufferIsDirty(buffer);
+      });
       const unsaved = dirty.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
       if (unsaved !== undefined) {
         state = Object.freeze({
@@ -1262,7 +1562,7 @@ function instantiateVellumApplication(
     requestCloseBuffer(bufferId) {
       const buffer = state.project.buffers[bufferId];
       if (buffer === undefined) return true;
-      if (buffer.dirty) {
+      if (bufferIsDirty(buffer)) {
         state = Object.freeze({
           ...state,
           dialogState: Object.freeze({ kind: 'dirtyBuffer', bufferIds: Object.freeze([bufferId]), closeApplication: false })
@@ -1302,22 +1602,19 @@ function instantiateVellumApplication(
         label: record.label,
         ...(record.path === undefined ? {} : { path: record.path }),
         format: record.format,
-        ...(record.externalFileState.kind === 'current' ? { fingerprint: record.externalFileState.fingerprint } : {})
-      });
-      const created = state.project.buffers[id];
-      if (created !== undefined) replaceBuffer({
-        ...created,
-        editor: record.editor,
         sourceRevision: record.sourceRevision,
         savedRevision: record.savedRevision,
-        dirty: record.sourceRevision !== record.savedRevision,
-        previewScroll: record.previewScroll,
-        externalFileState: record.externalFileState
+        externalFileState: record.externalFileState,
+        editor: record.editor,
+        previewScroll: record.previewScroll
       });
       return id;
     },
     requestCloseApplication() {
-      const dirty = state.project.bufferOrder.filter((id) => state.project.buffers[id]?.dirty === true);
+      const dirty = state.project.bufferOrder.filter((id) => {
+        const buffer = state.project.buffers[id];
+        return buffer !== undefined && bufferIsDirty(buffer);
+      });
       if (dirty.length === 0) return true;
       state = Object.freeze({
         ...state,
@@ -1348,20 +1645,23 @@ function instantiateVellumApplication(
       return true;
     },
     async checkExternalFile(bufferId) {
-      const buffer = state.project.buffers[bufferId];
-      if (buffer?.path === undefined || buffer.externalFileState.kind === 'untracked') return;
-      const previous = buffer.externalFileState.kind === 'deleted'
-        ? buffer.externalFileState.previous
-        : buffer.externalFileState.kind === 'conflict'
-          ? buffer.externalFileState.disk
-          : buffer.externalFileState.fingerprint;
-      const currentFingerprint = await externalFileFingerprint(buffer.path);
+      const snapshot = state.project.buffers[bufferId];
+      if (snapshot?.path === undefined || snapshot.externalFileState.kind === 'untracked') return false;
+      const observedPath = snapshot.path;
+      const currentFingerprint = await externalFileFingerprint(observedPath);
+      let buffer = state.project.buffers[bufferId];
+      if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
+      const previous = externalFileStateFingerprint(buffer.externalFileState);
       if (currentFingerprint === undefined) {
         await api.refreshFileTree();
-        const renamed = await findRenamedPath(state.project.fileTree, previous);
+        buffer = state.project.buffers[bufferId];
+        if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
+        const latestPrevious = externalFileStateFingerprint(buffer.externalFileState);
+        const renamed = await findRenamedPath(state.project.fileTree, latestPrevious);
         if (renamed !== undefined) {
           const renamedFingerprint = await externalFileFingerprint(renamed);
-          if (renamedFingerprint !== undefined) {
+          buffer = state.project.buffers[bufferId];
+          if (renamedFingerprint !== undefined && buffer?.path === observedPath) {
             replaceBuffer({
               ...buffer,
               path: renamed,
@@ -1373,59 +1673,95 @@ function instantiateVellumApplication(
               project: Object.freeze({
                 ...state.project,
                 recentlyOpenedPaths: Object.freeze(state.project.recentlyOpenedPaths.map((candidate) => (
-                  candidate === buffer.path ? renamed : candidate
+                  candidate === observedPath ? renamed : candidate
                 )))
               })
             });
             attachWatcher(bufferId, renamed);
-            return;
+            return true;
           }
         }
-        replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'deleted', previous }) });
+        buffer = state.project.buffers[bufferId];
+        if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
+        replaceBuffer({
+          ...buffer,
+          externalFileState: Object.freeze({ kind: 'deleted', previous: externalFileStateFingerprint(buffer.externalFileState) })
+        });
         state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
-        return;
+        return true;
       }
-      if (sameExternalFileRevision(currentFingerprint, previous)) return;
-      if (buffer.dirty) {
+      if (sameExternalFileRevision(currentFingerprint, previous)) {
+        if (buffer.externalFileState.kind !== 'deleted') return false;
+        replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'current', fingerprint: currentFingerprint }) });
+        if (state.dialogState?.kind === 'externalConflict' && state.dialogState.bufferId === bufferId) {
+          state = clearDialog(state);
+        }
+        return true;
+      }
+      if (bufferIsDirty(buffer)) {
         replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: currentFingerprint }) });
         state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
-        return;
+        return true;
       }
-      await api.reloadExternalFile(bufferId);
+      return api.reloadExternalFile(bufferId);
     },
     async reloadExternalFile(bufferId) {
-      const buffer = state.project.buffers[bufferId];
+      const snapshot = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
-      if (buffer?.path === undefined || runtime === undefined) return;
-      const file = await readSourceFile(buffer.path);
-      const revision = buffer.sourceRevision + 1;
-      const caret = Math.min(buffer.editor.caret.position.offset, file.source.length);
-      const selection = buffer.editor.selection === undefined
+      if (snapshot?.path === undefined || runtime === undefined) return false;
+      const file = await readSourceFile(snapshot.path);
+      const buffer = state.project.buffers[bufferId];
+      if (buffer?.path !== snapshot.path || runtimes.get(bufferId) !== runtime) return false;
+      if (buffer.sourceRevision !== snapshot.sourceRevision) {
+        if (!bufferIsDirty(buffer)
+          && buffer.externalFileState.kind === 'current'
+          && sameExternalFileRevision(buffer.externalFileState.fingerprint, file.fingerprint)) {
+          return false;
+        }
+        replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: file.fingerprint }) });
+        state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
+        return true;
+      }
+      const revision = snapshot.sourceRevision + 1;
+      const caret = Math.min(snapshot.editor.caret.position.offset, file.source.length);
+      const selection = snapshot.editor.selection === undefined
         ? undefined
         : textDocumentSelectionBetween(
-            Math.min(buffer.editor.selection.anchor.offset, file.source.length),
-            Math.min(buffer.editor.selection.focus.offset, file.source.length)
+            Math.min(snapshot.editor.selection.anchor.offset, file.source.length),
+            Math.min(snapshot.editor.selection.focus.offset, file.source.length)
           );
       const editor = createTextAreaState({
         value: file.source,
         caret: textCaretAt(caret),
         ...(selection === undefined ? {} : { selection }),
-        scroll: buffer.editor.scroll
+        scroll: snapshot.editor.scroll
       });
       const preview = runtime.parser.replaceSource(file.source, revision);
-      runtime.lastPreviewLayout = undefined;
-      runtime.hybridDecorations = undefined;
+      resetSessionScopedPreviewCaches(runtime);
       replaceBuffer({
         ...buffer,
         editor,
         sourceRevision: revision,
         savedRevision: revision,
-        dirty: false,
         preview,
         externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
         format: file.format
       });
+      const dialog = state.dialogState;
+      if (dialog?.kind === 'documentSearch' && dialog.selectionOnly) {
+        const nextDialog = {
+          ...dialog,
+          selectionOnly: false,
+          matches: Object.freeze([]),
+          error: 'Selection-only search was disabled because the source document was reloaded.'
+        };
+        delete nextDialog.selectionSpan;
+        delete nextDialog.selectedIndex;
+        state = Object.freeze({ ...state, dialogState: Object.freeze(nextDialog) });
+      }
       schedulePreviewResources(bufferId);
+      scheduleRecovery();
+      return true;
     },
     keepBuffer(bufferId) {
       const buffer = state.project.buffers[bufferId];
@@ -1559,7 +1895,8 @@ function instantiateVellumApplication(
         highlightedCode: runtime.highlightedCode,
         mathText: runtime.mathText,
         diagramText: runtime.diagramText,
-        images: runtime.images
+        images: runtime.images,
+        diagnostics: buffer.preview.snapshot.document.diagnostics
       };
       const layout = layoutMarkdownPreview(
         buffer.preview.snapshot.document.tree,
@@ -1605,63 +1942,109 @@ function instantiateVellumApplication(
       retainResourceEntries(runtime.mathText, activeNodeIds);
       retainResourceEntries(runtime.diagramText, activeNodeIds);
       retainResourceEntries(runtime.images, activeNodeIds);
-      const publish = (nodeId: number): void => {
-        if (controller.signal.aborted || runtimes.get(bufferId) !== runtime) return;
-        if (state.project.buffers[bufferId]?.sourceRevision !== revision) return;
-        const topLevelId = topLevelNodeById.get(nodeId);
-        if (topLevelId !== undefined) runtime.previewLayouts.delete(topLevelId);
-        options.onPreviewResourceUpdate?.(bufferId);
-      };
+      const resourceNodes = nodes.filter((node) => (
+        node.kind === 'mathBlock'
+        || node.kind === 'mathInline'
+        || node.kind === 'image'
+        || node.kind === 'codeBlock' && node.language !== null
+      ));
       let refreshFailure: unknown;
+      let workers: readonly Promise<void>[] = Object.freeze([]);
       try {
-        await Promise.all(nodes.map(async (node) => {
-          controller.signal.throwIfAborted();
-          if (node.kind === 'codeBlock' && node.language !== null) {
-            if (node.language.toLocaleLowerCase() === 'mermaid') {
-              try {
-                const diagram = await runtime.diagramRenderers.render('mermaid', node.value, controller.signal);
-                if (diagram !== undefined) {
-                  const image = runtime.imageLoader.decode(diagram.bytes, 'Mermaid diagram', diagram.contentType);
-                  runtime.images.set(node.id, image);
-                  if (image.kind === 'failed') runtime.diagramText.set(node.id, `Diagram rendering failed.\n${node.value}`);
-                  else runtime.diagramText.set(node.id, 'Mermaid diagram');
-                  publish(node.id);
+        let nextResource = 0;
+        workers = Array.from({ length: Math.min(4, resourceNodes.length) }, async () => {
+          while (nextResource < resourceNodes.length) {
+            const node = resourceNodes[nextResource];
+            nextResource += 1;
+            if (node === undefined) continue;
+            controller.signal.throwIfAborted();
+            if (node.kind === 'codeBlock' && node.language !== null) {
+              if (node.language.trim().toLowerCase() === 'mermaid') {
+                try {
+                  const diagram = await runtime.diagramRenderers.render('mermaid', node.value, controller.signal);
+                  if (diagram !== undefined) {
+                    const image = runtime.imageLoader.decode(diagram.bytes, 'Mermaid diagram', diagram.contentType);
+                    commitPreviewResource(
+                      bufferId,
+                      revision,
+                      node.id,
+                      topLevelNodeById.get(node.id),
+                      {
+                        kind: 'diagram',
+                        text: image.kind === 'failed' ? `Diagram rendering failed.\n${node.value}` : 'Mermaid diagram',
+                        image
+                      },
+                      controller
+                    );
+                  }
+                } catch (error) {
+                  if (controller.signal.aborted) throw error;
+                  commitPreviewResource(
+                    bufferId,
+                    revision,
+                    node.id,
+                    topLevelNodeById.get(node.id),
+                    { kind: 'diagram', text: `Diagram rendering failed.\n${node.value}` },
+                    controller
+                  );
                 }
+              } else {
+                const highlighted = await runtime.highlighter.highlight(node.language, node.value, controller.signal);
+                if (highlighted !== undefined) {
+                  commitPreviewResource(
+                    bufferId,
+                    revision,
+                    node.id,
+                    topLevelNodeById.get(node.id),
+                    { kind: 'highlight', value: highlighted },
+                    controller
+                  );
+                }
+              }
+            } else if (node.kind === 'mathBlock' || node.kind === 'mathInline') {
+              let renderedText: string;
+              try {
+                const rendered = await runtime.mathRenderer.render(node.value, controller.signal);
+                renderedText = rendered.text;
               } catch (error) {
                 if (controller.signal.aborted) throw error;
-                runtime.diagramText.set(node.id, `Diagram rendering failed.\n${node.value}`);
-                publish(node.id);
+                renderedText = `Math rendering failed: ${node.value}`;
               }
-            } else {
-              const highlighted = await runtime.highlighter.highlight(node.language, node.value, controller.signal);
-              if (highlighted !== undefined) {
-                runtime.highlightedCode.set(node.id, highlighted);
-                publish(node.id);
-              }
+              commitPreviewResource(
+                bufferId,
+                revision,
+                node.id,
+                topLevelNodeById.get(node.id),
+                { kind: 'math', value: renderedText },
+                controller
+              );
+            } else if (node.kind === 'image') {
+              const result = await runtime.imageLoader.load(node.destination, buffer.path, controller.signal);
+              commitPreviewResource(
+                bufferId,
+                revision,
+                node.id,
+                topLevelNodeById.get(node.id),
+                { kind: 'image', value: result },
+                controller
+              );
             }
-          } else if (node.kind === 'mathBlock' || node.kind === 'mathInline') {
-            try {
-              const rendered = await runtime.mathRenderer.render(node.value, controller.signal);
-              runtime.mathText.set(node.id, rendered.text);
-            } catch (error) {
-              if (controller.signal.aborted) throw error;
-              runtime.mathText.set(node.id, `Math rendering failed: ${node.value}`);
-            }
-            publish(node.id);
-          } else if (node.kind === 'image') {
-            const result = await runtime.imageLoader.load(node.destination, buffer.path, controller.signal);
-            runtime.images.set(node.id, result);
-            publish(node.id);
           }
-        }));
+        });
+        await Promise.all(workers);
       } catch (error) {
         if (!controller.signal.aborted) {
           refreshFailure = error;
-          throw error;
+          controller.abort(error);
         }
+        await Promise.allSettled(workers);
+        if (refreshFailure !== undefined) throw refreshFailure;
       } finally {
         runtime.pending.delete(controller);
         runtime.activeResourceRevisions.delete(revision);
+        if (refreshFailure !== undefined && runtime.resourceRevision === revision) {
+          runtime.resourceRevision = undefined;
+        }
         const waiters = runtime.resourceRefreshWaiters.filter((waiter) => waiter.revision === revision);
         runtime.resourceRefreshWaiters.splice(
           0,
@@ -1679,21 +2062,27 @@ function instantiateVellumApplication(
       return runtime === undefined ? new Map() : new Map(runtime.images);
     },
     async persistRecoveryRecord() {
+      assertActive();
       if (recoveryTimer !== undefined) {
         clearTimeout(recoveryTimer);
         recoveryTimer = undefined;
       }
-      await options.recoveryStore?.write(state);
+      await writeRecovery();
     },
     async dispose() {
       if (disposed) return;
-      await api.persistRecoveryRecord();
       disposed = true;
+      if (recoveryTimer !== undefined) {
+        clearTimeout(recoveryTimer);
+        recoveryTimer = undefined;
+      }
       for (const controller of directoryReads.values()) controller.abort();
       directoryReads.clear();
       projectIndexRead?.abort();
       projectIndexRead = undefined;
       for (const id of [...runtimes.keys()]) releaseBuffer(id);
+      listeners.clear();
+      await writeRecovery();
     }
   };
 
@@ -1717,7 +2106,12 @@ export async function restoreVellumApplication(
     { ...options, recoveryStore: store, initialState: recovered.state },
     recovered.parsers
   );
-  if (recovered.state.project.rootDirectory !== undefined) await application.refreshFileTree();
+  try {
+    if (recovered.state.project.rootDirectory !== undefined) await application.refreshFileTree();
+  } catch (error) {
+    await application.dispose();
+    throw error;
+  }
   return application;
 }
 
@@ -1759,10 +2153,6 @@ async function findRenamedPath(
   return undefined;
 }
 
-export function currentBufferPreview(application: VellumApplication): MarkdownPreview | undefined {
-  return activeBuffer(application.state())?.preview;
-}
-
 function executeNavigationEffect(application: VellumApplication, commandId: import('./types.js').CommandId): void {
   if (commandId === 'navigate.back' || commandId === 'navigate.forward') {
     application.navigateHistory(commandId === 'navigate.back' ? 'back' : 'forward');
@@ -1775,8 +2165,8 @@ function executeNavigationEffect(application: VellumApplication, commandId: impo
   const headings = flattenOutline(extractMarkdownOutline(buffer.preview.snapshot.document.tree));
   const caret = buffer.editor.caret.position.offset;
   const destination = commandId === 'navigate.nextHeading'
-    ? headings.find((entry) => entry.span.start > caret) ?? headings[0]
-    : headings.toReversed().find((entry) => entry.span.start < caret) ?? headings.at(-1);
+    ? headings.find((entry) => entry.span.start > caret)
+    : headings.toReversed().find((entry) => entry.span.start < caret);
   if (destination !== undefined) application.navigateTo(buffer.id, destination.span.start);
 }
 
@@ -1788,6 +2178,45 @@ function flattenOutline(
 
 function retainResourceEntries<Value>(entries: Map<number, Value>, activeNodeIds: ReadonlySet<number>): void {
   for (const nodeId of entries.keys()) if (!activeNodeIds.has(nodeId)) entries.delete(nodeId);
+}
+
+function sourceOffsetAtScrollRow(map: RowOffsetMap, row: number): number {
+  return map.sourceOffsetAtRow(Math.max(0, Math.min(map.rowCount - 1, row)));
+}
+
+function externalFileStateFingerprint(
+  value: Exclude<ExternalFileState, { readonly kind: 'untracked' }>
+): ExternalFileFingerprint {
+  return value.kind === 'current'
+    ? value.fingerprint
+    : value.kind === 'conflict'
+      ? value.disk
+      : value.previous;
+}
+
+function mapSearchSelection(selection: import('markspan').SourceSpan, changeSet: TextChangeSet): import('markspan').SourceSpan {
+  return Object.freeze({
+    start: mapSourceOffset(selection.start, changeSet, 'left'),
+    end: mapSourceOffset(selection.end, changeSet, 'right')
+  });
+}
+
+function mapSourceOffset(
+  offset: number,
+  changeSet: TextChangeSet,
+  affinity: 'left' | 'right'
+): number {
+  let delta = 0;
+  for (const change of changeSet.changes) {
+    if (offset < change.startOffset || (offset === change.startOffset && affinity === 'left')) break;
+    const replacedLength = change.endOffsetExclusive - change.startOffset;
+    if (offset > change.endOffsetExclusive || (offset === change.endOffsetExclusive && affinity === 'right')) {
+      delta += change.insertedText.length - replacedLength;
+      continue;
+    }
+    return change.startOffset + delta + (affinity === 'right' ? change.insertedText.length : 0);
+  }
+  return offset + delta;
 }
 
 function flattenOutlineItems(entries: readonly OutlineItem[]): readonly Omit<OutlineItem, 'children'>[] {
