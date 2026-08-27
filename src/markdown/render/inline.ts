@@ -12,9 +12,9 @@ import { imageFallbackSpan } from './image.js';
 import type { MarkdownBlockResources } from './resources.js';
 
 export type MarkdownActivation =
-  | { readonly kind: 'link'; readonly destination: string }
-  | { readonly kind: 'image'; readonly destination: string }
-  | { readonly kind: 'footnote'; readonly definitionSpan: SourceSpan };
+  | { readonly kind: 'link'; readonly nodeId: number; readonly destination: string }
+  | { readonly kind: 'image'; readonly nodeId: number; readonly destination: string }
+  | { readonly kind: 'footnote'; readonly nodeId: number; readonly definitionSpan: SourceSpan };
 
 export interface MarkdownRenderSpan extends RenderSpan {
   readonly nodeId: number;
@@ -85,14 +85,20 @@ export function renderInline(
         spans.push(valueSpan(resources.mathText?.get(node.id) ?? node.value, node.id, node.contentSpan, mergeTerminalStyles(style, theme.math), link));
         break;
       case 'link': {
-        const terminalLink = node.destination.length === 0 ? link : { href: node.destination };
+        const terminalLink = node.destination.length === 0
+          ? link
+          : Object.freeze({ href: node.destination, id: `markdown-link-${String(node.id)}` });
         const start = spans.length;
         for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.link) ?? style, terminalLink);
         for (let index = start; index < spans.length; index += 1) {
           const current = spans[index];
           if (current !== undefined) spans[index] = Object.freeze({
             ...current,
-            activation: Object.freeze({ kind: 'link', destination: node.destination })
+            activation: Object.freeze({
+              kind: 'link',
+              nodeId: node.id,
+              destination: node.destination,
+            })
           });
         }
         break;

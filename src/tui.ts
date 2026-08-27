@@ -81,24 +81,24 @@ function updateVellum(
 ): TuiUpdateResult<AppState, AppMessage> {
   switch (message.kind) {
     case 'editor':
-      application.applyTextAreaAction(message.bufferId, message.action);
-      if (message.action.kind === 'scroll' && message.editorMap !== undefined && message.previewMap !== undefined) {
+      application.applyTextAreaTransition(message.bufferId, message.transition);
+      if (message.transition.kind === 'scroll' && message.editorMap !== undefined && message.previewMap !== undefined) {
         application.synchronizeFromEditor(message.bufferId, message.editorMap, message.previewMap);
       }
       return { state: application.state() };
     case 'previewScroll':
-      application.updatePreviewScroll(message.bufferId, message.event, message.editorMap, message.previewMap);
+      application.updatePreviewScroll(message.bufferId, message.request, message.editorMap, message.previewMap);
       return { state: application.state() };
     case 'tabs': {
       const state = application.state();
       const ids = state.project.bufferOrder;
-      const presentation = tabsReducer({
+      const tabs = tabsReducer({
         ...(state.project.activeBufferId === undefined ? {} : {
           activeId: state.project.activeBufferId,
           selectedId: state.project.activeBufferId
         })
       }, message.transition, { tabs: ids.map((id) => ({ id })), activation: 'automatic' });
-      const selected = presentation.selectedId ?? presentation.activeId;
+      const selected = tabs.selectedId ?? tabs.activeId;
       if (selected !== undefined) application.activateBuffer(selected);
       return { state: application.state() };
     }
@@ -110,7 +110,7 @@ function updateVellum(
     case 'activateFileTree':
       return effectUpdate(application, async () => application.activateFileTreeNode(message.nodeId));
     case 'split':
-      application.resizeSplitPane(message.action);
+      application.resizeSplitPane(message.transition);
       return { state: application.state() };
     case 'command': {
       const update = application.dispatchCommand(message.commandId);
@@ -175,7 +175,7 @@ function updateVellum(
       application.submitGoToLine(message.value);
       return { state: application.state() };
     case 'previewActivate':
-      return effectUpdate(application, async (signal) => application.activatePreview(message.bufferId, message.row, message.column, signal));
+      return effectUpdate(application, async (signal) => application.activatePreview(message.bufferId, message.target, signal));
     case 'exportProfile':
       application.updateExportProfile(message.transition);
       return { state: application.state() };

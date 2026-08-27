@@ -11,6 +11,10 @@ export function footnoteReferenceSpan(
     style: theme.link,
     nodeId: node.id,
     sourceSpan: node.span,
-    activation: Object.freeze({ kind: 'footnote', definitionSpan: node.definitionSpan })
+    activation: Object.freeze({
+      kind: 'footnote',
+      nodeId: node.id,
+      definitionSpan: node.definitionSpan,
+    })
   });
 }

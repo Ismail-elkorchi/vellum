@@ -1,4 +1,8 @@
-import type { TextAreaDecoration } from '@ismail-elkorchi/terminal-ui/components';
+import {
+  createTextAreaDecorations,
+  type TextAreaDecoration,
+  type TextAreaDecorations,
+} from '@ismail-elkorchi/terminal-ui/components';
 import { collectMarkdownSyntaxTokens, markdownPathAt, walkMarkdown, type MarkdownNode } from 'markspan';
 import type { BufferState } from '../app/types.js';
 import type { MarkdownTheme } from './theme.js';
@@ -13,10 +17,19 @@ const concealedTokenKinds = new Set([
   'linkDestination',
   'imageDestination'
 ]);
-
-export function hybridTextDecorations(
+export function createHybridTextDecorations(
   buffer: BufferState,
   theme: MarkdownTheme
+): TextAreaDecorations {
+  const decorations = buffer.preview.kind === 'ready'
+    ? hybridDecorationEntries(buffer, theme)
+    : Object.freeze([]);
+  return createTextAreaDecorations({ document: buffer.editor.document, decorations });
+}
+
+function hybridDecorationEntries(
+  buffer: BufferState,
+  theme: MarkdownTheme,
 ): readonly TextAreaDecoration[] {
   if (buffer.preview.kind !== 'ready') return Object.freeze([]);
   const tree = buffer.preview.snapshot.document.tree;
@@ -35,20 +48,20 @@ export function hybridTextDecorations(
   for (const token of collectMarkdownSyntaxTokens(tree)) {
     const style = styleForToken(token.kind, theme);
     if (style !== undefined) {
-      decorations.push(Object.freeze({
-        startOffset: token.span.start,
-        endOffsetExclusive: token.span.end,
-        label: `syntax.${token.kind}`,
-        style
-      }));
+      addStyle(
+        decorations,
+        token.span.start,
+        token.span.end,
+        `syntax.${token.kind}`,
+        style,
+      );
     }
     if (concealedTokenKinds.has(token.kind) && !activeIds.has(token.nodeId)) {
       decorations.push(Object.freeze({
+        kind: 'conceal',
         startOffset: token.span.start,
         endOffsetExclusive: token.span.end,
-        label: `concealed.${token.kind}`,
-        replacementText: '',
-        accessibilityText: ''
+        label: `concealed.${token.kind}`
       }));
     }
   }
@@ -65,20 +78,22 @@ function addNodeDecoration(
   theme: MarkdownTheme
 ): void {
   if (node.kind === 'heading') {
-    decorations.push(style(
+    addStyle(decorations,
       node.contentSpan.start,
       node.contentSpan.end,
       `heading.${String(node.depth)}`,
       theme.headings[node.depth - 1] ?? theme.body
-    ));
+    );
   } else if (node.kind === 'strong') {
-    decorations.push(style(node.openingMarkerSpan.end, node.closingMarkerSpan.start, 'strong', theme.strong));
+    addStyle(decorations, node.openingMarkerSpan.end, node.closingMarkerSpan.start, 'strong', theme.strong);
   } else if (node.kind === 'emphasis') {
-    decorations.push(style(node.openingMarkerSpan.end, node.closingMarkerSpan.start, 'emphasis', theme.emphasis));
+    addStyle(decorations, node.openingMarkerSpan.end, node.closingMarkerSpan.start, 'emphasis', theme.emphasis);
   } else if (node.kind === 'codeSpan') {
-    decorations.push(style(node.contentSpan.start, node.contentSpan.end, 'inlineCode', theme.inlineCode));
+    addStyle(decorations, node.contentSpan.start, node.contentSpan.end, 'inlineCode', theme.inlineCode);
   } else if (node.kind === 'link') {
-    if (node.labelSpan !== null) decorations.push(style(node.labelSpan.start, node.labelSpan.end, 'link', theme.link));
+    if (node.labelSpan !== null) {
+      addStyle(decorations, node.labelSpan.start, node.labelSpan.end, 'link', theme.link);
+    }
     if (!activeIds.has(node.id) && node.labelSpan !== null) {
       concealOutsideLabel(node.span.start, node.span.end, node.labelSpan.start, node.labelSpan.end, node.id, decorations);
     }
@@ -88,6 +103,7 @@ function addNodeDecoration(
     }
   } else if (node.kind === 'listItem' && node.task !== null && !activeIds.has(node.id)) {
     decorations.push(Object.freeze({
+      kind: 'replace',
       startOffset: node.task.span.start,
       endOffsetExclusive: node.task.span.end,
       label: 'taskMarker',
@@ -111,16 +127,29 @@ function concealOutsideLabel(
 }
 
 function conceal(startOffset: number, endOffsetExclusive: number, nodeId: number): TextAreaDecoration {
-  return Object.freeze({ startOffset, endOffsetExclusive, label: `concealed.node.${String(nodeId)}`, replacementText: '', accessibilityText: '' });
+  return Object.freeze({
+    kind: 'conceal',
+    startOffset,
+    endOffsetExclusive,
+    label: `concealed.node.${String(nodeId)}`
+  });
 }
 
-function style(
+function addStyle(
+  decorations: TextAreaDecoration[],
   startOffset: number,
   endOffsetExclusive: number,
   label: string,
   terminalStyle: NonNullable<TextAreaDecoration['style']>
-): TextAreaDecoration {
-  return Object.freeze({ startOffset, endOffsetExclusive, label, style: terminalStyle });
+): void {
+  if (startOffset === endOffsetExclusive) return;
+  decorations.push(Object.freeze({
+    kind: 'style',
+    startOffset,
+    endOffsetExclusive,
+    label,
+    style: terminalStyle,
+  }));
 }
 
 function styleForToken(

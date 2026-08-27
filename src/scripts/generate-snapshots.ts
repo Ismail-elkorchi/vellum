@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { defaultTextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import { createBufferParser } from '../markdown/preview.js';
 import { createPreviewLayoutCache, layoutMarkdownPreview } from '../markdown/render/layout.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
@@ -21,6 +22,7 @@ const snapshot = fixtures.map((fixture) => {
     preview.snapshot.source,
     44,
     darkTerminalMarkdownTheme,
+    defaultTextWidthProfile,
     createPreviewLayoutCache()
   );
   return Object.freeze({

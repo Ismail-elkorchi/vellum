@@ -1,4 +1,9 @@
-import { createRowOffsetMap, type RowOffsetMap } from '@ismail-elkorchi/terminal-ui/text';
+import {
+  createRowOffsetMap,
+  measureTextCells,
+  type RowOffsetMap,
+  type TextWidthProfile,
+} from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownDocumentNode, SourceSpan } from 'markspan';
 import type { MarkdownTheme } from '../theme.js';
 import { renderMarkdownBlock, type MarkdownBlockResources, type MarkdownRenderedBlock } from './block.js';
@@ -17,12 +22,20 @@ export interface MarkdownPreviewActivation {
   readonly activation?: MarkdownActivation;
 }
 
+export interface MarkdownPreviewActionFragment extends MarkdownPreviewActivation {
+  readonly id: string;
+  readonly column: number;
+  readonly width: number;
+  readonly activation: MarkdownActivation;
+}
+
 export interface MarkdownPreviewLayout {
   readonly width: number;
+  readonly widthProfile: TextWidthProfile;
   readonly lines: readonly MarkdownLayoutLine[];
   readonly blocks: readonly MarkdownRenderedBlock[];
   readonly rowOffsetMap: RowOffsetMap;
-  readonly activations: readonly MarkdownPreviewActivation[];
+  readonly activations: readonly MarkdownPreviewActionFragment[];
   readonly accessibility: MarkdownAccessibleNode;
   readonly instrumentation: MarkdownLayoutCacheUpdate;
 }
@@ -36,6 +49,7 @@ export function layoutMarkdownPreview(
   source: string,
   width: number,
   theme: MarkdownTheme,
+  widthProfile: TextWidthProfile,
   cache: MarkdownBlockLayoutCache<MarkdownRenderedBlock>,
   resources: MarkdownBlockResources = {}
 ): MarkdownPreviewLayout {
@@ -47,13 +61,19 @@ export function layoutMarkdownPreview(
   let rebuiltBlockLayouts = 0;
   for (const node of tree.children) {
     activeIds.add(node.id);
-    const existing = cache.get(node.id, normalizedWidth, theme);
+    const existing = cache.get(node.id, normalizedWidth, theme, widthProfile);
     const block = existing === undefined
-      ? renderMarkdownBlock(node, source, normalizedWidth, theme, resources)
+      ? renderMarkdownBlock(node, source, normalizedWidth, theme, widthProfile, resources)
       : translateBlock(existing.value, node.span.start - existing.sourceStart);
     if (existing === undefined) {
       rebuiltBlockLayouts += 1;
-      cache.set(node.id, { width: normalizedWidth, theme, sourceStart: node.span.start, value: block });
+      cache.set(node.id, {
+        width: normalizedWidth,
+        theme,
+        widthProfile,
+        sourceStart: node.span.start,
+        value: block,
+      });
     } else {
       reusedBlockLayouts += 1;
     }
@@ -62,15 +82,27 @@ export function layoutMarkdownPreview(
   }
   cache.retain(activeIds);
   const rowOffsetMap = createRowOffsetMap(lines.map((line) => line.sourceOffset));
-  const activations: MarkdownPreviewActivation[] = [];
+  const activations: MarkdownPreviewActionFragment[] = [];
   for (let row = 0; row < lines.length; row += 1) {
+    let column = 0;
     for (const span of lines[row]?.inlineSpans ?? []) {
-      if (span.activation === undefined) continue;
-      activations.push(Object.freeze({ row, sourceSpan: span.sourceSpan, activation: span.activation }));
+      const width = measureTextCells(span.text, { widthProfile }).cells;
+      if (span.activation !== undefined && width > 0) {
+        activations.push(Object.freeze({
+          id: `markdown-${String(span.activation.nodeId)}`,
+          row,
+          column,
+          width,
+          sourceSpan: span.sourceSpan,
+          activation: span.activation,
+        }));
+      }
+      column += width;
     }
   }
   return Object.freeze({
     width: normalizedWidth,
+    widthProfile,
     lines: Object.freeze(lines),
     blocks: Object.freeze(blocks),
     rowOffsetMap,

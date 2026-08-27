@@ -6,23 +6,25 @@ import {
   createScrollState,
   createCommandInputState,
   commandInputReducer,
-  prepareCommandSuggestions,
+  createCommandSuggestions,
   createTextAreaState,
   scrollReducer,
   splitPaneReducer,
   textAreaReducer,
-  type ScrollEvent,
-  type SplitPaneAction,
+  type ScrollRequest,
+  type SplitPaneTransition,
   type CommandInputTransition,
-  type TextAreaAction
+  type TextAreaTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TreeTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
+  defaultTextWidthProfile,
   textCaretAt,
   textDocumentSelectionBetween,
   textDocumentText
 } from '@ismail-elkorchi/terminal-ui/text';
-import type { RowOffsetMap } from '@ismail-elkorchi/terminal-ui/text';
+import type { RowOffsetMap, TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
+import type { TextAreaDecorations } from '@ismail-elkorchi/terminal-ui/components';
 import { walkMarkdown, type MarkdownParseOptions } from 'markspan';
 import type {
   AppState,
@@ -52,7 +54,7 @@ import {
 import { searchProjectDirectory, type ProjectDirectorySearchOptions } from '../search/project-directory-search.js';
 import { documentOutline, type OutlineItem } from '../navigation/outline.js';
 import { openExternalMarkdownLink, resolveMarkdownLink } from '../navigation/links.js';
-import { markdownPreviewComponent } from '../markdown/render/component.js';
+import type { MarkdownPreviewActivation } from '../markdown/render/layout.js';
 import {
   builtInExportProfiles,
   validateExportProfiles,
@@ -99,6 +101,9 @@ import type { MarkdownBlockLayoutCache } from '../markdown/render/cache.js';
 import type { MarkdownRenderedBlock } from '../markdown/render/block.js';
 import type { MarkdownBlockResources } from '../markdown/render/resources.js';
 import { darkTerminalMarkdownTheme, type MarkdownTheme } from '../markdown/theme.js';
+import {
+  createHybridTextDecorations,
+} from '../markdown/hybrid.js';
 import { createCodeHighlighter, type CodeHighlighter } from '../markdown/highlight.js';
 import { createMathRenderer, type MathRenderer } from '../markdown/math.js';
 import {
@@ -134,6 +139,46 @@ interface BufferRuntime {
   readonly activeResourceRevisions: Set<number>;
   readonly resourceRefreshWaiters: Array<{ revision: number; resolve(): void; reject(error: unknown): void }>;
   lastPreviewLayout: MarkdownPreviewLayout | undefined;
+  hybridDecorations: HybridDecorationCache | undefined;
+}
+
+interface HybridDecorationCache {
+  readonly document: BufferState['editor']['document'];
+  readonly caretOffset: number;
+  readonly selectionStart?: number;
+  readonly selectionEnd?: number;
+  readonly previewIdentity: object;
+  readonly decorations: TextAreaDecorations;
+}
+
+function hybridDecorationCache(
+  buffer: BufferState,
+  decorations: TextAreaDecorations,
+): HybridDecorationCache {
+  const selection = buffer.editor.selection;
+  return Object.freeze({
+    document: buffer.editor.document,
+    caretOffset: buffer.editor.caret.position.offset,
+    ...(selection === undefined ? {} : {
+      selectionStart: selection.anchor.offset,
+      selectionEnd: selection.focus.offset,
+    }),
+    previewIdentity: buffer.preview.kind === 'ready' ? buffer.preview.identity : buffer.preview,
+    decorations,
+  });
+}
+
+function hybridDecorationCacheMatches(
+  cache: HybridDecorationCache | undefined,
+  buffer: BufferState,
+): cache is HybridDecorationCache {
+  const selection = buffer.editor.selection;
+  return cache !== undefined
+    && cache.document === buffer.editor.document
+    && cache.caretOffset === buffer.editor.caret.position.offset
+    && cache.selectionStart === selection?.anchor.offset
+    && cache.selectionEnd === selection?.focus.offset
+    && cache.previewIdentity === (buffer.preview.kind === 'ready' ? buffer.preview.identity : buffer.preview);
 }
 
 export interface VellumApplicationOptions {
@@ -186,14 +231,14 @@ export interface VellumApplication {
   submitOutline(value?: string): void;
   updateGoToLine(transition: CommandInputTransition): void;
   submitGoToLine(value?: string): void;
-  activatePreview(bufferId: BufferId, row: number, column: number, signal?: AbortSignal): Promise<void>;
+  activatePreview(bufferId: BufferId, target: MarkdownPreviewActivation, signal?: AbortSignal): Promise<void>;
   updateExportProfile(transition: CommandInputTransition): void;
   submitExportProfile(value?: string, signal?: AbortSignal): Promise<void>;
   dismissDialog(): void;
-  resizeSplitPane(action: SplitPaneAction): void;
-  updatePreviewScroll(bufferId: BufferId, event: ScrollEvent, editorMap?: RowOffsetMap, previewMap?: RowOffsetMap): void;
+  resizeSplitPane(transition: SplitPaneTransition): void;
+  updatePreviewScroll(bufferId: BufferId, request: ScrollRequest, editorMap?: RowOffsetMap, previewMap?: RowOffsetMap): void;
   synchronizeFromEditor(bufferId: BufferId, editorMap: RowOffsetMap, previewMap: RowOffsetMap): void;
-  applyTextAreaAction(bufferId: BufferId, action: TextAreaAction): void;
+  applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition): void;
   executeMarkdownCommand(bufferId: BufferId, commandId: import('./types.js').CommandId, options?: MarkdownCommandOptions): void;
   indentList(bufferId: BufferId, outdent: boolean): void;
   saveBuffer(bufferId: BufferId, destination?: string, overwriteConflict?: boolean, signal?: AbortSignal): Promise<boolean>;
@@ -214,7 +259,13 @@ export interface VellumApplication {
   navigateHistory(direction: 'back' | 'forward'): void;
   runtimeBufferInfo(bufferId: BufferId): RuntimeBufferInfo | undefined;
   markdownTheme(): MarkdownTheme;
-  previewLayout(bufferId: BufferId, width: number, theme?: MarkdownTheme): MarkdownPreviewLayout | undefined;
+  hybridDecorations(bufferId: BufferId): TextAreaDecorations;
+  previewLayout(
+    bufferId: BufferId,
+    width: number,
+    theme?: MarkdownTheme,
+    widthProfile?: TextWidthProfile,
+  ): MarkdownPreviewLayout | undefined;
   refreshPreviewResources(bufferId: BufferId): Promise<void>;
   previewImages(bufferId: BufferId): ReadonlyMap<number, MarkdownImageResult>;
   persistRecoveryRecord(): Promise<void>;
@@ -297,7 +348,8 @@ function instantiateVellumApplication(
     resourceRevision: undefined,
     activeResourceRevisions: new Set(),
     resourceRefreshWaiters: [],
-    lastPreviewLayout: undefined
+    lastPreviewLayout: undefined,
+    hybridDecorations: undefined,
   });
 
   const schedulePreviewResources = (bufferId: BufferId): void => {
@@ -331,7 +383,7 @@ function instantiateVellumApplication(
           label: entry.relativePath,
           completion: { range: { startOffset: 0, endOffsetExclusive: query.length }, text: entry.path }
         }));
-    return commandInputReducer(command, { kind: 'setSuggestions', suggestions: prepareCommandSuggestions(entries) });
+    return commandInputReducer(command, { kind: 'setSuggestions', suggestions: createCommandSuggestions(entries) });
   };
 
   const refreshSelectionDialog = (): void => {
@@ -393,7 +445,7 @@ function instantiateVellumApplication(
       dialog.query.editor.input.text
     ));
     const queryText = dialog.query.editor.input.text;
-    const suggestions = prepareCommandSuggestions(entries.map((entry) => ({
+    const suggestions = createCommandSuggestions(entries.map((entry) => ({
       id: `outline-${String(entry.nodeId)}`,
       label: `${'  '.repeat(Math.max(0, entry.depth - 1))}${entry.title}`,
       description: entry.active ? `Level ${String(entry.depth)} · active heading` : `Level ${String(entry.depth)}`,
@@ -413,7 +465,7 @@ function instantiateVellumApplication(
     if (dialog?.kind !== 'exportProfile') return;
     const query = dialog.command.editor.input.text;
     const normalized = query.trim().toLocaleLowerCase();
-    const suggestions = prepareCommandSuggestions(exportProfiles
+    const suggestions = createCommandSuggestions(exportProfiles
       .filter((profile) => normalized.length === 0 || profile.id.includes(normalized) || profile.label.toLocaleLowerCase().includes(normalized))
       .map((profile) => ({
         id: `export-profile-${profile.id}`,
@@ -564,34 +616,42 @@ function instantiateVellumApplication(
 
   const applyTransition = (
     bufferId: BufferId,
-    action: TextAreaAction,
+    transition: TextAreaTransition,
     caretOffset?: number
   ): void => {
     const buffer = state.project.buffers[bufferId];
     const runtime = runtimes.get(bufferId);
     if (buffer === undefined || runtime === undefined) return;
-    const transition = textAreaReducer(buffer.editor, action);
-    let editor = transition.state;
+    const reduction = textAreaReducer(buffer.editor, transition);
+    let editor = reduction.state;
     if (caretOffset !== undefined) {
       editor = textAreaReducer(editor, {
         kind: 'pointer',
-        action: { kind: 'placeCaret', offset: caretOffset }
+        transition: { kind: 'placeCaret', offset: caretOffset }
       }).state;
     }
-    if (transition.changeSet.changes.length === 0) {
-      if (editor !== buffer.editor) replaceBuffer({ ...buffer, editor });
+    if (reduction.changeSet.changes.length === 0) {
+      if (editor !== buffer.editor) {
+        const nextBuffer = Object.freeze({ ...buffer, editor });
+        replaceBuffer(nextBuffer);
+        if (!hybridDecorationCacheMatches(runtime.hybridDecorations, nextBuffer)) {
+          runtime.hybridDecorations = undefined;
+        }
+      }
       return;
     }
     const sourceRevision = buffer.sourceRevision + 1;
-    const preview = runtime.parser.applyChanges(transition.changeSet, sourceRevision);
+    const preview = runtime.parser.applyChanges(reduction.changeSet, sourceRevision);
     runtime.lastPreviewLayout = undefined;
-    replaceBuffer({
+    const nextBuffer = Object.freeze({
       ...buffer,
       editor,
       sourceRevision,
       dirty: true,
       preview
     });
+    replaceBuffer(nextBuffer);
+    runtime.hybridDecorations = undefined;
     schedulePreviewResources(bufferId);
     scheduleRecovery();
   };
@@ -879,7 +939,7 @@ function instantiateVellumApplication(
       if (match === undefined || selectedIndex === undefined) return;
       api.navigateTo(buffer.id, match.start);
       applyTransition(buffer.id, {
-        kind: 'pointer', action: { kind: 'endSelection', anchor: match.start, offset: match.end }
+        kind: 'pointer', transition: { kind: 'endSelection', anchor: match.start, offset: match.end }
       });
       const current = state.dialogState;
       if (current?.kind === 'documentSearch') state = Object.freeze({ ...state, dialogState: Object.freeze({ ...current, selectedIndex }) });
@@ -920,7 +980,7 @@ function instantiateVellumApplication(
         const results = await searchProjectDirectory(state.project.fileTree, dialog.query.editor.input.text, searchOptions, signal);
         if (state.dialogState?.kind !== 'projectDirectorySearch') return;
         const queryText = state.dialogState.query.editor.input.text;
-        const suggestions = prepareCommandSuggestions(results.map((result, index) => ({
+        const suggestions = createCommandSuggestions(results.map((result, index) => ({
           id: `project-result-${String(index)}`,
           label: `${path.relative(state.project.rootDirectory ?? '', result.path)}:${String(result.line)}:${String(result.column)}`,
           description: result.context,
@@ -963,7 +1023,7 @@ function instantiateVellumApplication(
       state = clearDialog(state);
       api.navigateTo(id, result.span.start);
       applyTransition(id, {
-        kind: 'pointer', action: { kind: 'endSelection', anchor: result.span.start, offset: result.span.end }
+        kind: 'pointer', transition: { kind: 'endSelection', anchor: result.span.start, offset: result.span.end }
       });
     },
     updateOutline(transition) {
@@ -1009,13 +1069,9 @@ function instantiateVellumApplication(
       state = clearDialog(state);
       api.navigateTo(buffer.id, sourceOffset);
     },
-    async activatePreview(bufferId, row, column, signal) {
+    async activatePreview(bufferId, target, signal) {
       const buffer = state.project.buffers[bufferId];
-      const runtime = runtimes.get(bufferId);
-      const layout = runtime?.lastPreviewLayout;
-      if (buffer === undefined || layout === undefined) return;
-      const target = markdownPreviewComponent(`${buffer.label} preview`, layout).activationAt(row, column);
-      if (target === undefined) return;
+      if (buffer === undefined) return;
       api.navigateTo(bufferId, target.sourceSpan.start);
       const activation = target.activation;
       if (activation === undefined || activation.kind === 'image') return;
@@ -1086,16 +1142,16 @@ function instantiateVellumApplication(
     dismissDialog() {
       state = clearDialog(state);
     },
-    resizeSplitPane(action) {
-      const splitPane = splitPaneReducer(state.splitPane, action, {
+    resizeSplitPane(transition) {
+      const splitPane = splitPaneReducer(state.splitPane, transition, {
         constraints: Object.freeze([{ minShare: 0.2, maxShare: 0.8 }, { minShare: 0.2, maxShare: 0.8 }])
       });
       if (splitPane !== state.splitPane) state = Object.freeze({ ...state, splitPane });
     },
-    updatePreviewScroll(bufferId, event, editorMap, previewMap) {
+    updatePreviewScroll(bufferId, request, editorMap, previewMap) {
       const buffer = state.project.buffers[bufferId];
       if (buffer === undefined) return;
-      let previewScroll = scrollReducer(buffer.previewScroll, { kind: 'setOffset', rows: event.nextState.offsetRow });
+      let previewScroll = request.nextState;
       let editor = buffer.editor;
       if (editorMap !== undefined && previewMap !== undefined) {
         const sourceOffset = previewMap.sourceOffsetAtRow(previewScroll.offsetRow);
@@ -1116,20 +1172,20 @@ function instantiateVellumApplication(
       });
       replaceBuffer({ ...buffer, previewScroll });
     },
-    applyTextAreaAction(bufferId, action) {
+    applyTextAreaTransition(bufferId, transition) {
       assertActive();
       const buffer = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
       if (buffer === undefined || runtime === undefined) return;
-      const automatic = action.kind === 'edit'
-        ? automaticMarkdownTransition(buffer, action.operation, runtime.parser.source())
+      const automatic = transition.kind === 'edit'
+        ? automaticMarkdownTransition(buffer, transition.operation, runtime.parser.source())
         : undefined;
       if (automatic?.action === undefined && automatic?.caretOffset !== undefined) {
         applyTransition(bufferId, {
-          kind: 'pointer', action: { kind: 'placeCaret', offset: automatic.caretOffset }
+          kind: 'pointer', transition: { kind: 'placeCaret', offset: automatic.caretOffset }
         });
       } else {
-        applyTransition(bufferId, automatic?.action ?? action, automatic?.caretOffset);
+        applyTransition(bufferId, automatic?.action ?? transition, automatic?.caretOffset);
       }
     },
     executeMarkdownCommand(bufferId, commandId, commandOptions) {
@@ -1141,7 +1197,7 @@ function instantiateVellumApplication(
       if (transition.action !== undefined) applyTransition(bufferId, transition.action, transition.caretOffset);
       else if (transition.caretOffset !== undefined) applyTransition(bufferId, {
         kind: 'pointer',
-        action: { kind: 'placeCaret', offset: transition.caretOffset }
+        transition: { kind: 'placeCaret', offset: transition.caretOffset }
       });
     },
     indentList(bufferId, outdent) {
@@ -1358,6 +1414,7 @@ function instantiateVellumApplication(
       });
       const preview = runtime.parser.replaceSource(file.source, revision);
       runtime.lastPreviewLayout = undefined;
+      runtime.hybridDecorations = undefined;
       replaceBuffer({
         ...buffer,
         editor,
@@ -1412,7 +1469,7 @@ function instantiateVellumApplication(
           ...clearDialog(state),
           dialogState: Object.freeze({
             kind: 'filePath', operation: 'saveAs',
-            command: createCommandInputState({ value: '', suggestions: prepareCommandSuggestions([]) })
+            command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
           })
         });
       } else if (action === 'overwriteDisk') {
@@ -1433,7 +1490,7 @@ function instantiateVellumApplication(
       const bounded = Math.max(0, Math.min(textDocumentText(target.editor.document).length, Math.floor(sourceOffset)));
       const editor = textAreaReducer(target.editor, {
         kind: 'pointer',
-        action: selection === undefined
+        transition: selection === undefined
           ? { kind: 'placeCaret', offset: bounded }
           : {
               kind: 'extendSelection',
@@ -1476,7 +1533,25 @@ function instantiateVellumApplication(
     markdownTheme() {
       return markdownTheme;
     },
-    previewLayout(bufferId, width, theme = markdownTheme) {
+    hybridDecorations(bufferId) {
+      const buffer = state.project.buffers[bufferId];
+      const runtime = runtimes.get(bufferId);
+      if (buffer === undefined || runtime === undefined) {
+        throw new Error(`Unknown buffer runtime: ${bufferId}`);
+      }
+      if (hybridDecorationCacheMatches(runtime.hybridDecorations, buffer)) {
+        return runtime.hybridDecorations.decorations;
+      }
+      const decorations = createHybridTextDecorations(buffer, markdownTheme);
+      runtime.hybridDecorations = hybridDecorationCache(buffer, decorations);
+      return decorations;
+    },
+    previewLayout(
+      bufferId,
+      width,
+      theme = markdownTheme,
+      widthProfile = defaultTextWidthProfile,
+    ) {
       const buffer = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
       if (buffer?.preview.kind !== 'ready' || runtime === undefined) return undefined;
@@ -1491,6 +1566,7 @@ function instantiateVellumApplication(
         buffer.preview.snapshot.source,
         width,
         theme,
+        widthProfile,
         runtime.previewLayouts,
         resources
       );
@@ -1657,7 +1733,7 @@ function saveAsDialog(afterSave: NonNullable<FilePathDialogState['afterSave']>):
   return Object.freeze({
     kind: 'filePath',
     operation: 'saveAs',
-    command: createCommandInputState({ value: '', suggestions: prepareCommandSuggestions([]) }),
+    command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) }),
     afterSave
   });
 }

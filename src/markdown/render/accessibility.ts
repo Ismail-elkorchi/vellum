@@ -37,6 +37,8 @@ export interface MarkdownAccessibleNode {
   readonly label: string;
   readonly sourceSpan: SourceSpan;
   readonly children: readonly MarkdownAccessibleNode[];
+  readonly headingLevel?: number;
+  readonly checked?: boolean;
 }
 
 function accessibleMarkdownNode(
@@ -44,9 +46,10 @@ function accessibleMarkdownNode(
   role: MarkdownAccessibleRole,
   label: string,
   sourceSpan: SourceSpan,
-  children: readonly MarkdownAccessibleNode[] = []
+  children: readonly MarkdownAccessibleNode[] = [],
+  state: Pick<MarkdownAccessibleNode, 'headingLevel' | 'checked'> = {},
 ): MarkdownAccessibleNode {
-  return Object.freeze({ id, role, label, sourceSpan, children: Object.freeze(children) });
+  return Object.freeze({ id, role, label, sourceSpan, children: Object.freeze(children), ...state });
 }
 
 export function accessibleMarkdownDocument(tree: MarkdownDocumentNode): MarkdownAccessibleNode {
@@ -65,7 +68,14 @@ function accessibleBlock(node: MarkdownBlockNode): MarkdownAccessibleNode {
     case 'paragraph':
       return accessibleMarkdownNode(id, 'paragraph', inlinePlainText(node.children), node.span, accessibleInline(node.children));
     case 'heading':
-      return accessibleMarkdownNode(id, 'heading', `Heading level ${String(node.depth)}: ${inlinePlainText(node.children)}`, node.span, accessibleInline(node.children));
+      return accessibleMarkdownNode(
+        id,
+        'heading',
+        inlinePlainText(node.children),
+        node.span,
+        accessibleInline(node.children),
+        { headingLevel: node.depth },
+      );
     case 'blockQuote':
       return accessibleMarkdownNode(id, 'blockquote', 'Blockquote', node.span, node.children.map(accessibleBlock));
     case 'callout':
@@ -101,7 +111,9 @@ function accessibleListItem(node: MarkdownListItemNode): MarkdownAccessibleNode 
     `markdown-${String(node.id)}-task`,
     'checkbox',
     node.task.checked ? 'Checked task' : 'Unchecked task',
-    node.task.span
+    node.task.span,
+    [],
+    { checked: node.task.checked },
   )];
   return accessibleMarkdownNode(
     `markdown-${String(node.id)}`,

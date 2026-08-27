@@ -24,9 +24,9 @@ test('multiple buffers preserve independent editing state and parser sessions th
     for (let index = 0; index < ids.length; index += 1) {
       const id = ids[index] as string;
       application.activateBuffer(id);
-      application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset: 4 } });
-      application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: ` edit-${String(index)}` } });
-      application.applyTextAreaAction(id, { kind: 'scroll', event: {
+      application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 4 } });
+      application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: ` edit-${String(index)}` } });
+      application.applyTextAreaTransition(id, { kind: 'scroll', request: {
         nextState: { offsetRow: index + 1, offsetColumn: 0, followTail: false },
         source: 'keyboard',
         target: 'content'
@@ -57,7 +57,7 @@ test('Vellum application factories do not share buffers, parser sessions, or nav
     const firstId = first.openSource('# First');
     const secondId = second.openSource('# Second');
     assert.notEqual(first.runtimeBufferInfo(firstId)?.parserIdentity, second.runtimeBufferInfo(secondId)?.parserIdentity);
-    first.applyTextAreaAction(firstId, { kind: 'edit', operation: { kind: 'insert', text: 'changed ' } });
+    first.applyTextAreaTransition(firstId, { kind: 'edit', operation: { kind: 'insert', text: 'changed ' } });
     first.navigateTo(firstId, 3);
     assert.equal(textDocumentText(second.state().project.buffers[secondId]?.editor.document as never), '# Second');
     assert.deepEqual(second.state().commandState.navigation.back, []);
@@ -73,9 +73,9 @@ test('navigation history restores selections across buffers without duplicate lo
     const firstId = application.openSource('alpha beta', 'first.md');
     const secondId = application.openSource('gamma delta', 'second.md');
     application.activateBuffer(firstId);
-    application.applyTextAreaAction(firstId, {
+    application.applyTextAreaTransition(firstId, {
       kind: 'pointer',
-      action: { kind: 'extendSelection', anchor: 0, offset: 5 }
+      transition: { kind: 'extendSelection', anchor: 0, offset: 5 }
     });
     application.navigateTo(secondId, 6);
     application.navigateTo(secondId, 6);
@@ -103,10 +103,10 @@ test('preview budget failure never replaces source and recovers after an exact d
     const source = '01234567890123456789012345';
     const id = application.openSource(source);
     assert.equal(application.state().project.buffers[id]?.preview.kind, 'failed');
-    application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset: 10 } });
-    application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: 'x' } });
+    application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 10 } });
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'x' } });
     assert.equal(application.state().project.buffers[id]?.preview.kind, 'failed');
-    application.applyTextAreaAction(id, {
+    application.applyTextAreaTransition(id, {
       kind: 'edit',
       operation: { kind: 'replaceRange', range: { startOffset: 0, endOffsetExclusive: 15 }, text: '' }
     });
@@ -133,10 +133,10 @@ test('recovery restores project directory, buffer order, active buffer, source, 
     await first.openProjectDirectory(directory);
     const ids = [];
     for (const name of ['a.md', 'b.md', 'c.md']) ids.push(await first.openFile(path.join(directory, name)));
-    for (const id of ids.slice(0, 2)) first.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: 'changed ' } });
+    for (const id of ids.slice(0, 2)) first.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'changed ' } });
     first.activateBuffer(ids[1] as string);
-    first.applyTextAreaAction(ids[1] as string, { kind: 'pointer', action: { kind: 'placeCaret', offset: 4 } });
-    first.applyTextAreaAction(ids[1] as string, { kind: 'scroll', event: {
+    first.applyTextAreaTransition(ids[1] as string, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 4 } });
+    first.applyTextAreaTransition(ids[1] as string, { kind: 'scroll', request: {
       nextState: { offsetRow: 3, offsetColumn: 1, followTail: false },
       source: 'keyboard',
       target: 'content'
@@ -168,7 +168,7 @@ test('external conflict comparison and Save As preserve disk and buffer versions
   const application = createVellumApplication({ watchFiles: false, createBufferId: sequentialIds() });
   try {
     const id = await application.openFile(sourcePath);
-    application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: 'buffer ' } });
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'buffer ' } });
     await writeFile(sourcePath, 'disk changed\n', 'utf8');
     await application.checkExternalFile(id);
     assert.equal(application.state().project.buffers[id]?.externalFileState.kind, 'conflict');
@@ -198,9 +198,9 @@ test('reopening a recently closed buffer restores its complete editing state', a
   const application = createVellumApplication({ watchFiles: false, createBufferId: sequentialIds() });
   try {
     const id = application.openSource('alpha\nbeta\n', 'notes.md');
-    application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset: 8 } });
-    application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: 'changed ' } });
-    application.applyTextAreaAction(id, { kind: 'scroll', event: {
+    application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 8 } });
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'changed ' } });
+    application.applyTextAreaTransition(id, { kind: 'scroll', request: {
       nextState: { offsetRow: 1, offsetColumn: 2, followTail: false },
       source: 'keyboard',
       target: 'content'

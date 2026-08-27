@@ -4,12 +4,24 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  createTextAreaRowOffsetMap
+  createTextAreaRowOffsetMap,
+  textArea,
 } from '@ismail-elkorchi/terminal-ui/components';
-import { measureTextCells, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import type { TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
+import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
+import {
+  defineTextWidthProfile,
+  measureTextCells,
+  textDocumentText,
+} from '@ismail-elkorchi/terminal-ui/text';
 import { countMarkdownDocumentWords, extractMarkdownOutline } from 'markspan';
 import { createVellumApplication } from '../app/application.js';
-import { hybridTextDecorations } from '../markdown/hybrid.js';
+import { createHybridTextDecorations } from '../markdown/hybrid.js';
+import {
+  markdownPreview,
+  markdownPreviewActivationAt,
+  type MarkdownPreviewAction,
+} from '../markdown/render/component.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 
 test('incremental document metrics and preview block layout equal a fresh parse while reusing identities', async () => {
@@ -30,8 +42,8 @@ test('incremental document metrics and preview block layout equal a fresh parse 
     const firstLayout = application.previewLayout(id, 32);
     assert.equal(firstLayout?.instrumentation.fullPreviewLayout, true);
     const paragraphOffset = source.indexOf('paragraph') + 4;
-    application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset: paragraphOffset } });
-    application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: ' edited' } });
+    application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: paragraphOffset } });
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: ' edited' } });
     const buffer = application.state().project.buffers[id];
     assert.equal(buffer?.preview.kind, 'ready');
     if (buffer?.preview.kind !== 'ready') return;
@@ -103,6 +115,68 @@ test('editor and preview row-offset maps remain source anchored through wrapping
   }
 });
 
+test('Markdown preview geometry follows the active terminal text-width profile', async () => {
+  const source = '·· [target](./target.md)';
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'width-profile' });
+  try {
+    const id = application.openSource(source);
+    const narrowProfile = defineTextWidthProfile({ ambiguous: 'narrow', emoji: 'wide' });
+    const wideProfile = defineTextWidthProfile({ ambiguous: 'wide', emoji: 'wide' });
+    const narrow = application.previewLayout(id, 24, darkTerminalMarkdownTheme, narrowProfile);
+    const wide = application.previewLayout(id, 24, darkTerminalMarkdownTheme, wideProfile);
+    assert.ok(narrow && wide);
+    const narrowLink = narrow.activations.find((entry) => entry.activation.kind === 'link');
+    const wideLink = wide.activations.find((entry) => entry.activation.kind === 'link');
+    assert.ok(narrowLink && wideLink);
+    assert.equal(narrowLink.column, 3);
+    assert.equal(wideLink.column, 5);
+    assert.ok(wide.instrumentation.rebuiltBlockLayouts > 0);
+
+    const preview = markdownPreview({
+      id: 'wide-profile-preview',
+      label: 'Wide profile preview',
+      layout: wide,
+      onAction: (action: MarkdownPreviewAction) => action,
+    });
+    assert.doesNotThrow(() => renderElementSnapshot({
+      element: preview,
+      terminalSize: { columns: 24, rows: 1 },
+      widthProfile: wideProfile,
+    }));
+    assert.throws(() => renderElementSnapshot({
+      element: preview,
+      terminalSize: { columns: 24, rows: 1 },
+      widthProfile: narrowProfile,
+    }), /must use the active terminal text-width profile/u);
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('fenced code blank lines retain monotonic preview source geometry', async () => {
+  const source = [
+    '```ts',
+    'const first = 1;',
+    '',
+    'const second = 2;',
+    '```',
+  ].join('\n');
+  const application = createVellumApplication({
+    watchFiles: false,
+    createBufferId: () => 'fenced-code-geometry',
+  });
+  try {
+    const id = application.openSource(source);
+    const layout = application.previewLayout(id, 40);
+    assert.ok(layout);
+    const offsets = layout.lines.map((line) => line.sourceOffset);
+    assert.deepEqual(offsets, [0, 6, 23, 24]);
+    assert.ok(offsets.every((offset, index) => index === 0 || offset >= (offsets[index - 1] ?? 0)));
+  } finally {
+    await application.dispose();
+  }
+});
+
 test('extension preview and accessibility retain front matter, callout, math, task, table, link, image, and footnote semantics', async () => {
   const source = [
     '---', 'title: Example', 'owner: Editor', '---', '',
@@ -123,6 +197,20 @@ test('extension preview and accessibility retain front matter, callout, math, ta
     for (const role of ['frontMatter', 'heading', 'note', 'link', 'checkbox', 'table', 'image', 'math', 'footnote']) {
       assert.ok(roles.has(role), `Missing accessible Markdown role: ${role}`);
     }
+    const snapshot = renderElementSnapshot({
+      element: markdownPreview({
+        id: 'semantic-preview',
+        label: 'Rendered Markdown',
+        layout,
+        onAction: (action: MarkdownPreviewAction) => action,
+      }),
+      terminalSize: { columns: 50, rows: layout.lines.length },
+    });
+    assert.equal(snapshot.frame.accessibility.root.role, 'document');
+    assert.equal(snapshot.frame.accessibility.root.label, 'Rendered Markdown');
+    assert.ok(accessibleTerminalRoles(snapshot.frame.accessibility.root).has('link'));
+    assert.ok(accessibleTerminalRoles(snapshot.frame.accessibility.root).has('checkbox'));
+    assert.equal(snapshot.frame.hitTargets?.length, 1 + layout.activations.length);
     const rendered = layout.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
     assert.match(rendered, /title: Example/u);
     assert.match(rendered, /WARNING:/u);
@@ -136,11 +224,11 @@ test('Markdown-aware editing makes one exact undo entry and round-trips nested o
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'editing' });
   try {
     const id = application.openSource('- parent');
-    application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset: 8 } });
+    application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 8 } });
     const sources = ['- parent'];
-    application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: '\n' } });
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: '\n' } });
     sources.push('- parent\n- ');
-    application.applyTextAreaAction(id, { kind: 'edit', operation: { kind: 'insert', text: 'child' } });
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'child' } });
     sources.push('- parent\n- child');
     application.indentList(id, false);
     sources.push('- parent\n    - child');
@@ -164,15 +252,44 @@ test('hybrid decorations conceal inactive delimiters and retain exact Markdown s
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'hybrid' });
   try {
     const id = application.openSource(source);
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer',
+      transition: { kind: 'placeCaret', offset: source.indexOf(' and ') + 2 },
+    });
     const buffer = application.state().project.buffers[id];
     assert.ok(buffer);
-    const inactive = hybridTextDecorations(buffer, darkTerminalMarkdownTheme);
-    assert.ok(inactive.some((decoration) => decoration.replacementText === ''));
-    assert.ok(inactive.some((decoration) => decoration.replacementText === '☑'));
-    application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset: 3 } });
-    const active = hybridTextDecorations(application.state().project.buffers[id] as never, darkTerminalMarkdownTheme);
-    const strongMarkerConcealments = active.filter((decoration) => decoration.label === 'concealed.strongMarker');
-    assert.equal(strongMarkerConcealments.length, 0);
+    const inactive = createHybridTextDecorations(buffer, darkTerminalMarkdownTheme);
+    const rendered = renderElementSnapshot({
+      element: textArea({
+        id: 'hybrid-source',
+        state: {
+          document: buffer.editor.document,
+          caret: buffer.editor.caret,
+          scroll: buffer.editor.scroll,
+        },
+        decorations: inactive,
+        meta: { accessibleName: 'Hybrid source' },
+        onTransition: (transition: TextAreaTransition) => transition,
+      }),
+      terminalSize: { columns: 72, rows: 2 },
+    });
+    assert.match(rendered.plainTextFrame, /link with code/u);
+    assert.doesNotMatch(rendered.plainTextFrame, /\*\*bold\*\*/u);
+    assert.match(rendered.plainTextFrame, /☑ task/u);
+    application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 3 } });
+    const activeBuffer = application.state().project.buffers[id];
+    assert.ok(activeBuffer);
+    const active = renderElementSnapshot({
+      element: textArea({
+        id: 'active-hybrid-source',
+        state: activeBuffer.editor,
+        decorations: createHybridTextDecorations(activeBuffer, darkTerminalMarkdownTheme),
+        meta: { accessibleName: 'Active hybrid source' },
+        onTransition: (transition: TextAreaTransition) => transition,
+      }),
+      terminalSize: { columns: 72, rows: 2 },
+    });
+    assert.match(active.plainTextFrame, /\*\*bold\*\*/u);
     assert.equal(sourceText(application, id), source);
     application.executeMarkdownCommand(id, 'markdown.toggleStrong');
     application.executeMarkdownCommand(id, 'edit.undo');
@@ -200,22 +317,44 @@ test('preview activation maps terminal cells to exact inline spans and navigates
       const sourceId = await application.openFile(sourcePath);
       const layout = application.previewLayout(sourceId, 72);
       assert.ok(layout);
-      await application.activatePreview(sourceId, 0, 0);
+      const focusedLink = layout.activations.find((entry) => (
+        entry.activation.kind === 'link'
+        && entry.activation.destination === 'https://example.test'
+      ));
+      assert.ok(focusedLink);
+      const focusedPreview = renderElementSnapshot({
+        element: markdownPreview({
+          id: 'keyboard-preview',
+          label: 'Keyboard preview',
+          layout,
+          onAction: (action: MarkdownPreviewAction) => action,
+        }),
+        terminalSize: { columns: 72, rows: layout.lines.length },
+        focusPath: ['keyboard-preview', focusedLink.id],
+      });
+      assert.equal(focusedPreview.frame.accessibility.focusPath[0], 'keyboard-preview');
+      assert.equal(
+        focusedPreview.frame.accessibility.focusPath.at(-1),
+        `keyboard-preview:${focusedLink.id}`,
+      );
+      assert.ok(focusedPreview.frame.cells.some((cell) => cell.style?.inverse === true));
+      assert.match(focusedPreview.hitTargetJson, new RegExp(focusedLink.id, 'u'));
+
+      const documentTarget = markdownPreviewActivationAt(layout, 0, 0);
+      assert.ok(documentTarget);
+      await application.activatePreview(sourceId, documentTarget);
       assert.equal(application.state().project.buffers[sourceId]?.editor.caret.position.offset, 0);
 
-      const targetPosition = activationPosition(layout, 'link', './target.md#destination');
-      await application.activatePreview(sourceId, targetPosition.row, targetPosition.column);
+      await application.activatePreview(sourceId, activationTarget(layout, 'link', './target.md#destination'));
       const target = application.state().project.buffers[application.state().project.activeBufferId as string];
       assert.equal(target?.path, targetPath);
       assert.equal(target?.editor.caret.position.offset, 7);
 
       application.activateBuffer(sourceId);
-      const footnotePosition = activationPosition(layout, 'footnote');
-      await application.activatePreview(sourceId, footnotePosition.row, footnotePosition.column);
+      await application.activatePreview(sourceId, activationTarget(layout, 'footnote'));
       assert.equal(application.state().project.buffers[sourceId]?.editor.caret.position.offset, source.indexOf('[^one]:'));
 
-      const webPosition = activationPosition(layout, 'link', 'https://example.test');
-      await application.activatePreview(sourceId, webPosition.row, webPosition.column);
+      await application.activatePreview(sourceId, activationTarget(layout, 'link', 'https://example.test'));
       assert.deepEqual(openedUrls, ['https://example.test/']);
     } finally {
       await application.dispose();
@@ -232,23 +371,23 @@ test('automatic marker pairing handles strong markers, closing markers, code fen
   })() });
   try {
     const strong = application.openSource('');
-    application.applyTextAreaAction(strong, { kind: 'edit', operation: { kind: 'insert', text: '**' } });
+    application.applyTextAreaTransition(strong, { kind: 'edit', operation: { kind: 'insert', text: '**' } });
     assert.equal(sourceText(application, strong), '****');
     assert.equal(application.state().project.buffers[strong]?.editor.caret.position.offset, 2);
-    application.applyTextAreaAction(strong, { kind: 'edit', operation: { kind: 'deleteBackward' } });
+    application.applyTextAreaTransition(strong, { kind: 'edit', operation: { kind: 'deleteBackward' } });
     assert.equal(sourceText(application, strong), '');
 
     const bracket = application.openSource('');
-    application.applyTextAreaAction(bracket, { kind: 'edit', operation: { kind: 'insert', text: '[' } });
-    application.applyTextAreaAction(bracket, { kind: 'edit', operation: { kind: 'insert', text: ']' } });
+    application.applyTextAreaTransition(bracket, { kind: 'edit', operation: { kind: 'insert', text: '[' } });
+    application.applyTextAreaTransition(bracket, { kind: 'edit', operation: { kind: 'insert', text: ']' } });
     assert.equal(sourceText(application, bracket), '[]');
     assert.equal(application.state().project.buffers[bracket]?.editor.caret.position.offset, 2);
 
     const fence = application.openSource('');
-    application.applyTextAreaAction(fence, { kind: 'edit', operation: { kind: 'insert', text: '```' } });
+    application.applyTextAreaTransition(fence, { kind: 'edit', operation: { kind: 'insert', text: '```' } });
     assert.equal(sourceText(application, fence), '```\n\n```');
     assert.equal(application.state().project.buffers[fence]?.editor.caret.position.offset, 4);
-    application.applyTextAreaAction(fence, { kind: 'edit', operation: { kind: 'insert', text: '*' } });
+    application.applyTextAreaTransition(fence, { kind: 'edit', operation: { kind: 'insert', text: '*' } });
     assert.equal(sourceText(application, fence), '```\n*\n```');
   } finally {
     await application.dispose();
@@ -262,8 +401,8 @@ test('inline toggles preserve crossed syntax and GFM table formatting aligns Uni
   })() });
   try {
     const inline = application.openSource('**bold** and plain');
-    application.applyTextAreaAction(inline, {
-      kind: 'pointer', action: { kind: 'endSelection', anchor: 12, offset: 4 }
+    application.applyTextAreaTransition(inline, {
+      kind: 'pointer', transition: { kind: 'endSelection', anchor: 12, offset: 4 }
     });
     application.executeMarkdownCommand(inline, 'markdown.toggleEmphasis');
     assert.equal(sourceText(application, inline), '**bo*ld** and* plain');
@@ -271,7 +410,7 @@ test('inline toggles preserve crossed syntax and GFM table formatting aligns Uni
     assert.equal(sourceText(application, inline), '**bold** and plain');
 
     const table = application.openSource('| Name | Value |\n| --- | --- |\n| 界 | é |');
-    application.applyTextAreaAction(table, { kind: 'pointer', action: { kind: 'placeCaret', offset: 38 } });
+    application.applyTextAreaTransition(table, { kind: 'pointer', transition: { kind: 'placeCaret', offset: 38 } });
     application.executeMarkdownCommand(table, 'markdown.formatTable');
     const lines = sourceText(application, table).split('\n');
     const widths = lines.map((line) => line.split('|').slice(1, -1).map((cell) => measureTextCells(cell).cells));
@@ -292,16 +431,17 @@ function flatten(entries: ReturnType<typeof extractMarkdownOutline>): ReturnType
   return entries.flatMap((entry) => [entry, ...flatten(entry.children)]);
 }
 
-function activationPosition(
+function activationTarget(
   layout: NonNullable<ReturnType<ReturnType<typeof createVellumApplication>['previewLayout']>>,
   kind: 'link' | 'footnote',
   destination?: string
-): { readonly row: number; readonly column: number } {
+): NonNullable<ReturnType<typeof markdownPreviewActivationAt>> {
   for (let row = 0; row < layout.lines.length; row += 1) {
     let column = 0;
     for (const span of layout.lines[row]?.inlineSpans ?? []) {
       if (span.activation?.kind === kind && (destination === undefined || ('destination' in span.activation && span.activation.destination === destination))) {
-        return { row, column };
+        const target = markdownPreviewActivationAt(layout, row, column);
+        if (target !== undefined) return target;
       }
       column += measureTextCells(span.text).cells;
     }
@@ -314,5 +454,15 @@ function accessibleRoles(
 ): ReadonlySet<string> {
   const roles = new Set<string>([node.role]);
   for (const child of node.children) for (const role of accessibleRoles(child)) roles.add(role);
+  return roles;
+}
+
+function accessibleTerminalRoles(
+  node: ReturnType<typeof renderElementSnapshot>['frame']['accessibility']['root']
+): ReadonlySet<string> {
+  const roles = new Set<string>([node.role]);
+  for (const child of node.children ?? []) {
+    for (const role of accessibleTerminalRoles(child)) roles.add(role);
+  }
   return roles;
 }

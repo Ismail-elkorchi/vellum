@@ -2,12 +2,12 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   createScrollState,
-  prepareTreeSource,
-  prepareTreeView,
+  createTreeSource,
+  createTreeView,
   treeReducer,
   type TreeTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { PreparedTreeView, TreeNode } from '@ismail-elkorchi/terminal-ui/components';
+import type { TreeNode, TreeView } from '@ismail-elkorchi/terminal-ui/components';
 import type { FileTreeNode, FileTreeState } from '../app/types.js';
 
 export const defaultFileTreeExclusions: readonly string[] = Object.freeze([
@@ -189,13 +189,13 @@ export function commitIndexedFiles(
 
 export function terminalFileTreeView(
   state: FileTreeState
-): PreparedTreeView<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> {
+): TreeView<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> {
   const roots = state.rootIds.flatMap((id) => {
     const node = terminalNode(state, id);
     return node === undefined ? [] : [node];
   });
-  const source = prepareTreeSource(roots);
-  return prepareTreeView(source, {
+  const source = createTreeSource(roots);
+  return createTreeView(source, {
     ...(state.activeId === undefined ? {} : { activeId: state.activeId }),
     selection: state.activeId === undefined
       ? Object.freeze({ mode: 'single' })

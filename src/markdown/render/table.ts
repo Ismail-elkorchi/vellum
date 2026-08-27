@@ -1,4 +1,4 @@
-import { measureTextCells } from '@ismail-elkorchi/terminal-ui/text';
+import { measureTextCells, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownTableNode, SourceSpan } from 'markspan';
 import type { MarkdownTheme } from '../theme.js';
 import { inlinePlainText, renderInline, type MarkdownRenderSpan } from './inline.js';
@@ -13,11 +13,12 @@ export function renderTable(
   node: MarkdownTableNode,
   width: number,
   theme: MarkdownTheme,
+  widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources = {}
 ): readonly RenderedTableRow[] {
   const rows = [node.header, ...node.rows];
   const natural = node.align.map((_, column) => Math.max(3, ...rows.map((row) => (
-    measureTextCells(inlinePlainText(row.cells[column]?.children ?? [])).cells
+    measureTextCells(inlinePlainText(row.cells[column]?.children ?? []), { widthProfile }).cells
   ))));
   const borderCells = 3 * natural.length + 1;
   const available = Math.max(natural.length, width - borderCells);
@@ -29,7 +30,7 @@ export function renderTable(
       if (cell !== undefined) {
         const rendered = renderInline(cell.children, theme, rowIndex === 0 ? theme.tableHeader : theme.body, undefined, resources);
         spans.push(...rendered);
-        const cells = measureTextCells(rendered.map((span) => span.text).join('')).cells;
+        const cells = measureTextCells(rendered.map((span) => span.text).join(''), { widthProfile }).cells;
         if (cells < (widths[column] ?? 1)) {
           spans.push(synthetic(' '.repeat((widths[column] ?? 1) - cells), cell.id, cell.contentSpan, theme.body));
         }

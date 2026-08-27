@@ -1,4 +1,5 @@
 import type { MarkdownBlockNode, SourceSpan } from 'markspan';
+import { measureTextCells, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownTheme } from '../theme.js';
 import { renderCodeBlock } from './code.js';
 import { inlinePlainText, renderInline, type MarkdownRenderSpan } from './inline.js';
@@ -20,32 +21,45 @@ export function renderMarkdownBlock(
   source: string,
   width: number,
   theme: MarkdownTheme,
+  widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources = {}
 ): MarkdownRenderedBlock {
   const maximum = Math.max(1, Math.floor(width));
   let lines: readonly MarkdownLayoutLine[];
   switch (node.kind) {
     case 'paragraph':
-      lines = wrapMarkdownSpans(renderInline(node.children, theme, theme.body, undefined, resources), maximum);
+      lines = wrapMarkdownSpans(
+        renderInline(node.children, theme, theme.body, undefined, resources),
+        maximum,
+        widthProfile,
+      );
       break;
     case 'heading':
-      lines = wrapMarkdownSpans(renderInline(node.children, theme, theme.headings[node.depth - 1], undefined, resources), maximum);
+      lines = wrapMarkdownSpans(
+        renderInline(node.children, theme, theme.headings[node.depth - 1], undefined, resources),
+        maximum,
+        widthProfile,
+      );
       break;
     case 'codeBlock': {
       const diagram = node.language === 'mermaid' ? resources.diagramText?.get(node.id) : undefined;
       const spans = diagram === undefined
         ? renderCodeBlock(node, theme, resources.highlightedCode?.get(node.id))
         : [synthetic(diagram, node.id, node.contentSpan, theme.body)];
-      lines = wrapMarkdownSpans(spans, maximum);
+      lines = wrapMarkdownSpans(spans, maximum, widthProfile);
       break;
     }
     case 'mathBlock': {
       const text = resources.mathText?.get(node.id) ?? `Math: ${node.value}`;
-      lines = wrapMarkdownSpans([synthetic(text, node.id, node.contentSpan, theme.math)], maximum);
+      lines = wrapMarkdownSpans(
+        [synthetic(text, node.id, node.contentSpan, theme.math)],
+        maximum,
+        widthProfile,
+      );
       break;
     }
     case 'table':
-      lines = Object.freeze(renderTable(node, maximum, theme, resources).map((row) => Object.freeze({
+      lines = Object.freeze(renderTable(node, maximum, theme, widthProfile, resources).map((row) => Object.freeze({
         spans: row.spans,
         inlineSpans: row.spans,
         sourceOffset: row.sourceOffset,
@@ -59,13 +73,13 @@ export function renderMarkdownBlock(
         spans.push(synthetic(entry.value + '\n', node.id, entry.valueSpan, theme.frontMatter));
       }
       if (spans.length === 0) spans.push(synthetic('Invalid front matter', node.id, node.span, theme.diagnostics.error));
-      lines = wrapMarkdownSpans(spans, maximum);
+      lines = wrapMarkdownSpans(spans, maximum, widthProfile);
       break;
     }
     case 'callout': {
       const label = node.calloutKind.toUpperCase();
       const prefix = synthetic(`${label}: `, node.id, node.labelSpan, theme.callouts[node.calloutKind]);
-      lines = prefixChildBlocks(node.children, source, maximum, theme, prefix, resources);
+      lines = prefixChildBlocks(node.children, source, maximum, theme, widthProfile, prefix, resources);
       break;
     }
     case 'blockQuote':
@@ -74,6 +88,7 @@ export function renderMarkdownBlock(
         source,
         maximum,
         theme,
+        widthProfile,
         synthetic('│ ', node.id, node.markerSpans[0] ?? node.span, theme.blockquote),
         resources
       );
@@ -88,27 +103,47 @@ export function renderMarkdownBlock(
           : item.task.checked ? '☑ ' : '☐ ';
         const markerStyle = item.task === null ? theme.listMarker : item.task.checked ? theme.checkedTask : theme.uncheckedTask;
         const prefix = synthetic(markerText, item.id, item.task?.span ?? item.markerSpan, markerStyle);
-        collected.push(...prefixChildBlocks(item.children, source, maximum, theme, prefix, resources));
+        collected.push(...prefixChildBlocks(
+          item.children,
+          source,
+          maximum,
+          theme,
+          widthProfile,
+          prefix,
+          resources,
+        ));
       }
       lines = Object.freeze(collected);
       break;
     }
     case 'footnoteDefinition': {
       const prefix = synthetic(`[^${node.label}]: `, node.id, node.labelSpan, theme.link);
-      lines = prefixChildBlocks(node.children, source, maximum, theme, prefix, resources);
+      lines = prefixChildBlocks(node.children, source, maximum, theme, widthProfile, prefix, resources);
       break;
     }
-    case 'thematicBreak':
-      lines = wrapMarkdownSpans([synthetic('─'.repeat(maximum), node.id, node.markerSpan, theme.tableBorder)], maximum);
+    case 'thematicBreak': {
+      const ruleWidth = measureTextCells('─', { widthProfile }).cells;
+      const glyph = ruleWidth <= maximum ? '─' : '-';
+      const repeats = Math.max(1, Math.floor(maximum / Math.min(maximum, ruleWidth)));
+      lines = wrapMarkdownSpans(
+        [synthetic(glyph.repeat(repeats), node.id, node.markerSpan, theme.tableBorder)],
+        maximum,
+        widthProfile,
+      );
       break;
+    }
     case 'htmlBlock':
-      lines = wrapMarkdownSpans([synthetic('[HTML block]', node.id, node.span, theme.htmlPlaceholder)], maximum);
+      lines = wrapMarkdownSpans(
+        [synthetic('[HTML block]', node.id, node.span, theme.htmlPlaceholder)],
+        maximum,
+        widthProfile,
+      );
       break;
     case 'linkDefinition':
       lines = wrapMarkdownSpans([
         synthetic(`[${node.label}]: `, node.id, node.labelSpan, theme.link),
         synthetic(node.destination, node.id, node.destinationSpan, theme.link)
-      ], maximum);
+      ], maximum, widthProfile);
       break;
   }
   const first = lines[0];
@@ -126,13 +161,21 @@ function prefixChildBlocks(
   source: string,
   width: number,
   theme: MarkdownTheme,
+  widthProfile: TextWidthProfile,
   prefix: MarkdownRenderSpan,
   resources: MarkdownBlockResources
 ): readonly MarkdownLayoutLine[] {
-  const prefixWidth = Math.max(1, prefix.text.length);
+  const prefixWidth = Math.max(1, measureTextCells(prefix.text, { widthProfile }).cells);
   const lines: MarkdownLayoutLine[] = [];
   for (const child of children) {
-    const rendered = renderMarkdownBlock(child, source, Math.max(1, width - prefixWidth), theme, resources);
+    const rendered = renderMarkdownBlock(
+      child,
+      source,
+      Math.max(1, width - prefixWidth),
+      theme,
+      widthProfile,
+      resources,
+    );
     for (let row = 0; row < rendered.lines.length; row += 1) {
       const line = rendered.lines[row];
       if (line === undefined) continue;
@@ -143,7 +186,7 @@ function prefixChildBlocks(
       lines.push(Object.freeze({ ...line, spans, inlineSpans: spans }));
     }
   }
-  if (lines.length === 0) return wrapMarkdownSpans([prefix], width);
+  if (lines.length === 0) return wrapMarkdownSpans([prefix], width, widthProfile);
   return Object.freeze(lines);
 }
 

@@ -110,7 +110,7 @@ function placeCaretAtLine(application: VellumApplication, line: number): void {
     currentLine += 1;
   }
   if (currentLine !== line) throw new Error(`Source line ${String(line)} does not exist.`);
-  application.applyTextAreaAction(id, { kind: 'pointer', action: { kind: 'placeCaret', offset } });
+  application.applyTextAreaTransition(id, { kind: 'pointer', transition: { kind: 'placeCaret', offset } });
 }
 
 async function readStandardInput(input: NodeJS.ReadableStream): Promise<string> {

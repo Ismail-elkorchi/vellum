@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { createTextAreaState, textAreaReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import { createTextAreaRowOffsetMap, richText } from '@ismail-elkorchi/terminal-ui/components';
 import { renderElementSnapshot } from '@ismail-elkorchi/terminal-ui/testing';
-import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { defaultTextWidthProfile, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import {
   countMarkdownDocumentWords,
   createMarkdownDocumentSession
@@ -32,7 +32,14 @@ for (const fixture of fixtures) {
   const parsed = createMarkdownDocumentSession(fixture.source, { dialect: 'gfm', sourceRetention: 'text' }).snapshot();
   const parser = createBufferParser(fixture.source, 0);
   const layout = parser.preview().kind === 'ready'
-    ? layoutMarkdownPreview(parsed.document.tree, fixture.source, 80, darkTerminalMarkdownTheme, createPreviewLayoutCache())
+    ? layoutMarkdownPreview(
+        parsed.document.tree,
+        fixture.source,
+        80,
+        darkTerminalMarkdownTheme,
+        defaultTextWidthProfile,
+        createPreviewLayoutCache(),
+      )
     : undefined;
   rows.push(measure(fixture.name, 'source-document text extraction', () => textDocumentText(editor.document)));
   rows.push(measure(fixture.name, 'Markspan full parse', () => createMarkdownDocumentSession(fixture.source, { dialect: 'gfm' })));
@@ -50,6 +57,7 @@ for (const fixture of fixtures) {
     fixture.source,
     80,
     darkTerminalMarkdownTheme,
+    defaultTextWidthProfile,
     createPreviewLayoutCache()
   )));
   if (layout !== undefined) {
@@ -69,7 +77,7 @@ for (const fixture of fixtures) {
       `terminal-ui text reduction (${position})`,
       () => textAreaReducer(createTextAreaState({ value: fixture.source }), {
         kind: 'pointer',
-        action: { kind: 'placeCaret', offset }
+        transition: { kind: 'placeCaret', offset }
       }).state,
       (state) => textAreaReducer(state, { kind: 'edit', operation: { kind: 'insert', text: 'x' } })
     ));
@@ -98,12 +106,20 @@ if (initialInstrumentedPreview.kind === 'ready') {
     initialInstrumentedPreview.snapshot.source,
     40,
     darkTerminalMarkdownTheme,
+    defaultTextWidthProfile,
     instrumentationCache
   );
 }
 const update = instrumented.applyChanges({ changes: [{ startOffset: 20, endOffsetExclusive: 20, insertedText: 'changed ' }] }, 1);
 const firstLayout = update.kind === 'ready'
-  ? layoutMarkdownPreview(update.snapshot.document.tree, update.snapshot.source, 40, darkTerminalMarkdownTheme, instrumentationCache)
+  ? layoutMarkdownPreview(
+      update.snapshot.document.tree,
+      update.snapshot.source,
+      40,
+      darkTerminalMarkdownTheme,
+      defaultTextWidthProfile,
+      instrumentationCache,
+    )
   : undefined;
 process.stdout.write('\nDeterministic instrumentation:\n');
 process.stdout.write(JSON.stringify({

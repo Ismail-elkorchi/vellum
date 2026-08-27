@@ -20,7 +20,7 @@ export function imageFallbackSpan(
     ...span,
     nodeId: node.id,
     sourceSpan: node.span,
-    activation: Object.freeze({ kind: 'image', destination: node.destination })
+    activation: Object.freeze({ kind: 'image', nodeId: node.id, destination: node.destination })
   });
 }
 

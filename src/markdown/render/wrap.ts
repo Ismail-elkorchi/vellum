@@ -25,13 +25,13 @@ export function wrapMarkdownSpans(
   let row: GraphemeSpan[] = [];
   let cells = 0;
   let pendingSpace: GraphemeSpan | undefined;
-  const flush = (force = false): void => {
+  const flush = (force = false, emptyRowSourceOffset?: number): void => {
     if (!force && row.length === 0) return;
     const first = row[0];
     const inlineSpans = mergeGraphemes(row);
     lines.push(Object.freeze({
       spans: inlineSpans,
-      sourceOffset: first?.sourceOffset ?? spans[0]?.sourceSpan.start ?? 0,
+      sourceOffset: first?.sourceOffset ?? emptyRowSourceOffset ?? spans[0]?.sourceSpan.start ?? 0,
       nodeId: first?.span.nodeId ?? spans[0]?.nodeId ?? 0,
       inlineSpans
     }));
@@ -42,13 +42,13 @@ export function wrapMarkdownSpans(
   for (const span of spans) {
     const measured = measureTextCells(span.text, { ...(widthProfile === undefined ? {} : { widthProfile }) });
     for (const grapheme of measured.graphemes) {
-      if (grapheme.text === '\n') {
-        flush(true);
-        continue;
-      }
       const sourceOffset = span.sourceSpan.end - span.sourceSpan.start === span.text.length
         ? span.sourceSpan.start + grapheme.startOffset
         : span.sourceSpan.start;
+      if (grapheme.text === '\n') {
+        flush(true, sourceOffset);
+        continue;
+      }
       const value: GraphemeSpan = { span, text: grapheme.text, cells: grapheme.cells, sourceOffset };
       if (/^\s$/u.test(grapheme.text)) {
         if (row.length > 0) pendingSpace = { ...value, text: ' ', cells: 1 };

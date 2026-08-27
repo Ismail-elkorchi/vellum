@@ -1,7 +1,7 @@
 import {
   createCommandInputState,
   createSplitPaneState,
-  prepareCommandSuggestions
+  createCommandSuggestions
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { BindableKeyName } from '@ismail-elkorchi/terminal-ui/input';
 import type { AppState, CommandId } from '../app/types.js';
@@ -55,10 +55,10 @@ const filePathDialog = (state: AppState, operation: 'openFile' | 'openProjectDir
   dialogState: Object.freeze({
     kind: 'filePath',
     operation,
-    command: createCommandInputState({ value: '', suggestions: prepareCommandSuggestions([]) })
+    command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
   })
 }));
-const searchInput = () => createCommandInputState({ value: '', suggestions: prepareCommandSuggestions([]) });
+const searchInput = () => createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) });
 const documentSearchDialog = (state: AppState, replace: boolean): AppUpdate => stateOnly(Object.freeze({
   ...state,
   dialogState: Object.freeze({
@@ -73,7 +73,7 @@ const documentSearchDialog = (state: AppState, replace: boolean): AppUpdate => s
   })
 }));
 const exportDialog = (state: AppState, scope: 'activeBuffer' | 'projectDirectory'): AppUpdate => {
-  const suggestions = prepareCommandSuggestions(builtInExportProfiles.map((profile) => ({
+  const suggestions = createCommandSuggestions(builtInExportProfiles.map((profile) => ({
     id: profile.id,
     label: profile.label,
     description: profile.targetFormat,
@@ -108,7 +108,7 @@ const definitions: readonly VellumCommand[] = Object.freeze([
     ...state,
     dialogState: Object.freeze({
       kind: 'commandPalette',
-      command: createCommandInputState({ value: '', suggestions: prepareCommandSuggestions([]) })
+      command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
     })
   }))),
   command('application.quit', 'Quit Vellum', 'Application', [{ key: 'q', ctrl: true }], enabled, (state) => effect(state, { kind: 'quit' })),
@@ -126,7 +126,7 @@ const definitions: readonly VellumCommand[] = Object.freeze([
     ...state,
     dialogState: Object.freeze({
       kind: 'quickOpen',
-      command: createCommandInputState({ value: '', suggestions: prepareCommandSuggestions([]) })
+      command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
     })
   }))),
   command('file.searchProjectDirectory', 'Search Project Directory', 'File', [{ key: 'f', ctrl: true, shift: true }], (state) => state.project.rootDirectory !== undefined, (state) => stateOnly(Object.freeze({

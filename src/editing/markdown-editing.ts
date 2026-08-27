@@ -1,4 +1,4 @@
-import type { TextAreaAction } from '@ismail-elkorchi/terminal-ui/behavior';
+import type { TextAreaTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   measureTextCells,
   textDocumentSelectionRange,
@@ -15,7 +15,7 @@ import {
 import type { BufferState, CommandId } from '../app/types.js';
 
 export interface MarkdownEditorTransition {
-  readonly action?: TextAreaAction;
+  readonly action?: TextAreaTransition;
   readonly caretOffset?: number;
 }
 
