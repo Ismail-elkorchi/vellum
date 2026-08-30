@@ -92,13 +92,10 @@ function updateVellum(
 ): TuiUpdateResult<AppState, AppMessage> {
   switch (message.kind) {
     case 'editor':
-      application.applyTextAreaTransition(message.bufferId, message.transition);
-      if (message.transition.kind === 'scroll' && message.editorMap !== undefined && message.previewMap !== undefined) {
-        application.synchronizeFromEditor(message.bufferId, message.editorMap, message.previewMap);
-      }
+      application.applyTextAreaTransition(message.bufferId, message.transition, message.synchronization);
       return { state: application.state() };
     case 'previewScroll':
-      application.updatePreviewScroll(message.bufferId, message.request, message.editorMap, message.previewMap);
+      application.updatePreviewScroll(message.bufferId, message.request, message.synchronization);
       return { state: application.state() };
     case 'tabs': {
       const state = application.state();

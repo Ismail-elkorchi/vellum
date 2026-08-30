@@ -8,6 +8,7 @@ import {
   commandInputReducer,
   createCommandSuggestions,
   createTextAreaState,
+  normalizeScrollState,
   scrollReducer,
   splitPaneReducer,
   textAreaReducer,
@@ -18,6 +19,7 @@ import {
   type TextAreaState,
   type TextAreaTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
+import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { TreeTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   defaultTextWidthProfile,
@@ -267,9 +269,8 @@ export interface VellumApplication {
   dismissDialog(): void;
   resizeSplitPane(transition: SplitPaneTransition): void;
   resizeTerminal(previous: TerminalSize, next: TerminalSize, widthProfile: TextWidthProfile): void;
-  updatePreviewScroll(bufferId: BufferId, request: ScrollRequest, editorMap?: RowOffsetMap, previewMap?: RowOffsetMap): void;
-  synchronizeFromEditor(bufferId: BufferId, editorMap: RowOffsetMap, previewMap: RowOffsetMap): void;
-  applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition): void;
+  updatePreviewScroll(bufferId: BufferId, request: ScrollRequest, synchronization?: SynchronizedPaneGeometry): void;
+  applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition, synchronization?: SynchronizedPaneGeometry): void;
   executeMarkdownCommand(bufferId: BufferId, commandId: import('./types.js').CommandId, options?: MarkdownCommandOptions): void;
   indentList(bufferId: BufferId, outdent: boolean): void;
   saveBuffer(bufferId: BufferId, destination?: string, overwriteConflict?: boolean, signal?: AbortSignal): Promise<boolean>;
@@ -297,10 +298,23 @@ export interface VellumApplication {
     theme?: MarkdownTheme,
     widthProfile?: TextWidthProfile,
   ): MarkdownPreviewLayout | undefined;
+  previewViewportLayout(
+    bufferId: BufferId,
+    width: number,
+    rows: number,
+    theme?: MarkdownTheme,
+    widthProfile?: TextWidthProfile,
+  ): MarkdownPreviewLayout | undefined;
   refreshPreviewResources(bufferId: BufferId): Promise<void>;
   previewImages(bufferId: BufferId): ReadonlyMap<number, MarkdownImageResult>;
   persistRecoveryRecord(): Promise<void>;
   dispose(): Promise<void>;
+}
+
+export interface SynchronizedPaneGeometry {
+  readonly editor: { readonly width: number; readonly rows: number };
+  readonly preview: { readonly width: number; readonly rows: number };
+  readonly widthProfile: TextWidthProfile;
 }
 
 const defaultFormat: FileFormat = Object.freeze({ bom: false, lineEnding: 'lf' });
@@ -805,6 +819,78 @@ function instantiateVellumApplication(
     runtime.hybridDecorations = undefined;
     schedulePreviewResources(bufferId);
     scheduleRecovery();
+  };
+
+  const synchronizedEditorMap = (
+    bufferId: BufferId,
+    synchronization: SynchronizedPaneGeometry,
+  ): RowOffsetMap | undefined => {
+    const buffer = state.project.buffers[bufferId];
+    if (buffer === undefined) return undefined;
+    const decorations = state.editorMode === 'hybrid' ? api.hybridDecorations(bufferId) : undefined;
+    return createTextAreaRowOffsetMap({
+      document: buffer.editor.document,
+      terminalWidth: synchronization.editor.width,
+      terminalRows: synchronization.editor.rows,
+      widthProfile: synchronization.widthProfile,
+      ...(decorations === undefined ? {} : { decorations }),
+      lineNumbers: { minWidth: 3 },
+      wrap: { mode: 'soft' },
+      scrollbar: { visible: 'auto' },
+    });
+  };
+
+  const synchronizeEditorViewport = (
+    bufferId: BufferId,
+    synchronization: SynchronizedPaneGeometry,
+  ): void => {
+    let buffer = state.project.buffers[bufferId];
+    const editorMap = synchronizedEditorMap(bufferId, synchronization);
+    if (buffer === undefined || editorMap === undefined) return;
+    let editor = buffer.editor;
+    if (editor.revealCaret) {
+      const nextState = scrollReducer(editor.scroll, {
+        kind: 'itemIntoView',
+        itemIndex: editorMap.rowAtSourceOffset(editor.caret.position.offset),
+        alignment: 'nearest',
+      }, rowMapScrollGeometry(editorMap, synchronization.editor.rows));
+      editor = textAreaReducer(editor, {
+        kind: 'scroll',
+        request: { nextState, source: 'focus', target: 'content' },
+      }).state;
+    } else {
+      const nextState = scrollReducer(
+        editor.scroll,
+        { kind: 'setOffset' },
+        rowMapScrollGeometry(editorMap, synchronization.editor.rows),
+      );
+      if (nextState !== editor.scroll) {
+        editor = textAreaReducer(editor, {
+          kind: 'scroll',
+          request: { nextState, source: 'focus', target: 'content' },
+        }).state;
+      }
+    }
+    const previewMap = api.previewViewportLayout(
+      bufferId,
+      synchronization.preview.width,
+      synchronization.preview.rows,
+      markdownTheme,
+      synchronization.widthProfile,
+    )?.rowOffsetMap;
+    buffer = state.project.buffers[bufferId];
+    if (buffer === undefined) return;
+    const previewScroll = previewMap === undefined
+      ? buffer.previewScroll
+      : synchronizePaneScroll(
+          editor.scroll,
+          { map: editorMap, viewportRows: synchronization.editor.rows },
+          buffer.previewScroll,
+          { map: previewMap, viewportRows: synchronization.preview.rows },
+        );
+    if (editor !== buffer.editor || previewScroll !== buffer.previewScroll) {
+      replaceBuffer({ ...buffer, editor, previewScroll });
+    }
   };
 
   const api: VellumApplication = {
@@ -1410,63 +1496,77 @@ function instantiateVellumApplication(
             wrap: { mode: 'soft' },
             scrollbar: { visible: 'auto' }
           });
-          const sourceOffset = sourceOffsetAtScrollRow(previousMap, buffer.editor.scroll.offsetRow);
           editor = Object.freeze({
             ...buffer.editor,
-            scroll: scrollReducer(buffer.editor.scroll, {
-              kind: 'setOffset', rows: nextMap.rowAtSourceOffset(sourceOffset)
-            })
+            scroll: synchronizePaneScroll(
+              buffer.editor.scroll,
+              { map: previousMap, viewportRows: previousPanes.editor.rows },
+              buffer.editor.scroll,
+              { map: nextMap, viewportRows: nextPanes.editor.rows },
+            )
           });
         }
         if (previousPanes.preview !== undefined && nextPanes.preview !== undefined) {
-          const previousMap = api.previewLayout(
+          const previousMap = api.previewViewportLayout(
             bufferId,
             previousPanes.preview.width,
+            previousPanes.preview.rows,
             markdownTheme,
             widthProfile
           )?.rowOffsetMap;
-          const nextMap = api.previewLayout(
+          const nextMap = api.previewViewportLayout(
             bufferId,
             nextPanes.preview.width,
+            nextPanes.preview.rows,
             markdownTheme,
             widthProfile
           )?.rowOffsetMap;
           if (previousMap !== undefined && nextMap !== undefined) {
-            const sourceOffset = sourceOffsetAtScrollRow(previousMap, buffer.previewScroll.offsetRow);
-            previewScroll = scrollReducer(buffer.previewScroll, {
-              kind: 'setOffset', rows: nextMap.rowAtSourceOffset(sourceOffset)
-            });
+            previewScroll = synchronizePaneScroll(
+              buffer.previewScroll,
+              { map: previousMap, viewportRows: previousPanes.preview.rows },
+              buffer.previewScroll,
+              { map: nextMap, viewportRows: nextPanes.preview.rows },
+            );
           }
         }
         replaceBuffer(Object.freeze({ ...buffer, editor, previewScroll }));
       }
       scheduleRecovery();
     },
-    updatePreviewScroll(bufferId, request, editorMap, previewMap) {
+    updatePreviewScroll(bufferId, request, synchronization) {
       const buffer = state.project.buffers[bufferId];
       if (buffer === undefined) return;
-      let previewScroll = request.nextState;
-      let editor = buffer.editor;
-      if (editorMap !== undefined && previewMap !== undefined) {
-        const sourceOffset = previewMap.sourceOffsetAtRow(previewScroll.offsetRow);
-        editor = Object.freeze({
-          ...editor,
-          scroll: scrollReducer(editor.scroll, { kind: 'setOffset', rows: editorMap.rowAtSourceOffset(sourceOffset) })
-        });
+      if (synchronization === undefined) {
+        replaceBuffer({ ...buffer, previewScroll: request.nextState });
+        return;
       }
+      const editorMap = synchronizedEditorMap(bufferId, synchronization);
+      const previewMap = api.previewViewportLayout(
+        bufferId,
+        synchronization.preview.width,
+        synchronization.preview.rows,
+        markdownTheme,
+        synchronization.widthProfile,
+      )?.rowOffsetMap;
+      if (editorMap === undefined || previewMap === undefined) return;
+      const previewScroll = normalizeScrollState(
+        request.nextState,
+        rowMapScrollGeometry(previewMap, synchronization.preview.rows),
+      );
+      const nextState = synchronizePaneScroll(
+        previewScroll,
+        { map: previewMap, viewportRows: synchronization.preview.rows },
+        buffer.editor.scroll,
+        { map: editorMap, viewportRows: synchronization.editor.rows },
+      );
+      const editor = textAreaReducer(buffer.editor, {
+        kind: 'scroll',
+        request: { nextState, source: request.source, target: 'content' },
+      }).state;
       replaceBuffer({ ...buffer, editor, previewScroll });
     },
-    synchronizeFromEditor(bufferId, editorMap, previewMap) {
-      const buffer = state.project.buffers[bufferId];
-      if (buffer === undefined) return;
-      const sourceOffset = editorMap.sourceOffsetAtRow(buffer.editor.scroll.offsetRow);
-      const previewScroll = scrollReducer(buffer.previewScroll, {
-        kind: 'setOffset',
-        rows: previewMap.rowAtSourceOffset(sourceOffset)
-      });
-      replaceBuffer({ ...buffer, previewScroll });
-    },
-    applyTextAreaTransition(bufferId, transition) {
+    applyTextAreaTransition(bufferId, transition, synchronization) {
       assertActive();
       const buffer = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
@@ -1481,6 +1581,7 @@ function instantiateVellumApplication(
       } else {
         applyTransition(bufferId, automatic?.action ?? transition, automatic?.caretOffset);
       }
+      if (synchronization !== undefined) synchronizeEditorViewport(bufferId, synchronization);
     },
     executeMarkdownCommand(bufferId, commandId, commandOptions) {
       assertActive();
@@ -1910,6 +2011,17 @@ function instantiateVellumApplication(
       runtime.lastPreviewLayout = layout;
       return layout;
     },
+    previewViewportLayout(
+      bufferId,
+      width,
+      rows,
+      theme = markdownTheme,
+      widthProfile = defaultTextWidthProfile,
+    ) {
+      const initial = api.previewLayout(bufferId, width, theme, widthProfile);
+      if (initial === undefined || initial.lines.length <= rows || width <= 1) return initial;
+      return api.previewLayout(bufferId, width - 1, theme, widthProfile);
+    },
     async refreshPreviewResources(bufferId) {
       const buffer = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
@@ -2178,6 +2290,45 @@ function flattenOutline(
 
 function retainResourceEntries<Value>(entries: Map<number, Value>, activeNodeIds: ReadonlySet<number>): void {
   for (const nodeId of entries.keys()) if (!activeNodeIds.has(nodeId)) entries.delete(nodeId);
+}
+
+interface ScrollPaneMap {
+  readonly map: RowOffsetMap;
+  readonly viewportRows: number;
+}
+
+function rowMapScrollGeometry(map: RowOffsetMap, viewportRows: number): ScrollGeometry {
+  return Object.freeze({
+    contentRows: map.rowCount,
+    contentColumns: 0,
+    viewportRows: Math.max(0, Math.floor(viewportRows)),
+    viewportColumns: 0,
+  });
+}
+
+function synchronizePaneScroll(
+  originScroll: ScrollState,
+  origin: ScrollPaneMap,
+  targetScroll: ScrollState,
+  target: ScrollPaneMap,
+): ScrollState {
+  const originGeometry = rowMapScrollGeometry(origin.map, origin.viewportRows);
+  const targetGeometry = rowMapScrollGeometry(target.map, target.viewportRows);
+  const normalizedOrigin = normalizeScrollState(originScroll, originGeometry);
+  const originBottom = Math.max(0, originGeometry.contentRows - originGeometry.viewportRows);
+  const targetBottom = Math.max(0, targetGeometry.contentRows - targetGeometry.viewportRows);
+  const targetRow = normalizedOrigin.offsetRow === 0
+    ? 0
+    : normalizedOrigin.offsetRow === originBottom
+      ? targetBottom
+      : target.map.rowAtSourceOffset(
+          sourceOffsetAtScrollRow(origin.map, normalizedOrigin.offsetRow),
+        );
+  return scrollReducer(
+    targetScroll,
+    { kind: 'setOffset', rows: targetRow },
+    targetGeometry,
+  );
 }
 
 function sourceOffsetAtScrollRow(map: RowOffsetMap, row: number): number {

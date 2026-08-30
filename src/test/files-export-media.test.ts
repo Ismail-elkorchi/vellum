@@ -11,7 +11,7 @@ import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
-import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { defaultTextWidthProfile, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { collectMarkdownNodes, parseMarkdown } from 'markspan';
 import {
   createCodeHighlighter,
@@ -729,6 +729,99 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
     assert.equal(syntaxNodeAt(hostAnchors.preview), anchorNodeId);
   } finally {
     await runtime.dispose();
+    await application.dispose();
+  }
+});
+
+test('split preview preserves scroll edges, reveals keyboard carets, and needs no horizontal scrollbar', async () => {
+  const terminalSize = Object.freeze({ columns: 140, rows: 40 });
+  const source = Array.from(
+    { length: 80 },
+    (_, index) => `## Section ${String(index)}\n\nParagraph ${String(index)} contains enough text to wrap differently in source and preview panes.`,
+  ).join('\n\n');
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'split-scroll-contracts' });
+  const bufferId = application.openSource(source);
+  application.dispatchCommand('view.editorPreview');
+  const body = vellumBodyGeometry(application.state(), terminalSize);
+  const panes = vellumPaneGeometry(application.state(), body.bodyWidth, body.contentRows);
+  assert.ok(panes.editor && panes.preview);
+  const synchronization = Object.freeze({
+    editor: panes.editor,
+    preview: panes.preview,
+    widthProfile: defaultTextWidthProfile,
+  });
+  const buffer = application.state().project.buffers[bufferId];
+  assert.ok(buffer);
+  const editorMap = createTextAreaRowOffsetMap({
+    document: buffer.editor.document,
+    terminalWidth: panes.editor.width,
+    terminalRows: panes.editor.rows,
+    lineNumbers: { minWidth: 3 },
+    wrap: { mode: 'soft' },
+    scrollbar: { visible: 'auto' },
+  });
+  const previewMap = application.previewViewportLayout(
+    bufferId,
+    panes.preview.width,
+    panes.preview.rows,
+  )?.rowOffsetMap;
+  assert.ok(previewMap);
+  const editorBottom = Math.max(0, editorMap.rowCount - panes.editor.rows);
+  const previewBottom = Math.max(0, previewMap.rowCount - panes.preview.rows);
+
+  try {
+    application.updatePreviewScroll(bufferId, {
+      nextState: { offsetRow: previewBottom, offsetColumn: 0, followTail: false },
+      source: 'keyboard',
+      target: 'content',
+    }, synchronization);
+    let current = application.state().project.buffers[bufferId];
+    assert.equal(current?.previewScroll.offsetRow, previewBottom);
+    assert.equal(current?.editor.scroll.offsetRow, editorBottom);
+
+    application.applyTextAreaTransition(bufferId, {
+      kind: 'scroll',
+      request: {
+        nextState: { offsetRow: editorBottom, offsetColumn: 0, followTail: false },
+        source: 'keyboard',
+        target: 'content',
+      },
+    }, synchronization);
+    current = application.state().project.buffers[bufferId];
+    assert.equal(current?.editor.scroll.offsetRow, editorBottom);
+    assert.equal(current?.previewScroll.offsetRow, previewBottom);
+
+    application.applyTextAreaTransition(bufferId, {
+      kind: 'scroll',
+      request: {
+        nextState: { offsetRow: 0, offsetColumn: 0, followTail: false },
+        source: 'keyboard',
+        target: 'content',
+      },
+    }, synchronization);
+    for (let index = 0; index < 40; index += 1) {
+      application.applyTextAreaTransition(bufferId, {
+        kind: 'edit',
+        operation: { kind: 'moveLineDown' },
+      }, synchronization);
+    }
+    current = application.state().project.buffers[bufferId];
+    assert.ok((current?.editor.scroll.offsetRow ?? 0) > 0);
+    assert.ok((current?.previewScroll.offsetRow ?? 0) > 0);
+    assert.equal(current?.editor.revealCaret, false);
+
+    const host = createMemoryTerminalHost({ terminalSize });
+    const runtime = createTuiRuntime({ app: createVellumTui(application), host });
+    try {
+      await runtime.start();
+      assert.ok(runtime.frame()?.cursor);
+      assert.equal(runtime.frame()?.hitTargets?.some((target) => (
+        target.id === `vellum-preview-${bufferId}:scrollbar:horizontal:track`
+      )), false);
+    } finally {
+      await runtime.dispose();
+    }
+  } finally {
     await application.dispose();
   }
 });

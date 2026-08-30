@@ -2,7 +2,6 @@ import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import {
   button,
   commandInput,
-  createTextAreaRowOffsetMap,
   dialog,
   richText,
   tabs,
@@ -24,11 +23,15 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import { column, grid, overlay, row, splitPane, surface, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
-import type { RowOffsetMap, TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
+import type { TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import type { TerminalSize } from '@ismail-elkorchi/terminal-ui/host';
 import type { AppState, BufferId, BufferState, CommandId } from './app/types.js';
 import { bufferIsDirty } from './app/types.js';
-import type { VellumApplication, VellumApplicationUpdate } from './app/application.js';
+import type {
+  SynchronizedPaneGeometry,
+  VellumApplication,
+  VellumApplicationUpdate
+} from './app/application.js';
 import { markdownPreview, type MarkdownPreviewAction } from './markdown/render/component.js';
 import type { MarkdownPreviewLayout } from './markdown/render/layout.js';
 import { inlinePlainText } from './markdown/render/inline.js';
@@ -50,8 +53,8 @@ export const VELLUM_IDS = Object.freeze({
 });
 
 export type AppMessage =
-  | { readonly kind: 'editor'; readonly bufferId: BufferId; readonly transition: TextAreaTransition; readonly editorMap?: RowOffsetMap; readonly previewMap?: RowOffsetMap }
-  | { readonly kind: 'previewScroll'; readonly bufferId: BufferId; readonly request: ScrollRequest; readonly editorMap?: RowOffsetMap; readonly previewMap?: RowOffsetMap }
+  | { readonly kind: 'editor'; readonly bufferId: BufferId; readonly transition: TextAreaTransition; readonly synchronization?: SynchronizedPaneGeometry }
+  | { readonly kind: 'previewScroll'; readonly bufferId: BufferId; readonly request: ScrollRequest; readonly synchronization?: SynchronizedPaneGeometry }
   | { readonly kind: 'tabs'; readonly transition: TabsTransition<BufferId> }
   | { readonly kind: 'closeTab'; readonly bufferId: BufferId }
   | { readonly kind: 'fileTree'; readonly transition: TreeTransition }
@@ -196,32 +199,33 @@ function applicationContent(
   widthProfile: TextWidthProfile,
 ) {
   if (state.paneArrangement === 'editor') {
-    return editorPane(application, state, buffer, width, rows, widthProfile);
+    return editorPane(application, state, buffer);
   }
   if (state.paneArrangement === 'preview') {
-    return previewPane(application, state, buffer, width, rows, widthProfile);
+    return previewPane(application, buffer, width, rows, widthProfile);
   }
   const geometry = vellumPaneGeometry(state, width, rows);
   const editorSize = geometry.editor;
   const previewSize = geometry.preview;
   if (editorSize === undefined || previewSize === undefined) throw new Error('Editor and preview geometry is incomplete.');
+  const synchronization: SynchronizedPaneGeometry = Object.freeze({
+    editor: editorSize,
+    preview: previewSize,
+    widthProfile,
+  });
   const editor = editorPane(
     application,
     state,
     buffer,
-    editorSize.width,
-    editorSize.rows,
-    widthProfile,
-    previewSize.width,
+    synchronization,
   );
   const preview = previewPane(
     application,
-    state,
     buffer,
     previewSize.width,
     previewSize.rows,
     widthProfile,
-    editorSize.width,
+    synchronization,
   );
   return splitPane([editor, preview], {
     id: `vellum-split-${buffer.id}`,
@@ -238,32 +242,11 @@ function editorPane(
   application: VellumApplication,
   state: AppState,
   buffer: BufferState,
-  width: number,
-  rows: number,
-  widthProfile: TextWidthProfile,
-  previewWidth?: number
+  synchronization?: SynchronizedPaneGeometry
 ) {
   const decorations = state.editorMode === 'hybrid'
     ? application.hybridDecorations(buffer.id)
     : undefined;
-  const editorMap = createTextAreaRowOffsetMap({
-    document: buffer.editor.document,
-    terminalWidth: width,
-    terminalRows: rows,
-    widthProfile,
-    ...(decorations === undefined ? {} : { decorations }),
-    lineNumbers: { minWidth: 3 },
-    wrap: { mode: 'soft' },
-    scrollbar: { visible: 'auto' }
-  });
-  const previewMap = previewWidth === undefined
-    ? undefined
-    : application.previewLayout(
-        buffer.id,
-        previewWidth,
-        application.markdownTheme(),
-        widthProfile,
-      )?.rowOffsetMap;
   return textArea({
     id: `${VELLUM_IDS.editor}-${buffer.id}`,
     state: {
@@ -284,19 +267,18 @@ function editorPane(
       kind: 'editor',
       bufferId: buffer.id,
       transition,
-      ...(previewMap === undefined ? {} : { editorMap, previewMap })
+      ...(synchronization === undefined ? {} : { synchronization })
     })
   });
 }
 
 function previewPane(
   application: VellumApplication,
-  state: AppState,
   buffer: BufferState,
   width: number,
   rows: number,
   widthProfile: TextWidthProfile,
-  editorWidth?: number
+  synchronization?: SynchronizedPaneGeometry
 ) {
   if (buffer.preview.kind === 'failed') {
     return surface(text({ id: `preview-failed-${buffer.id}`, content: `Preview failed: ${buffer.preview.message}`, textRole: 'body' }), {
@@ -304,27 +286,14 @@ function previewPane(
       title: 'Preview', border: { kind: 'rounded' }, padding: 1
     });
   }
-  const layout = application.previewLayout(
+  const layout = application.previewViewportLayout(
     buffer.id,
     width,
+    rows,
     application.markdownTheme(),
     widthProfile,
   );
   if (layout === undefined) return text({ id: `preview-empty-${buffer.id}`, content: '', textRole: 'body' });
-  const editorMap = editorWidth === undefined
-    ? undefined
-    : createTextAreaRowOffsetMap({
-      document: buffer.editor.document,
-      terminalWidth: editorWidth,
-      terminalRows: rows,
-      widthProfile,
-      ...(state.editorMode === 'hybrid'
-        ? { decorations: application.hybridDecorations(buffer.id) }
-        : {}),
-      lineNumbers: { minWidth: 3 },
-      wrap: { mode: 'soft' },
-      scrollbar: { visible: 'auto' }
-    });
   return viewport(previewContent(application, buffer, layout), {
     id: `${VELLUM_IDS.preview}-${buffer.id}`,
     offset: { row: buffer.previewScroll.offsetRow, column: buffer.previewScroll.offsetColumn },
@@ -335,7 +304,7 @@ function previewPane(
       kind: 'previewScroll',
       bufferId: buffer.id,
       request,
-      ...(editorMap === undefined ? {} : { editorMap, previewMap: layout.rowOffsetMap })
+      ...(synchronization === undefined ? {} : { synchronization })
     })
   });
 }

@@ -113,7 +113,12 @@ test('editor and preview row-offset maps remain source anchored through wrapping
     '',
     '| first | second |',
     '| --- | --- |',
-    '| one | two |'
+    '| one | two |',
+    '',
+    ...Array.from(
+      { length: 30 },
+      (_, index) => `Trailing paragraph ${String(index)} keeps both resized panes scrollable.`,
+    ),
   ].join('\n');
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'maps' });
   try {
@@ -151,26 +156,30 @@ test('editor and preview row-offset maps remain source anchored through wrapping
     const previousBody = vellumBodyGeometry(application.state(), previousSize);
     const previousPanes = vellumPaneGeometry(application.state(), previousBody.bodyWidth, previousBody.contentRows);
     assert.ok(previousPanes.editor && previousPanes.preview);
+    const widthProfile = defineTextWidthProfile({ ambiguous: 'narrow', emoji: 'wide' });
     const previousEditorMap = createTextAreaRowOffsetMap({
       document: buffer.editor.document,
       terminalWidth: previousPanes.editor.width,
       terminalRows: previousPanes.editor.rows,
+      widthProfile,
       lineNumbers: { minWidth: 3 }, wrap: { mode: 'soft' }, scrollbar: { visible: 'auto' }
     });
-    const previousPreviewMap = application.previewLayout(id, previousPanes.preview.width)?.rowOffsetMap;
+    const previousPreviewMap = application.previewViewportLayout(
+      id,
+      previousPanes.preview.width,
+      previousPanes.preview.rows,
+      undefined,
+      widthProfile,
+    )?.rowOffsetMap;
     assert.ok(previousPreviewMap);
     const anchor = source.indexOf('const');
     application.applyTextAreaTransition(id, { kind: 'scroll', request: {
       nextState: { offsetRow: previousEditorMap.rowAtSourceOffset(anchor), offsetColumn: 0, followTail: false },
       source: 'keyboard', target: 'content'
-    } });
-    application.updatePreviewScroll(id, {
-      nextState: { offsetRow: previousPreviewMap.rowAtSourceOffset(anchor), offsetColumn: 0, followTail: false },
-      source: 'keyboard', target: 'content'
-    });
+    } }, { editor: previousPanes.editor, preview: previousPanes.preview, widthProfile });
     const previousEditorAnchor = previousEditorMap.sourceOffsetAtRow(application.state().project.buffers[id]?.editor.scroll.offsetRow ?? 0);
     const previousPreviewAnchor = previousPreviewMap.sourceOffsetAtRow(application.state().project.buffers[id]?.previewScroll.offsetRow ?? 0);
-    application.resizeTerminal(previousSize, nextSize, defineTextWidthProfile({ ambiguous: 'narrow', emoji: 'wide' }));
+    application.resizeTerminal(previousSize, nextSize, widthProfile);
     const nextBody = vellumBodyGeometry(application.state(), nextSize);
     const nextPanes = vellumPaneGeometry(application.state(), nextBody.bodyWidth, nextBody.contentRows);
     assert.ok(nextPanes.editor && nextPanes.preview);
@@ -180,9 +189,16 @@ test('editor and preview row-offset maps remain source anchored through wrapping
       document: resized.editor.document,
       terminalWidth: nextPanes.editor.width,
       terminalRows: nextPanes.editor.rows,
+      widthProfile,
       lineNumbers: { minWidth: 3 }, wrap: { mode: 'soft' }, scrollbar: { visible: 'auto' }
     });
-    const nextPreviewMap = application.previewLayout(id, nextPanes.preview.width)?.rowOffsetMap;
+    const nextPreviewMap = application.previewViewportLayout(
+      id,
+      nextPanes.preview.width,
+      nextPanes.preview.rows,
+      undefined,
+      widthProfile,
+    )?.rowOffsetMap;
     assert.ok(nextPreviewMap);
     const nextEditorAnchor = nextEditorMap.sourceOffsetAtRow(resized.editor.scroll.offsetRow);
     const nextPreviewAnchor = nextPreviewMap.sourceOffsetAtRow(resized.previewScroll.offsetRow);

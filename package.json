@@ -47,7 +47,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#d83d01432056470d17f42793bb83f6d7c93e595d",
+    "@ismail-elkorchi/terminal-ui": "git+https://github.com/Ismail-elkorchi/terminal-ui.git#2718dc60a212c1b80737b5d00ca1c0322b579e0b",
     "markspan": "git+https://github.com/Ismail-elkorchi/markspan.git#c883b9a518cf96b967eadba31c3f2d08db1f5946"
   },
   "devDependencies": {
