@@ -135,7 +135,7 @@ function status(state: AppState) {
   const textValue = state.notice !== undefined
     ? `${state.notice.status.toUpperCase()}: ${state.notice.message}`
     : buffer === undefined
-      ? 'Ctrl+N new file · Ctrl+O open file · Ctrl+Shift+O open project directory'
+      ? 'Ctrl+N new file · Ctrl+O open file · Ctrl+Alt+D open project directory'
       : `${buffer.label} · ${bufferIsDirty(buffer) ? 'UNSAVED' : 'SAVED'} · ${buffer.preview.kind === 'ready' ? `${String(buffer.preview.metrics.wordCount)} words` : 'PREVIEW FAILED'}`;
   return surface(text({ id: 'vellum-status-text', content: textValue, textRole: 'metadata' }), {
     id: 'vellum-status', appearance: 'bar', border: { kind: 'none' }, padding: { left: 1, right: 1 }

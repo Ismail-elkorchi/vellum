@@ -77,7 +77,7 @@ gutter collapses in narrow panes. Preview rows retain Markspan source spans.
 
 ## Commands
 
-`Ctrl+Shift+P` opens the command palette. The command registry is the source for
+`Ctrl+Alt+P` opens the command palette. The command registry is the source for
 palette entries, availability, titles, categories, help labels, and default
 bindings. Important defaults include:
 
@@ -85,19 +85,23 @@ bindings. Important defaults include:
 | --- | --- |
 | `Ctrl+N` | New file |
 | `Ctrl+O` | Open file |
-| `Ctrl+Shift+O` | Open project directory |
+| `Ctrl+Alt+D` | Open project directory |
 | `Ctrl+S` | Save |
-| `Ctrl+Shift+S` | Save as |
-| `Ctrl+Alt+S` | Save all |
+| `Ctrl+Alt+S` | Save as |
+| `Ctrl+Alt+A` | Save all |
 | `Ctrl+W` | Close active buffer |
-| `Ctrl+Shift+T` | Reopen recently closed buffer |
+| `Ctrl+Alt+R` | Reopen recently closed buffer |
 | `Ctrl+P` | Quick open |
 | `Ctrl+F` / `Ctrl+H` | Find / replace in the source document |
-| `Ctrl+Shift+F` | Search the project directory |
+| `Ctrl+Alt+F` | Search the project directory |
 | `Ctrl+Alt+O` | Open the document outline |
 | `Alt+Left` / `Alt+Right` | Navigate back / forward |
 | `F7` / `F8` | Preview / editor and preview |
 | `Ctrl+Q` | Quit |
+
+Default letter shortcuts avoid `Ctrl+Shift`: legacy terminal input cannot
+distinguish `Ctrl+Shift+letter` from `Ctrl+letter`, and terminal emulators often
+reserve those chords. User keymaps may still assign terminal-specific bindings.
 
 Markdown commands cover strong and emphasis, inline code, links, task state,
 heading level, code fences, block movement and duplication, list indentation,

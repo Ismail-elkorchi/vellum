@@ -3,14 +3,17 @@ import test from 'node:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { parseCliArguments, commandHelp } from '../cli-options.js';
 import { commandPaletteEntries } from '../commands/palette.js';
-import { defaultKeymap, parseKeyBinding, validateKeymap } from '../commands/keymap.js';
+import { defaultKeymap, keyBindingText, parseKeyBinding, validateKeymap } from '../commands/keymap.js';
 import { commandById, initialAppState } from '../commands/registry.js';
 import { findDocumentMatches, replacementChangeSet } from '../search/document-search.js';
 import { createVellumApplication } from '../app/application.js';
 import { quickOpenEntries } from '../project/quick-open.js';
+import { createVellumTui } from '../tui.js';
 
 test('CLI definitions parse POSIX, Windows, stdin, presentation, line, and export forms', () => {
   assert.deepEqual(parseCliArguments([]), { kind: 'open', help: false });
@@ -42,7 +45,30 @@ test('document search uses UTF-16 spans, validates expressions, and returns orde
 
 test('keymap validation reports malformed, unknown, duplicate, and conflicting entries', () => {
   assert.equal(parseKeyBinding('Ctrl+ArrowUp').key, 'arrowUp');
-  assert.equal(defaultKeymap().diagnostics.length, 0);
+  const defaults = defaultKeymap();
+  assert.equal(defaults.diagnostics.length, 0);
+  assert.equal(defaults.entries.some(({ binding }) => (
+    binding.ctrl === true && binding.shift === true && /^[a-z]$/u.test(binding.key)
+  )), false);
+  assert.deepEqual(Object.fromEntries(defaults.entries
+    .filter(({ command }) => [
+      'application.commandPalette',
+      'file.openDirectory',
+      'file.saveAs',
+      'file.saveAll',
+      'file.reopenClosed',
+      'file.searchProjectDirectory',
+      'markdown.duplicateBlock',
+    ].includes(command))
+    .map(({ command, binding }) => [command, keyBindingText(binding)])), {
+      'application.commandPalette': 'ctrl+alt+p',
+      'file.openDirectory': 'ctrl+alt+d',
+      'file.saveAs': 'ctrl+alt+s',
+      'file.saveAll': 'ctrl+alt+a',
+      'file.reopenClosed': 'ctrl+alt+r',
+      'file.searchProjectDirectory': 'ctrl+alt+f',
+      'markdown.duplicateBlock': 'ctrl+alt+b',
+    });
   const result = validateKeymap([
     { command: 'file.new', key: 'ctrl+n' },
     { command: 'file.open', key: 'ctrl+n' },
@@ -55,6 +81,24 @@ test('keymap validation reports malformed, unknown, duplicate, and conflicting e
   assert.equal(result.diagnostics.length, 5);
   assert.equal(result.diagnostics.some((diagnostic) => /Duplicate/u.test(diagnostic.message)), true);
   assert.equal(result.diagnostics.some((diagnostic) => /Unknown keymap fields/u.test(diagnostic.message)), true);
+});
+
+test('the open-directory default is distinguishable in a legacy terminal input stream', async () => {
+  const application = createVellumApplication({ watchFiles: false });
+  const runtime = createTuiRuntime({
+    app: createVellumTui(application),
+    host: createMemoryTerminalHost(),
+  });
+  try {
+    await runtime.start();
+    await runtime.handleInputChunk({ data: '\u001b\u0004' });
+    const dialog = application.state().dialogState;
+    assert.equal(dialog?.kind, 'filePath');
+    assert.equal(dialog?.kind === 'filePath' ? dialog.operation : undefined, 'openProjectDirectory');
+  } finally {
+    await runtime.dispose();
+    await application.dispose();
+  }
 });
 
 test('submitting a disabled command keeps the command palette open with a validation error', async () => {

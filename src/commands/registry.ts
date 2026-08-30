@@ -191,7 +191,7 @@ function command(
 }
 
 const definitions: readonly VellumCommand[] = Object.freeze([
-  command('application.commandPalette', 'Command Palette', 'Application', [{ key: 'p', ctrl: true, shift: true }], enabled, (state) => stateOnly(Object.freeze({
+  command('application.commandPalette', 'Command Palette', 'Application', [{ key: 'p', ctrl: true, alt: true }], enabled, (state) => stateOnly(Object.freeze({
     ...state,
     dialogState: Object.freeze({
       kind: 'commandPalette',
@@ -201,14 +201,14 @@ const definitions: readonly VellumCommand[] = Object.freeze([
   command('application.quit', 'Quit Vellum', 'Application', [{ key: 'q', ctrl: true }], enabled, (state) => effect(state, { kind: 'quit' })),
   command('file.new', 'New File', 'File', [{ key: 'n', ctrl: true }], enabled, (state) => effect(state, { kind: 'newFile' })),
   command('file.open', 'Open File', 'File', [{ key: 'o', ctrl: true }], enabled, (state) => filePathDialog(state, 'openFile')),
-  command('file.openDirectory', 'Open Project Directory', 'File', [{ key: 'o', ctrl: true, shift: true }], enabled, (state) => filePathDialog(state, 'openProjectDirectory')),
+  command('file.openDirectory', 'Open Project Directory', 'File', [{ key: 'd', ctrl: true, alt: true }], enabled, (state) => filePathDialog(state, 'openProjectDirectory')),
   command('file.save', 'Save', 'File', [{ key: 's', ctrl: true }], hasDirtyActiveBuffer, (state) => activeBuffer(state)?.path === undefined
     ? filePathDialog(state, 'saveAs')
     : effect(state, { kind: 'save' })),
-  command('file.saveAs', 'Save As', 'File', [{ key: 's', ctrl: true, shift: true }], hasBuffer, (state) => filePathDialog(state, 'saveAs')),
-  command('file.saveAll', 'Save All', 'File', [{ key: 's', ctrl: true, alt: true }], hasDirtyBuffer, (state) => effect(state, { kind: 'saveAll' })),
+  command('file.saveAs', 'Save As', 'File', [{ key: 's', ctrl: true, alt: true }], hasBuffer, (state) => filePathDialog(state, 'saveAs')),
+  command('file.saveAll', 'Save All', 'File', [{ key: 'a', ctrl: true, alt: true }], hasDirtyBuffer, (state) => effect(state, { kind: 'saveAll' })),
   command('file.close', 'Close Active Buffer', 'File', [{ key: 'w', ctrl: true }], hasBuffer, (state) => effect(state, { kind: 'closeBuffer' })),
-  command('file.reopenClosed', 'Reopen Recently Closed Buffer', 'File', [{ key: 't', ctrl: true, shift: true }], (state) => state.project.recentlyClosed.length > 0, (state) => effect(state, { kind: 'reopenClosed' })),
+  command('file.reopenClosed', 'Reopen Recently Closed Buffer', 'File', [{ key: 'r', ctrl: true, alt: true }], (state) => state.project.recentlyClosed.length > 0, (state) => effect(state, { kind: 'reopenClosed' })),
   command('file.quickOpen', 'Quick Open', 'File', [{ key: 'p', ctrl: true }], (state) => state.project.rootDirectory !== undefined, (state) => stateOnly(Object.freeze({
     ...state,
     dialogState: Object.freeze({
@@ -216,7 +216,7 @@ const definitions: readonly VellumCommand[] = Object.freeze([
       command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
     })
   }))),
-  command('file.searchProjectDirectory', 'Search Project Directory', 'File', [{ key: 'f', ctrl: true, shift: true }], (state) => state.project.rootDirectory !== undefined, (state) => stateOnly(Object.freeze({
+  command('file.searchProjectDirectory', 'Search Project Directory', 'File', [{ key: 'f', ctrl: true, alt: true }], (state) => state.project.rootDirectory !== undefined, (state) => stateOnly(Object.freeze({
     ...state,
     dialogState: Object.freeze({ kind: 'projectDirectorySearch', query: searchInput(), searching: false, results: Object.freeze([]) })
   }))),
@@ -257,7 +257,7 @@ function markdownCommands(): readonly VellumCommand[] {
     ['markdown.insertCodeFence', 'Insert Code Fence', noBindings],
     ['markdown.moveBlockUp', 'Move Block Up', [{ key: 'arrowUp', alt: true }]],
     ['markdown.moveBlockDown', 'Move Block Down', [{ key: 'arrowDown', alt: true }]],
-    ['markdown.duplicateBlock', 'Duplicate Block', [{ key: 'd', ctrl: true, shift: true }]],
+    ['markdown.duplicateBlock', 'Duplicate Block', [{ key: 'b', ctrl: true, alt: true }]],
     ['markdown.formatTable', 'Format Table', noBindings],
     ['markdown.nextTableCell', 'Next Table Cell', [{ key: 'tab' }]],
     ['markdown.previousTableCell', 'Previous Table Cell', [{ key: 'tab', shift: true }]],
