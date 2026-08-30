@@ -33,11 +33,12 @@ import type {
   VellumApplicationUpdate
 } from './app/application.js';
 import { markdownPreview, type MarkdownPreviewAction } from './markdown/render/component.js';
-import type { MarkdownPreviewLayout } from './markdown/render/layout.js';
-import { inlinePlainText } from './markdown/render/inline.js';
-import { localImageComponent } from './markdown/render/image.js';
 import { terminalFileTreeView } from './project/file-tree.js';
-import { vellumBodyGeometry, vellumPaneGeometry } from './app/viewport-geometry.js';
+import {
+  vellumBodyGeometry,
+  vellumPaneGeometry,
+  vellumPreviewDocumentGeometry,
+} from './app/viewport-geometry.js';
 
 export const VELLUM_IDS = Object.freeze({
   editor: 'vellum-editor',
@@ -294,7 +295,18 @@ function previewPane(
     widthProfile,
   );
   if (layout === undefined) return text({ id: `preview-empty-${buffer.id}`, content: '', textRole: 'body' });
-  return viewport(previewContent(application, buffer, layout), {
+  const viewportWidth = Math.max(1, width - (layout.rows.length > rows ? 1 : 0));
+  const geometry = vellumPreviewDocumentGeometry(viewportWidth);
+  return viewport(markdownPreview({
+    id: `preview-content-${buffer.id}`,
+    label: `${buffer.label} rendered preview`,
+    layout,
+    viewportWidth,
+    contentColumn: geometry.contentColumn,
+    onAction: (action): AppMessage => ({
+      kind: 'previewActivate', bufferId: buffer.id, target: action.target
+    })
+  }), {
     id: `${VELLUM_IDS.preview}-${buffer.id}`,
     offset: { row: buffer.previewScroll.offsetRow, column: buffer.previewScroll.offsetColumn },
     scrollbar: { visible: 'auto' },
@@ -307,28 +319,6 @@ function previewPane(
       ...(synchronization === undefined ? {} : { synchronization })
     })
   });
-}
-
-function previewContent(application: VellumApplication, buffer: BufferState, layout: MarkdownPreviewLayout) {
-  const sourceContent = markdownPreview({
-    id: `preview-content-${buffer.id}`,
-    label: `${buffer.label} rendered preview`,
-    layout,
-    onAction: (action): AppMessage => ({
-      kind: 'previewActivate', bufferId: buffer.id, target: action.target
-    })
-  });
-  if (buffer.preview.kind !== 'ready') return sourceContent;
-  const images = [...application.previewImages(buffer.id)].flatMap(([nodeId, result]) => {
-    if (result.kind !== 'ready') return [];
-    const node = buffer.preview.kind === 'ready' ? buffer.preview.treeIndex.node(nodeId) : undefined;
-    if (node?.kind !== 'image' && !(node?.kind === 'codeBlock' && node.language?.toLowerCase() === 'mermaid')) return [];
-    const label = node.kind === 'image'
-      ? node.title === null ? inlinePlainText(node.children) : `${inlinePlainText(node.children)} — ${node.title}`
-      : 'Mermaid diagram';
-    return [localImageComponent(result.image, label, layout.width, 12)];
-  });
-  return images.length === 0 ? sourceContent : column([sourceContent, ...images], { gap: 1 });
 }
 
 function fileTree(state: AppState) {

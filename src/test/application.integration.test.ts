@@ -432,7 +432,7 @@ test('concurrent external checks converge on one clean disk revision without cre
     const bufferId = await application.openFile(filePath);
     const originalParserIdentity = application.runtimeBufferInfo(bufferId)?.parserIdentity;
     const originalLayout = application.previewLayout(bufferId, 40);
-    assert.equal(originalLayout?.lines.flatMap((line) => line.inlineSpans).map((span) => span.text).join(''), 'original');
+    assert.equal(originalLayout?.rows.flatMap((line) => line.inlineSpans).map((span) => span.text).join(''), 'original');
     await writeFile(filePath, '# Disk revision\n\nreplacement words', 'utf8');
     const changed = await Promise.all([
       application.checkExternalFile(bufferId),
@@ -451,7 +451,7 @@ test('concurrent external checks converge on one clean disk revision without cre
       taskCount: 0
     });
     const replacementLayout = application.previewLayout(bufferId, 40);
-    const replacementText = replacementLayout?.lines.flatMap((line) => line.inlineSpans).map((span) => span.text).join('\n') ?? '';
+    const replacementText = replacementLayout?.rows.flatMap((line) => line.inlineSpans).map((span) => span.text).join('\n') ?? '';
     assert.match(replacementText, /Disk revision/u);
     assert.doesNotMatch(replacementText, /original/u);
   } finally {

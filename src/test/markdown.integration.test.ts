@@ -232,6 +232,8 @@ test('Markdown preview geometry follows the active terminal text-width profile',
       id: 'wide-profile-preview',
       label: 'Wide profile preview',
       layout: wide,
+      viewportWidth: wide.width,
+      contentColumn: 0,
       onAction: (action: MarkdownPreviewAction) => action,
     });
     assert.doesNotThrow(() => renderElementSnapshot({
@@ -265,7 +267,7 @@ test('fenced code blank lines retain monotonic preview source geometry', async (
     const id = application.openSource(source);
     const layout = application.previewLayout(id, 40);
     assert.ok(layout);
-    const offsets = layout.lines.map((line) => line.sourceOffset);
+    const offsets = layout.rows.map((line) => line.sourceOffset);
     assert.deepEqual(offsets, [0, 6, 23, 24]);
     assert.ok(offsets.every((offset, index) => index === 0 || offset >= (offsets[index - 1] ?? 0)));
   } finally {
@@ -275,14 +277,22 @@ test('fenced code blank lines retain monotonic preview source geometry', async (
 
 test('preview code layout preserves leading, repeated, and blank-line whitespace', async () => {
   const source = '```text\n  alpha  beta\n\n    gamma\n```';
-  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'preformatted-code' });
+  let nextId = 0;
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => `preformatted-code-${String(nextId++)}` });
   try {
     const bufferId = application.openSource(source);
     await application.refreshPreviewResources(bufferId);
-    const lines = application.previewLayout(bufferId, 80)?.lines.map((line) => (
+    const lines = application.previewLayout(bufferId, 80)?.rows.map((line) => (
       line.inlineSpans.map((span) => span.text).join('')
     ));
-    assert.deepEqual(lines, ['text', '  alpha  beta', '', '    gamma']);
+    assert.deepEqual(lines, ['│ text', '│   alpha  beta', '│ ', '│     gamma']);
+    const exactWidth = application.openSource('```\n12345678\nnext\n```');
+    const exactLayout = application.previewLayout(exactWidth, 10);
+    assert.deepEqual(exactLayout?.rows.map((row) => row.inlineSpans.map((span) => span.text).join('')), [
+      '│ 12345678',
+      '│ next',
+    ]);
+    assert.equal(exactLayout?.rows.every((row) => row.background !== undefined), true);
   } finally {
     await application.dispose();
   }
@@ -293,11 +303,112 @@ test('list and blockquote prefixes follow container semantics across child block
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'container-prefixes' });
   try {
     const bufferId = application.openSource(source);
-    const lines = application.previewLayout(bufferId, 80)?.lines.map((line) => (
+    const lines = application.previewLayout(bufferId, 80)?.rows.map((line) => (
       line.inlineSpans.map((span) => span.text).join('')
     )) ?? [];
-    assert.equal(lines.filter((line) => line.startsWith('- ')).length, 1);
-    assert.equal(lines.filter((line) => line.startsWith('│ ')).length, 2);
+    assert.deepEqual(lines, [
+      '- first',
+      '  ',
+      '  second paragraph',
+      '',
+      '│ quoted first',
+      '│ ',
+      '│ quoted second',
+    ]);
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('preview block spacing, word wrapping, heading levels, and ordered-list indentation remain structural', async () => {
+  const source = [
+    '# One',
+    '',
+    'Alpha beta gamma delta epsilon.',
+    '',
+    '## Two',
+    '',
+    '9. ninth',
+    '10. tenth with continuation words',
+  ].join('\n');
+  let nextId = 0;
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => `block-structure-${String(nextId++)}` });
+  try {
+    const bufferId = application.openSource(source);
+    const rows = application.previewLayout(bufferId, 20)?.rows.map((row) => (
+      row.inlineSpans.map((span) => span.text).join('')
+    ));
+    assert.deepEqual(rows, [
+      'One',
+      '',
+      'Alpha beta gamma',
+      'delta epsilon.',
+      '',
+      'Two',
+      '',
+      ' 9. ninth',
+      '10. tenth with',
+      '    continuation',
+      '    words',
+    ]);
+    assert.equal(rows?.some((row) => row === 'Alpha bet' || row === 'a gamma'), false);
+    assert.equal(rows?.indexOf(' 9. ninth'), 7);
+    assert.equal(rows?.indexOf('10. tenth with'), 8);
+    const nested = application.openSource('- outer\n  - inner\n    1. nested ordered item with enough text to wrap');
+    assert.equal(application.previewLayout(nested, 8)?.rows.every((row) => (
+      measureTextCells(row.inlineSpans.map((span) => span.text).join('')).cells <= 8
+    )), true);
+    const headings = application.openSource(Array.from(
+      { length: 6 },
+      (_, index) => `${'#'.repeat(index + 1)} Level`,
+    ).join('\n\n'));
+    assert.deepEqual(application.previewLayout(headings, 20)?.rows
+      .map((row) => row.inlineSpans.map((span) => span.text).join(''))
+      .filter((row) => row.length > 0), [
+        'Level', 'Level', 'Level', 'Level', 'Level', 'Level',
+      ]);
+    assert.deepEqual(application.previewLayout(headings, 20)?.rows
+      .filter((row) => row.inlineSpans.length > 0)
+      .map((row) => row.inlineSpans[0]?.style), darkTerminalMarkdownTheme.headings);
+    for (let width = 1; width <= 8; width += 1) {
+      assert.equal(application.previewLayout(headings, width)?.rows.every((row) => (
+        measureTextCells(row.inlineSpans.map((span) => span.text).join('')).cells <= width
+      )), true);
+    }
+  } finally {
+    await application.dispose();
+  }
+});
+
+test('front matter retains nested indentation and reference definitions stay hidden', async () => {
+  const source = [
+    '---',
+    'owner:',
+    '  name: Ismail',
+    'tags:',
+    '  - one',
+    '  - two',
+    '---',
+    '',
+    '[hidden]: ./target.md',
+    '',
+    'Visible paragraph.',
+  ].join('\n');
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'front-matter-structure' });
+  try {
+    const bufferId = application.openSource(source);
+    const layout = application.previewLayout(bufferId, 40);
+    assert.ok(layout);
+    assert.deepEqual(layout.rows.map((row) => row.inlineSpans.map((span) => span.text).join('')), [
+      'owner:',
+      '  name: Ismail',
+      'tags:',
+      '  - one',
+      '  - two',
+      '',
+      'Visible paragraph.',
+    ]);
+    assert.equal(accessibleRoles(layout.accessibility).has('link'), false);
   } finally {
     await application.dispose();
   }
@@ -305,18 +416,36 @@ test('list and blockquote prefixes follow container semantics across child block
 
 test('table preview wraps cells within grid width and uses a narrow-terminal fallback', async () => {
   const source = '| First | Second |\n| --- | --- |\n| alphabet soup | another long value |';
-  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'table-width' });
+  let nextId = 0;
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => `table-width-${String(nextId++)}` });
   try {
     const bufferId = application.openSource(source);
-    for (const width of [18, 8]) {
+    for (const width of [18, 8, 3, 1]) {
       const layout = application.previewLayout(bufferId, width);
       assert.ok(layout);
-      assert.equal(layout.lines.every((line) => (
+      assert.equal(layout.rows.every((line) => (
         measureTextCells(line.inlineSpans.map((span) => span.text).join('')).cells <= width
       )), true);
-      const offsets = layout.lines.map((line) => line.sourceOffset);
+      const offsets = layout.rows.map((line) => line.sourceOffset);
       assert.deepEqual(offsets, offsets.toSorted((left, right) => left - right));
     }
+    const aligned = application.openSource([
+      '| Left | Center | Right |',
+      '| :--- | :----: | ----: |',
+      '| alpha | beta | 123 |',
+    ].join('\n'));
+    assert.deepEqual(application.previewLayout(aligned, 40)?.rows.map((row) => (
+      row.inlineSpans.map((span) => span.text).join('')
+    )), [
+      '┌───────┬────────┬───────┐',
+      '│ Left  │ Center │ Right │',
+      '╞═══════╪════════╪═══════╡',
+      '│ alpha │  beta  │   123 │',
+      '└───────┴────────┴───────┘',
+    ]);
+    assert.deepEqual(application.previewLayout(bufferId, 8)?.rows.map((row) => (
+      row.inlineSpans.map((span) => span.text).join('')
+    )), ['First:', 'alphabet', 'soup', 'Second:', 'another', 'long', 'value']);
   } finally {
     await application.dispose();
   }
@@ -347,18 +476,20 @@ test('extension preview and accessibility retain front matter, callout, math, ta
         id: 'semantic-preview',
         label: 'Rendered Markdown',
         layout,
+        viewportWidth: layout.width,
+        contentColumn: 0,
         onAction: (action: MarkdownPreviewAction) => action,
       }),
-      terminalSize: { columns: 50, rows: layout.lines.length },
+      terminalSize: { columns: 50, rows: layout.rows.length },
     });
     assert.equal(snapshot.frame.accessibility.root.role, 'document');
     assert.equal(snapshot.frame.accessibility.root.label, 'Rendered Markdown');
     assert.ok(accessibleTerminalRoles(snapshot.frame.accessibility.root).has('link'));
     assert.ok(accessibleTerminalRoles(snapshot.frame.accessibility.root).has('checkbox'));
     assert.equal(snapshot.frame.hitTargets?.length, 1 + layout.activations.length);
-    const rendered = layout.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
+    const rendered = layout.rows.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
     assert.match(rendered, /title: Example/u);
-    assert.match(rendered, /WARNING:/u);
+    assert.match(rendered, /WARNING\n│ Read/u);
     assert.match(rendered, /x²/u);
   } finally {
     await application.dispose();
@@ -372,7 +503,7 @@ test('malformed front matter renders Markspan diagnostics without changing the s
     const id = application.openSource(source);
     const layout = application.previewLayout(id, 60);
     assert.ok(layout);
-    const rendered = layout.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
+    const rendered = layout.rows.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n');
     assert.match(rendered, /Front matter error: Unexpected YAML indentation/u);
     assert.equal(accessibleRoles(layout.accessibility).has('diagnostic'), true);
     assert.equal(sourceText(application, id), source);
@@ -549,9 +680,11 @@ test('preview activation maps terminal cells to exact inline spans and navigates
           id: 'keyboard-preview',
           label: 'Keyboard preview',
           layout,
+          viewportWidth: layout.width,
+          contentColumn: 0,
           onAction: (action: MarkdownPreviewAction) => action,
         }),
-        terminalSize: { columns: 72, rows: layout.lines.length },
+        terminalSize: { columns: 72, rows: layout.rows.length },
         focusPath: ['keyboard-preview', focusedLink.id],
       });
       assert.equal(focusedPreview.frame.accessibility.focusPath[0], 'keyboard-preview');
@@ -672,9 +805,9 @@ function activationTarget(
   kind: 'link' | 'footnote',
   destination?: string
 ): NonNullable<ReturnType<typeof markdownPreviewActivationAt>> {
-  for (let row = 0; row < layout.lines.length; row += 1) {
+  for (let row = 0; row < layout.rows.length; row += 1) {
     let column = 0;
-    for (const span of layout.lines[row]?.inlineSpans ?? []) {
+    for (const span of layout.rows[row]?.inlineSpans ?? []) {
       if (span.activation?.kind === kind && (destination === undefined || ('destination' in span.activation && span.activation.destination === destination))) {
         const target = markdownPreviewActivationAt(layout, row, column);
         if (target !== undefined) return target;

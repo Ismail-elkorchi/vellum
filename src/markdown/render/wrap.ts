@@ -1,11 +1,22 @@
 import { measureTextCells, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import type { RenderLine } from '@ismail-elkorchi/terminal-ui/renderer';
+import type { RenderLine, TerminalStyle } from '@ismail-elkorchi/terminal-ui/renderer';
+import type { MarkdownRenderMedia } from './image.js';
+import { previewImageSize } from './image.js';
 import type { MarkdownRenderSpan } from './inline.js';
 
-export interface MarkdownLayoutLine extends RenderLine {
+export interface MarkdownLayoutMedia {
+  readonly column: number;
+  readonly width: number;
+  readonly height: number;
+  readonly media: MarkdownRenderMedia;
+}
+
+export interface MarkdownLayoutRow extends RenderLine {
   readonly sourceOffset: number;
   readonly nodeId: number;
   readonly inlineSpans: readonly MarkdownRenderSpan[];
+  readonly media?: readonly MarkdownLayoutMedia[];
+  readonly background?: TerminalStyle;
 }
 
 interface GraphemeSpan {
@@ -15,101 +26,203 @@ interface GraphemeSpan {
   readonly sourceOffset: number;
 }
 
+/** Wraps proportional Markdown text at word boundaries and hard-wraps only oversized words. */
 export function wrapMarkdownSpans(
   spans: readonly MarkdownRenderSpan[],
   width: number,
   widthProfile?: TextWidthProfile
-): readonly MarkdownLayoutLine[] {
+): readonly MarkdownLayoutRow[] {
   const maximum = Math.max(1, Math.floor(width));
-  const lines: MarkdownLayoutLine[] = [];
+  const rows: MarkdownLayoutRow[] = [];
   let row: GraphemeSpan[] = [];
+  let word: GraphemeSpan[] = [];
   let cells = 0;
   let pendingSpace: GraphemeSpan | undefined;
-  const flush = (force = false, emptyRowSourceOffset?: number): void => {
-    if (!force && row.length === 0) return;
-    const first = row[0];
-    const inlineSpans = mergeGraphemes(row);
-    lines.push(Object.freeze({
-      spans: inlineSpans,
-      sourceOffset: first?.sourceOffset ?? emptyRowSourceOffset ?? spans[0]?.sourceSpan.start ?? 0,
-      nodeId: first?.span.nodeId ?? spans[0]?.nodeId ?? 0,
-      inlineSpans
-    }));
+  let wrappedAtBoundary = false;
+
+  const emitRow = (emptyRowSourceOffset?: number, wrapped = false): void => {
+    if (row.length === 0 && emptyRowSourceOffset === undefined) return;
+    rows.push(layoutRow(row, spans, emptyRowSourceOffset));
     row = [];
     cells = 0;
     pendingSpace = undefined;
+    wrappedAtBoundary = wrapped;
   };
+
+  const appendWord = (): void => {
+    if (word.length === 0) return;
+    const wordCells = word.reduce((total, value) => total + value.cells, 0);
+    const separatorCells = row.length > 0 && pendingSpace !== undefined ? 1 : 0;
+    if (row.length > 0 && cells + separatorCells + wordCells > maximum) emitRow(undefined, true);
+    if (row.length > 0 && pendingSpace !== undefined) {
+      row.push(pendingSpace);
+      cells += 1;
+    }
+    pendingSpace = undefined;
+    for (const value of word) {
+      if (row.length > 0 && cells + value.cells > maximum) emitRow(undefined, true);
+      wrappedAtBoundary = false;
+      row.push(value);
+      cells += value.cells;
+      if (cells >= maximum) emitRow(undefined, true);
+    }
+    word = [];
+  };
+
+  const appendMedia = (span: MarkdownRenderSpan): void => {
+    appendWord();
+    if (row.length > 0) emitRow();
+    pendingSpace = undefined;
+    const media = span.media;
+    if (media === undefined) return;
+    const size = previewImageSize(
+      media.image,
+      maximum,
+      12,
+      measureTextCells(`[Image: ${media.label}]`, {
+        ...(widthProfile === undefined ? {} : { widthProfile }),
+      }).cells,
+    );
+    for (let index = 0; index < size.height; index += 1) {
+      rows.push(Object.freeze({
+        spans: Object.freeze([]),
+        inlineSpans: Object.freeze([]),
+        sourceOffset: span.sourceSpan.start,
+        nodeId: span.nodeId,
+        ...(index === 0 ? {
+          media: Object.freeze([Object.freeze({
+            column: 0,
+            width: size.width,
+            height: size.height,
+            media,
+          })])
+        } : {}),
+      }));
+    }
+    wrappedAtBoundary = true;
+  };
+
   for (const span of spans) {
+    if (span.media !== undefined) {
+      appendMedia(span);
+      continue;
+    }
     const measured = measureTextCells(span.text, { ...(widthProfile === undefined ? {} : { widthProfile }) });
     for (const grapheme of measured.graphemes) {
-      const sourceOffset = span.sourceSpan.end - span.sourceSpan.start === span.text.length
-        ? span.sourceSpan.start + grapheme.startOffset
-        : span.sourceSpan.start;
+      const sourceOffset = graphemeSourceOffset(span, grapheme.startOffset);
       if (grapheme.text === '\n') {
-        flush(true, sourceOffset);
+        appendWord();
+        pendingSpace = undefined;
+        if (row.length > 0) emitRow(sourceOffset);
+        else if (wrappedAtBoundary) wrappedAtBoundary = false;
+        else emitRow(sourceOffset);
         continue;
       }
       const value: GraphemeSpan = { span, text: grapheme.text, cells: grapheme.cells, sourceOffset };
       if (/^\s$/u.test(grapheme.text)) {
+        appendWord();
         if (row.length > 0) pendingSpace = { ...value, text: ' ', cells: 1 };
         continue;
       }
-      const extra = pendingSpace === undefined || row.length === 0 ? 0 : 1;
-      if (row.length > 0 && cells + extra + grapheme.cells > maximum) flush();
-      if (pendingSpace !== undefined && row.length > 0) {
-        row.push(pendingSpace);
-        cells += 1;
-      }
-      pendingSpace = undefined;
-      row.push(value);
-      cells += grapheme.cells;
-      if (cells >= maximum) flush();
+      word.push(value);
     }
   }
-  flush(lines.length === 0);
-  return Object.freeze(lines);
+  appendWord();
+  if (row.length > 0) emitRow();
+  if (rows.length === 0) emitRow(spans[0]?.sourceSpan.start ?? 0);
+  return Object.freeze(rows);
 }
 
+/** Wraps code and other preformatted text without changing its whitespace. */
 export function wrapMarkdownPreformattedSpans(
   spans: readonly MarkdownRenderSpan[],
   width: number,
   widthProfile?: TextWidthProfile
-): readonly MarkdownLayoutLine[] {
+): readonly MarkdownLayoutRow[] {
   const maximum = Math.max(1, Math.floor(width));
-  const lines: MarkdownLayoutLine[] = [];
+  const rows: MarkdownLayoutRow[] = [];
   let row: GraphemeSpan[] = [];
   let cells = 0;
-  const flush = (force = false, emptyRowSourceOffset?: number): void => {
-    if (!force && row.length === 0) return;
-    const first = row[0];
-    const inlineSpans = mergeGraphemes(row);
-    lines.push(Object.freeze({
-      spans: inlineSpans,
-      sourceOffset: first?.sourceOffset ?? emptyRowSourceOffset ?? spans[0]?.sourceSpan.start ?? 0,
-      nodeId: first?.span.nodeId ?? spans[0]?.nodeId ?? 0,
-      inlineSpans
-    }));
+  let wrappedAtBoundary = false;
+
+  const emitRow = (emptyRowSourceOffset?: number, wrapped = false): void => {
+    if (row.length === 0 && emptyRowSourceOffset === undefined) return;
+    rows.push(layoutRow(row, spans, emptyRowSourceOffset));
     row = [];
     cells = 0;
+    wrappedAtBoundary = wrapped;
   };
+
   for (const span of spans) {
+    if (span.media !== undefined) {
+      if (row.length > 0) emitRow();
+      const size = previewImageSize(
+        span.media.image,
+        maximum,
+        12,
+        measureTextCells(`[Image: ${span.media.label}]`, {
+          ...(widthProfile === undefined ? {} : { widthProfile }),
+        }).cells,
+      );
+      for (let index = 0; index < size.height; index += 1) {
+        rows.push(Object.freeze({
+          spans: Object.freeze([]),
+          inlineSpans: Object.freeze([]),
+          sourceOffset: span.sourceSpan.start,
+          nodeId: span.nodeId,
+          ...(index === 0 ? {
+            media: Object.freeze([Object.freeze({
+              column: 0,
+              width: size.width,
+              height: size.height,
+              media: span.media,
+            })])
+          } : {}),
+        }));
+      }
+      wrappedAtBoundary = true;
+      continue;
+    }
     const measured = measureTextCells(span.text, { ...(widthProfile === undefined ? {} : { widthProfile }) });
     for (const grapheme of measured.graphemes) {
-      const sourceOffset = span.sourceSpan.end - span.sourceSpan.start === span.text.length
-        ? span.sourceSpan.start + grapheme.startOffset
-        : span.sourceSpan.start;
+      const sourceOffset = graphemeSourceOffset(span, grapheme.startOffset);
       if (grapheme.text === '\n') {
-        flush(true, sourceOffset);
+        if (row.length > 0) emitRow(sourceOffset);
+        else if (wrappedAtBoundary) wrappedAtBoundary = false;
+        else emitRow(sourceOffset);
         continue;
       }
-      if (row.length > 0 && cells + grapheme.cells > maximum) flush();
+      if (row.length > 0 && cells + grapheme.cells > maximum) emitRow(undefined, true);
+      wrappedAtBoundary = false;
       row.push({ span, text: grapheme.text, cells: grapheme.cells, sourceOffset });
       cells += grapheme.cells;
-      if (cells >= maximum) flush();
+      if (cells >= maximum) emitRow(undefined, true);
     }
   }
-  flush(lines.length === 0);
-  return Object.freeze(lines);
+  if (row.length > 0) emitRow();
+  if (rows.length === 0) emitRow(spans[0]?.sourceSpan.start ?? 0);
+  return Object.freeze(rows);
+}
+
+function layoutRow(
+  values: readonly GraphemeSpan[],
+  sourceSpans: readonly MarkdownRenderSpan[],
+  emptyRowSourceOffset?: number,
+): MarkdownLayoutRow {
+  const first = values[0];
+  const inlineSpans = mergeGraphemes(values);
+  return Object.freeze({
+    spans: inlineSpans,
+    sourceOffset: first?.sourceOffset ?? emptyRowSourceOffset ?? sourceSpans[0]?.sourceSpan.start ?? 0,
+    nodeId: first?.span.nodeId ?? sourceSpans[0]?.nodeId ?? 0,
+    inlineSpans,
+  });
+}
+
+function graphemeSourceOffset(span: MarkdownRenderSpan, graphemeOffset: number): number {
+  return span.sourceMapping === 'identity'
+    ? span.sourceSpan.start + graphemeOffset
+    : span.sourceSpan.start;
 }
 
 function mergeGraphemes(values: readonly GraphemeSpan[]): readonly MarkdownRenderSpan[] {
@@ -120,6 +233,7 @@ function mergeGraphemes(values: readonly GraphemeSpan[]): readonly MarkdownRende
       && previous.nodeId === value.span.nodeId
       && previous.style === value.span.style
       && previous.link === value.span.link
+      && previous.sourceMapping === value.span.sourceMapping
       && previous.activation === value.span.activation) {
       spans[spans.length - 1] = Object.freeze({
         ...previous,
@@ -134,4 +248,32 @@ function mergeGraphemes(values: readonly GraphemeSpan[]): readonly MarkdownRende
     }
   }
   return Object.freeze(spans);
+}
+
+export function blankMarkdownRow(
+  sourceOffset: number,
+  nodeId: number,
+  spans: readonly MarkdownRenderSpan[] = Object.freeze([]),
+): MarkdownLayoutRow {
+  return Object.freeze({
+    spans,
+    inlineSpans: spans,
+    sourceOffset,
+    nodeId,
+  });
+}
+
+export function shiftMarkdownRow(
+  row: MarkdownLayoutRow,
+  prefix: readonly MarkdownRenderSpan[],
+  prefixWidth: number,
+): MarkdownLayoutRow {
+  const inlineSpans = Object.freeze([...prefix, ...row.inlineSpans]);
+  const media = row.media?.map((entry) => Object.freeze({ ...entry, column: entry.column + prefixWidth }));
+  return Object.freeze({
+    ...row,
+    spans: inlineSpans,
+    inlineSpans,
+    ...(media === undefined ? {} : { media: Object.freeze(media) }),
+  });
 }

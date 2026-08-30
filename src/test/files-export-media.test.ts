@@ -26,7 +26,11 @@ import { readSourceFile, saveSourceFile } from '../files/file-system.js';
 import { exportProjectDirectory, exportSourceDocument } from '../export/exporter.js';
 import { builtInExportProfiles, loadUserExportProfiles, type ExportProfile } from '../export/profiles.js';
 import { createVellumApplication } from '../app/application.js';
-import { vellumBodyGeometry, vellumPaneGeometry } from '../app/viewport-geometry.js';
+import {
+  vellumBodyGeometry,
+  vellumPaneGeometry,
+  vellumPreviewDocumentGeometry,
+} from '../app/viewport-geometry.js';
 import { loadUserMarkdownTheme } from '../markdown/theme.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 import { renderCodeBlock } from '../markdown/render/code.js';
@@ -557,6 +561,8 @@ test('each buffer runtime publishes asynchronous highlighting, math, image, and 
       '```ts', 'const value: number = 4;', '```', '',
       '$$', 'x^2 \\leq 4', '$$', '',
       '![pixel](./pixel.ppm)', '',
+      '- ![nested](./pixel.ppm)', '',
+      '| Kind | Visual |', '| --- | --- |', '| table | ![tabular](./pixel.ppm) |', '',
       '```mermaid', 'graph TD; A-->B', '```'
     ].join('\n'), 'utf8');
     const application = createVellumApplication({
@@ -573,17 +579,41 @@ test('each buffer runtime publishes asynchronous highlighting, math, image, and 
       const unsubscribe = application.subscribe((update) => updates.push(update));
       await application.refreshPreviewResources(id);
       const layout = application.previewLayout(id, 60);
-      const rendered = layout?.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n') ?? '';
+      const rendered = layout?.rows.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n') ?? '';
       assert.match(rendered, /x² ≤ 4/u);
-      const codeKeyword = layout?.lines.flatMap((line) => line.inlineSpans).find((span) => span.text === 'const');
+      const codeKeyword = layout?.rows.flatMap((line) => line.inlineSpans).find((span) => span.text === 'const');
       assert.equal(codeKeyword?.style?.bold, true);
       assert.equal((await readFile(documentPath, 'utf8')).slice(codeKeyword?.sourceSpan.start, codeKeyword?.sourceSpan.end), 'const');
-      assert.equal([...application.previewImages(id).values()].filter((image) => image.kind === 'ready').length, 2);
+      assert.equal(layout?.media.length, 4);
+      assert.deepEqual(layout?.media.map((entry) => entry.media.label), ['pixel', 'nested', 'tabular', 'Mermaid diagram']);
+      assert.ok((layout?.media[0]?.width ?? 0) >= '[Image: pixel]'.length);
+      assert.ok((layout?.media[1]?.column ?? 0) > 0);
+      assert.ok((layout?.media[2]?.column ?? 0) > (layout?.media[1]?.column ?? 0));
+      assert.deepEqual(
+        layout?.media.map((entry) => entry.media.sourceSpan.start),
+        layout?.media.map((entry) => entry.media.sourceSpan.start).toSorted((left, right) => left - right),
+      );
+      assert.doesNotMatch(rendered, /\[Image: pixel\]|Mermaid diagram/u);
+      for (const media of layout?.media ?? []) {
+        const mappedRow = layout?.rowOffsetMap.rowAtSourceOffset(media.media.sourceSpan.start) ?? -1;
+        assert.ok(mappedRow >= media.row && mappedRow < media.row + media.height);
+      }
       assert.equal(updates.every((update) => update.reason === 'previewResource' && update.bufferId === id), true);
       assert.equal(updates.every((update, index) => index === 0 || update.revision > (updates[index - 1]?.revision ?? 0)), true);
       assert.equal(application.state().project.buffers[id]?.previewResourceRevision, updates.length);
       unsubscribe();
       assert.equal(application.runtimeBufferInfo(id)?.pendingEffects, 0);
+      application.dispatchCommand('view.preview');
+      const host = createMemoryTerminalHost({ terminalSize: { columns: 60, rows: 10 } });
+      const runtime = createTuiRuntime({ app: createVellumTui(application), host });
+      try {
+        await runtime.start();
+        assert.equal(runtime.frame()?.hitTargets?.some((target) => (
+          target.id === `vellum-preview-${id}:scrollbar:horizontal:track`
+        )), false);
+      } finally {
+        await runtime.dispose();
+      }
       assert.equal(application.requestCloseBuffer(id), true);
       assert.equal(application.runtimeBufferInfo(id), undefined);
     } finally {
@@ -625,6 +655,80 @@ test('a failed preview resource cancels and drains sibling work before the refre
   }
 });
 
+test('preview viewport centers one readable document column and collapses its gutter safely', async () => {
+  assert.deepEqual(vellumPreviewDocumentGeometry(1), {
+    contentWidth: 1,
+    contentColumn: 0,
+  });
+  assert.deepEqual(vellumPreviewDocumentGeometry(2), {
+    contentWidth: 1,
+    contentColumn: 1,
+  });
+  assert.deepEqual(vellumPreviewDocumentGeometry(140), {
+    contentWidth: 88,
+    contentColumn: 26,
+  });
+
+  const terminalSize = Object.freeze({ columns: 140, rows: 16 });
+  const application = createVellumApplication({
+    watchFiles: false,
+    createBufferId: () => 'centered-preview',
+  });
+  const bufferId = application.openSource([
+    '# Centered document',
+    '',
+    'Read [the guide](./guide.md).',
+    '',
+    ...Array.from({ length: 30 }, (_, index) => `Paragraph ${String(index)} keeps the preview vertically scrollable.`),
+  ].join('\n'));
+  application.dispatchCommand('view.preview');
+  const layout = application.previewViewportLayout(bufferId, terminalSize.columns, 13);
+  assert.equal(layout?.width, 88);
+  const host = createMemoryTerminalHost({ terminalSize });
+  const runtime = createTuiRuntime({ app: createVellumTui(application), host });
+  try {
+    await runtime.start();
+    const frame = runtime.frame();
+    assert.ok(frame);
+    const heading = renderFramePlain(frame).split('\n').find((line) => line.includes('Centered document'));
+    assert.ok(heading);
+    assert.equal(heading.indexOf('Centered document'), 25);
+    const link = layout?.activations.find((target) => target.activation.kind === 'link');
+    assert.ok(link);
+    const linkHitTarget = frame.hitTargets?.find((target) => target.id.includes(`:${link.id}:`));
+    assert.equal(linkHitTarget?.bounds.column, 26 + link.column);
+    const verticalScrollbar = frame.hitTargets?.find((target) => (
+      target.id === `vellum-preview-${bufferId}:scrollbar:vertical:track`
+    ));
+    assert.equal(verticalScrollbar?.bounds.column, terminalSize.columns);
+    assert.equal(frame.hitTargets?.some((target) => (
+      target.id === `vellum-preview-${bufferId}:scrollbar:horizontal:track`
+    )), false);
+    await runtime.dispose();
+    const bottom = Math.max(0, (layout?.rows.length ?? 0) - 13);
+    application.updatePreviewScroll(bufferId, {
+      nextState: { offsetRow: bottom, offsetColumn: 0, followTail: false },
+      source: 'keyboard',
+      target: 'content',
+    });
+    const bottomRuntime = createTuiRuntime({
+      app: createVellumTui(application),
+      host: createMemoryTerminalHost({ terminalSize }),
+    });
+    try {
+      await bottomRuntime.start();
+      const bottomFrame = bottomRuntime.frame();
+      assert.ok(bottomFrame);
+      assert.match(renderFramePlain(bottomFrame), /Paragraph 29 keeps the preview vertically scrollable\./u);
+    } finally {
+      await bottomRuntime.dispose();
+    }
+  } finally {
+    await runtime.dispose();
+    await application.dispose();
+  }
+});
+
 test('terminal-ui runtime resizing preserves Vellum source anchors before committing each frame', async () => {
   const initialSize = Object.freeze({ columns: 80, rows: 24 });
   const directResize = Object.freeze({ columns: 120, rows: 24 });
@@ -654,7 +758,11 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
       wrap: { mode: 'soft' },
       scrollbar: { visible: 'auto' }
     });
-    const preview = application.previewLayout(bufferId, panes.preview.width)?.rowOffsetMap;
+    const preview = application.previewViewportLayout(
+      bufferId,
+      panes.preview.width,
+      panes.preview.rows,
+    )?.rowOffsetMap;
     assert.ok(preview);
     return Object.freeze({ editor, preview });
   };

@@ -19,7 +19,6 @@ const snapshot = fixtures.map((fixture) => {
   if (preview.kind === 'failed') return Object.freeze({ name: fixture.name, failure: preview.message });
   const layout = layoutMarkdownPreview(
     preview.snapshot.document.tree,
-    preview.snapshot.source,
     44,
     darkTerminalMarkdownTheme,
     defaultTextWidthProfile,
@@ -29,7 +28,7 @@ const snapshot = fixtures.map((fixture) => {
     name: fixture.name,
     diagnostics: preview.snapshot.document.diagnostics,
     metrics: preview.metrics,
-    rows: layout.lines.map((line) => Object.freeze({
+    rows: layout.rows.map((line) => Object.freeze({
       sourceOffset: line.sourceOffset,
       text: line.inlineSpans.map((span) => span.text).join('')
     }))

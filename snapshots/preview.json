@@ -14,28 +14,64 @@
         "text": "title: Example"
       },
       {
+        "sourceOffset": 22,
+        "text": ""
+      },
+      {
         "sourceOffset": 24,
         "text": "Heading"
       },
       {
-        "sourceOffset": 35,
-        "text": "Paragraph with strong, link, x^2, and a foot"
+        "sourceOffset": 33,
+        "text": ""
       },
       {
-        "sourceOffset": 100,
-        "text": "note[^1]."
+        "sourceOffset": 35,
+        "text": "Paragraph with strong, link, x^2, and a"
+      },
+      {
+        "sourceOffset": 96,
+        "text": "footnote[^1]."
+      },
+      {
+        "sourceOffset": 109,
+        "text": ""
       },
       {
         "sourceOffset": 111,
-        "text": "NOTE: A callout."
+        "text": "NOTE"
+      },
+      {
+        "sourceOffset": 123,
+        "text": "│ A callout."
+      },
+      {
+        "sourceOffset": 133,
+        "text": ""
       },
       {
         "sourceOffset": 135,
-        "text": "| A   | B   |"
+        "text": "┌─────┬─────┐"
+      },
+      {
+        "sourceOffset": 135,
+        "text": "│ A   │ B   │"
+      },
+      {
+        "sourceOffset": 145,
+        "text": "╞═════╪═════╡"
       },
       {
         "sourceOffset": 155,
-        "text": "| x   | y   |"
+        "text": "│ x   │ y   │"
+      },
+      {
+        "sourceOffset": 164,
+        "text": "└─────┴─────┘"
+      },
+      {
+        "sourceOffset": 164,
+        "text": ""
       },
       {
         "sourceOffset": 166,

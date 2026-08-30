@@ -25,7 +25,8 @@ export function renderCodeBlock(
       text: node.language + '\n',
       style: theme.codeLanguageLabel,
       nodeId: node.id,
-      sourceSpan: node.infoSpan ?? node.span
+      sourceSpan: node.infoSpan ?? node.span,
+      sourceMapping: 'anchor',
     }));
   }
   let cursor = 0;
@@ -80,10 +81,12 @@ function codeSpan(
   end: number,
   style: TerminalStyle
 ): MarkdownRenderSpan {
+  const sourceSpan = markdownCodeValueSourceSpan(node, start, end);
   return Object.freeze({
     text,
     style,
     nodeId: node.id,
-    sourceSpan: markdownCodeValueSourceSpan(node, start, end)
+    sourceSpan,
+    sourceMapping: text.length === sourceSpan.end - sourceSpan.start ? 'identity' : 'anchor',
   });
 }

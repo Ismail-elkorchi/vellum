@@ -72,7 +72,8 @@ and laid out locally without a network service or text-substitution formatter.
 Editor and preview scrolling is synchronized through source offsets. The editor
 row-offset map comes from the actual terminal text layout, including wrapping,
 tabs, grapheme widths, gutters, concealed ranges, virtual text, scrollbars, and
-terminal resizing. Preview lines retain Markspan source spans.
+terminal resizing. The preview uses a centered readable document column whose
+gutter collapses in narrow panes. Preview rows retain Markspan source spans.
 
 ## Commands
 

@@ -1,8 +1,8 @@
 import type { AccessibleNode, AccessibleRole } from '@ismail-elkorchi/terminal-ui/accessibility';
 import {
-  defineSemanticLeafComponent,
+  defineComponent,
   ignoreMessage,
-  type SemanticLeafComponentFactory,
+  type SemanticCompositeComponentFactory,
 } from '@ismail-elkorchi/terminal-ui/component';
 import type { RoutedPointerEvent } from '@ismail-elkorchi/terminal-ui/input';
 import {
@@ -12,6 +12,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/text';
 import { mergeTerminalStyles } from '@ismail-elkorchi/terminal-ui/renderer';
 import type { MarkdownAccessibleNode, MarkdownAccessibleRole } from './accessibility.js';
+import { localImageComponent } from './image.js';
 import type { MarkdownRenderSpan } from './inline.js';
 import type {
   MarkdownPreviewActionFragment,
@@ -22,6 +23,8 @@ import type {
 export interface MarkdownPreviewOptions {
   readonly label: string;
   readonly layout: MarkdownPreviewLayout;
+  readonly viewportWidth: number;
+  readonly contentColumn: number;
 }
 
 export interface MarkdownPreviewAction {
@@ -43,14 +46,18 @@ interface PreviewTargetGeometry {
 
 const previewTargetCache = new WeakMap<MarkdownPreviewLayout, readonly PreviewTargetGeometry[]>();
 
+const markdownPreviewSlots = {
+  media: { cardinality: 'many', owner: 'implementation', messages: 'none' },
+} as const;
+
 /** Resolves a rendered preview cell against the exact layout that produced it. */
 export function markdownPreviewActivationAt(
   layout: MarkdownPreviewLayout,
   row: number,
   column: number,
 ): MarkdownPreviewActivation | undefined {
-  const normalizedRow = Math.max(0, Math.min(layout.lines.length - 1, Math.floor(row)));
-  const line = layout.lines[normalizedRow];
+  const normalizedRow = Math.max(0, Math.min(layout.rows.length - 1, Math.floor(row)));
+  const line = layout.rows[normalizedRow];
   if (line === undefined) return undefined;
   const normalizedColumn = Math.max(0, Math.floor(column));
   let consumed = 0;
@@ -65,32 +72,65 @@ export function markdownPreviewActivationAt(
     : previewActivation(layout, normalizedRow, line.sourceOffset, span);
 }
 
-export const markdownPreview: SemanticLeafComponentFactory<
+export const markdownPreview: SemanticCompositeComponentFactory<
   MarkdownPreviewOptions,
-  MarkdownPreviewAction
-> = defineSemanticLeafComponent<
+  MarkdownPreviewAction,
+  never,
+  readonly [],
+  'required',
+  readonly [],
+  typeof markdownPreviewSlots
+> = defineComponent<
   MarkdownPreviewOptions,
   MarkdownPreviewOptions,
-  MarkdownPreviewAction
+  MarkdownPreviewAction,
+  never,
+  readonly [],
+  'required',
+  readonly [],
+  typeof markdownPreviewSlots
 >({
   name: 'vellum/components/markdown-preview',
   identity: 'required',
+  structure: 'composite',
+  semantics: 'semantic',
   accessibleRole: 'document',
+  slots: markdownPreviewSlots,
+  implementationSlots: ({ model }) => ({
+    media: model.layout.media.map((entry) => localImageComponent(
+      entry.media.image,
+      entry.media.label,
+      { width: entry.width, height: entry.height },
+    )),
+  }),
   measure: ({ model, widthProfile }) => {
-    assertActiveWidthProfile(model.layout, widthProfile);
+    assertPreviewGeometry(model, widthProfile);
     return {
       minWidth: 0,
       minHeight: 0,
-      preferredWidth: model.layout.width,
-      preferredHeight: model.layout.lines.length,
+      preferredWidth: model.viewportWidth,
+      preferredHeight: model.layout.rows.length,
     };
   },
-  render: ({ model, target, viewport, focusedTargetId, widthProfile }) => {
-    assertActiveWidthProfile(model.layout, widthProfile);
-    const end = Math.min(model.layout.lines.length, viewport.row + viewport.height);
+  layout: ({ model }) => ({
+    media: model.layout.media.map((entry) => Object.freeze({
+      row: entry.row,
+      column: model.contentColumn + entry.column,
+      width: entry.width,
+      height: entry.height,
+    })),
+  }),
+  renderBeforeChildren: ({ model, target, viewport, focusedTargetId, widthProfile }) => {
+    assertPreviewGeometry(model, widthProfile);
+    const end = Math.min(model.layout.rows.length, viewport.row + viewport.height);
     for (let row = viewport.row; row < end; row += 1) {
-      const line = model.layout.lines[row];
+      const line = model.layout.rows[row];
       if (line === undefined) continue;
+      if (line.background !== undefined) {
+        target.writeLine(row, model.contentColumn, {
+          spans: [{ text: ' '.repeat(model.layout.width), style: line.background }]
+        });
+      }
       const inlineSpans = focusedTargetId === undefined
         ? line.inlineSpans
         : Object.freeze(line.inlineSpans.map((span) => (
@@ -99,9 +139,11 @@ export const markdownPreview: SemanticLeafComponentFactory<
               ? span
               : focusedPreviewSpan(span)
           )));
-      target.writeLine(row, 0, inlineSpans === line.inlineSpans
-        ? line
-        : { spans: inlineSpans });
+      if (inlineSpans.length > 0) {
+        target.writeLine(row, model.contentColumn, inlineSpans === line.inlineSpans
+          ? line
+          : { spans: inlineSpans });
+      }
     }
   },
   keys: ({ model, focusedTargetId }) => {
@@ -114,7 +156,7 @@ export const markdownPreview: SemanticLeafComponentFactory<
   },
   focusTargets: ({ model }) => previewTargetGeometry(model.layout).map((target) => ({
     id: target.id,
-    bounds: target.bounds,
+    bounds: translatedBounds(target.bounds, model.contentColumn),
   })),
   hitTargets(input) {
     if (input.viewport.width === 0 || input.viewport.height === 0) return [];
@@ -124,18 +166,21 @@ export const markdownPreview: SemanticLeafComponentFactory<
       accepts: ['click'],
       message(event: RoutedPointerEvent) {
         if (event.button !== 'left') return ignoreMessage();
-        const target = markdownPreviewActivationAt(
-          input.model.layout,
-          input.viewport.row + (event.localRow ?? 0),
-          input.viewport.column + (event.localColumn ?? 0),
-        );
+        const column = input.viewport.column + (event.localColumn ?? 0) - input.model.contentColumn;
+        const target = column < 0 || column >= input.model.layout.width
+          ? undefined
+          : markdownPreviewActivationAt(
+              input.model.layout,
+              input.viewport.row + (event.localRow ?? 0),
+              column,
+            );
         return target === undefined ? ignoreMessage() : { kind: 'activate' as const, target };
       },
     } as const;
     const actionTargets = previewTargetGeometry(input.model.layout).flatMap((target) => (
       target.fragments.map((fragment, index) => ({
         id: `${input.id ?? 'markdown-preview'}:${target.id}:${String(index)}`,
-        bounds: fragment.bounds,
+        bounds: translatedBounds(fragment.bounds, input.model.contentColumn),
         accepts: ['click', 'pointerDown'] as const,
         cursor: 'pointer' as const,
         focus: { kind: 'target' as const, targetId: target.id },
@@ -220,6 +265,28 @@ function assertActiveWidthProfile(
   }
 }
 
+function assertPreviewGeometry(
+  model: MarkdownPreviewOptions,
+  widthProfile: TextWidthProfile,
+): void {
+  assertActiveWidthProfile(model.layout, widthProfile);
+  if (!Number.isInteger(model.viewportWidth) || model.viewportWidth < 1) {
+    throw new RangeError('Markdown preview viewport width must be a positive integer.');
+  }
+  if (!Number.isInteger(model.contentColumn)
+    || model.contentColumn < 0
+    || model.contentColumn + model.layout.width > model.viewportWidth) {
+    throw new RangeError('Markdown preview content must fit within its viewport width.');
+  }
+}
+
+function translatedBounds<TBounds extends { readonly column: number }>(
+  bounds: TBounds,
+  columns: number,
+): TBounds {
+  return Object.freeze({ ...bounds, column: bounds.column + columns });
+}
+
 function focusedPreviewSpan(span: MarkdownRenderSpan): MarkdownRenderSpan {
   const style = mergeTerminalStyles(span.style, { inverse: true, bold: true });
   return Object.freeze({
@@ -232,7 +299,7 @@ function previewActivation(
   layout: MarkdownPreviewLayout,
   row: number,
   sourceOffset: number,
-  span: MarkdownPreviewLayout['lines'][number]['inlineSpans'][number],
+  span: MarkdownPreviewLayout['rows'][number]['inlineSpans'][number],
 ): MarkdownPreviewActivation {
   const sourceSpan = span.activation === undefined
     ? blockSourceSpanAt(layout, sourceOffset) ?? span.sourceSpan

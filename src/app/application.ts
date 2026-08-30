@@ -106,7 +106,11 @@ import {
 import type { MarkdownBlockLayoutCache } from '../markdown/render/cache.js';
 import type { MarkdownRenderedBlock } from '../markdown/render/block.js';
 import type { MarkdownBlockResources } from '../markdown/render/resources.js';
-import { vellumBodyGeometry, vellumPaneGeometry } from './viewport-geometry.js';
+import {
+  vellumBodyGeometry,
+  vellumPaneGeometry,
+  vellumPreviewDocumentGeometry,
+} from './viewport-geometry.js';
 import { darkTerminalMarkdownTheme, type MarkdownTheme } from '../markdown/theme.js';
 import {
   createHybridTextDecorations,
@@ -306,7 +310,6 @@ export interface VellumApplication {
     widthProfile?: TextWidthProfile,
   ): MarkdownPreviewLayout | undefined;
   refreshPreviewResources(bufferId: BufferId): Promise<void>;
-  previewImages(bufferId: BufferId): ReadonlyMap<number, MarkdownImageResult>;
   persistRecoveryRecord(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -1390,7 +1393,7 @@ function instantiateVellumApplication(
       if (buffer === undefined) return;
       api.navigateTo(bufferId, target.sourceSpan.start);
       const activation = target.activation;
-      if (activation === undefined || activation.kind === 'image') return;
+      if (activation === undefined) return;
       if (activation.kind === 'footnote') {
         api.navigateTo(bufferId, activation.definitionSpan.start);
         return;
@@ -2001,7 +2004,6 @@ function instantiateVellumApplication(
       };
       const layout = layoutMarkdownPreview(
         buffer.preview.snapshot.document.tree,
-        buffer.preview.snapshot.source,
         width,
         theme,
         widthProfile,
@@ -2018,9 +2020,13 @@ function instantiateVellumApplication(
       theme = markdownTheme,
       widthProfile = defaultTextWidthProfile,
     ) {
-      const initial = api.previewLayout(bufferId, width, theme, widthProfile);
-      if (initial === undefined || initial.lines.length <= rows || width <= 1) return initial;
-      return api.previewLayout(bufferId, width - 1, theme, widthProfile);
+      const initialGeometry = vellumPreviewDocumentGeometry(width);
+      const initial = api.previewLayout(bufferId, initialGeometry.contentWidth, theme, widthProfile);
+      if (initial === undefined || initial.rows.length <= rows || width <= 1) return initial;
+      const scrollableGeometry = vellumPreviewDocumentGeometry(width - 1);
+      return scrollableGeometry.contentWidth === initialGeometry.contentWidth
+        ? initial
+        : api.previewLayout(bufferId, scrollableGeometry.contentWidth, theme, widthProfile);
     },
     async refreshPreviewResources(bufferId) {
       const buffer = state.project.buffers[bufferId];
@@ -2168,10 +2174,6 @@ function instantiateVellumApplication(
           else waiter.reject(refreshFailure);
         }
       }
-    },
-    previewImages(bufferId) {
-      const runtime = runtimes.get(bufferId);
-      return runtime === undefined ? new Map() : new Map(runtime.images);
     },
     async persistRecoveryRecord() {
       assertActive();

@@ -4,7 +4,6 @@ import { createTextAreaState, textAreaReducer } from '@ismail-elkorchi/terminal-
 import { createTextAreaRowOffsetMap, text } from '@ismail-elkorchi/terminal-ui/components';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { column } from '@ismail-elkorchi/terminal-ui/layout';
-import { rasterImage } from '@ismail-elkorchi/terminal-ui/graphics';
 import { ignoreMessage, type IgnoredMessage } from '@ismail-elkorchi/terminal-ui/interaction';
 import { renderElementFrame } from '@ismail-elkorchi/terminal-ui/renderer';
 import { createTuiRuntime, defineTui } from '@ismail-elkorchi/terminal-ui/tui';
@@ -16,7 +15,6 @@ import {
 import { createBufferParser } from '../markdown/preview.js';
 import { createPreviewLayoutCache, layoutMarkdownPreview } from '../markdown/render/layout.js';
 import { markdownPreview } from '../markdown/render/component.js';
-import { localImageComponent } from '../markdown/render/image.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 
 interface BenchmarkFixture {
@@ -34,7 +32,6 @@ interface BenchmarkRow {
 const samples = 3;
 const fixtures = benchmarkFixtures();
 const rows: BenchmarkRow[] = [];
-const benchmarkImage = rasterImage({ width: 1, height: 1, format: 'rgb8', data: new Uint8Array([40, 90, 160]) });
 
 for (const fixture of fixtures) {
   const editor = createTextAreaState({ value: fixture.source });
@@ -43,7 +40,6 @@ for (const fixture of fixtures) {
   const layout = parser.preview().kind === 'ready'
     ? layoutMarkdownPreview(
         parsed.document.tree,
-        fixture.source,
         80,
         darkTerminalMarkdownTheme,
         defaultTextWidthProfile,
@@ -63,7 +59,6 @@ for (const fixture of fixtures) {
   })));
   rows.push(measure(fixture.name, 'preview block layout', () => layoutMarkdownPreview(
     parsed.document.tree,
-    fixture.source,
     80,
     darkTerminalMarkdownTheme,
     defaultTextWidthProfile,
@@ -71,12 +66,16 @@ for (const fixture of fixtures) {
   )));
   if (layout !== undefined) {
     rows.push(measure(fixture.name, 'complete preview line assembly', () => (
-      layout.lines.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n')
+      layout.rows.map((line) => line.inlineSpans.map((span) => span.text).join('')).join('\n')
     )));
-    const component = column([
-      markdownPreview({ id: 'benchmark-preview', label: 'Benchmark preview', layout, onAction: ignoreMessage }),
-      localImageComponent(benchmarkImage, 'Benchmark image', 4, 2)
-    ]);
+    const component = markdownPreview({
+      id: 'benchmark-preview',
+      label: 'Benchmark preview',
+      layout,
+      viewportWidth: layout.width,
+      contentColumn: 0,
+      onAction: ignoreMessage,
+    });
     rows.push(measure(fixture.name, 'preview component render', () => (
       renderElementFrame(component, { columns: 80, rows: 24 })
     )));
@@ -115,7 +114,6 @@ const initialInstrumentedPreview = instrumented.preview();
 if (initialInstrumentedPreview.kind === 'ready') {
   layoutMarkdownPreview(
     initialInstrumentedPreview.snapshot.document.tree,
-    initialInstrumentedPreview.snapshot.source,
     40,
     darkTerminalMarkdownTheme,
     defaultTextWidthProfile,
@@ -126,7 +124,6 @@ const update = instrumented.applyChanges({ changes: [{ startOffset: 20, endOffse
 const firstLayout = update.kind === 'ready'
   ? layoutMarkdownPreview(
       update.snapshot.document.tree,
-      update.snapshot.source,
       40,
       darkTerminalMarkdownTheme,
       defaultTextWidthProfile,

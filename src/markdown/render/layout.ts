@@ -14,7 +14,11 @@ import {
   type MarkdownLayoutCacheUpdate
 } from './cache.js';
 import type { MarkdownActivation } from './inline.js';
-import type { MarkdownLayoutLine } from './wrap.js';
+import {
+  blankMarkdownRow,
+  type MarkdownLayoutMedia,
+  type MarkdownLayoutRow,
+} from './wrap.js';
 import { accessibleMarkdownDocument, type MarkdownAccessibleNode } from './accessibility.js';
 
 export interface MarkdownPreviewActivation {
@@ -30,11 +34,16 @@ export interface MarkdownPreviewActionFragment extends MarkdownPreviewActivation
   readonly activation: MarkdownActivation;
 }
 
+export interface MarkdownPreviewMediaPlacement extends MarkdownLayoutMedia {
+  readonly row: number;
+}
+
 export interface MarkdownPreviewLayout {
   readonly width: number;
   readonly widthProfile: TextWidthProfile;
-  readonly lines: readonly MarkdownLayoutLine[];
+  readonly rows: readonly MarkdownLayoutRow[];
   readonly blocks: readonly MarkdownRenderedBlock[];
+  readonly media: readonly MarkdownPreviewMediaPlacement[];
   readonly rowOffsetMap: RowOffsetMap;
   readonly activations: readonly MarkdownPreviewActionFragment[];
   readonly accessibility: MarkdownAccessibleNode;
@@ -47,7 +56,6 @@ export function createPreviewLayoutCache(): MarkdownBlockLayoutCache<MarkdownRen
 
 export function layoutMarkdownPreview(
   tree: MarkdownDocumentNode,
-  source: string,
   width: number,
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
@@ -56,15 +64,16 @@ export function layoutMarkdownPreview(
 ): MarkdownPreviewLayout {
   const normalizedWidth = Math.max(1, Math.floor(width));
   const blocks: MarkdownRenderedBlock[] = [];
-  const lines: MarkdownLayoutLine[] = [];
+  const rows: MarkdownLayoutRow[] = [];
   const activeIds = new Set<number>();
   let reusedBlockLayouts = 0;
   let rebuiltBlockLayouts = 0;
+  let previousVisible: MarkdownRenderedBlock | undefined;
   for (const node of tree.children) {
     activeIds.add(node.id);
     const existing = cache.get(node.id, normalizedWidth, theme, widthProfile);
     const block = existing === undefined
-      ? renderMarkdownBlock(node, source, normalizedWidth, theme, widthProfile, resources)
+      ? renderMarkdownBlock(node, normalizedWidth, theme, widthProfile, resources)
       : translateBlock(existing.value, node.span.start - existing.sourceStart);
     if (existing === undefined) {
       rebuiltBlockLayouts += 1;
@@ -79,14 +88,20 @@ export function layoutMarkdownPreview(
       reusedBlockLayouts += 1;
     }
     blocks.push(block);
-    lines.push(...block.lines);
+    if (block.rows.length === 0) continue;
+    if (previousVisible !== undefined) {
+      rows.push(blankMarkdownRow(previousVisible.sourceSpan.end, previousVisible.nodeId));
+    }
+    rows.push(...block.rows);
+    previousVisible = block;
   }
   cache.retain(activeIds);
-  const rowOffsetMap = createRowOffsetMap(lines.map((line) => line.sourceOffset));
+  const rowOffsetMap = createRowOffsetMap(rows.map((row) => row.sourceOffset));
   const activations: MarkdownPreviewActionFragment[] = [];
-  for (let row = 0; row < lines.length; row += 1) {
+  const media: MarkdownPreviewMediaPlacement[] = [];
+  for (let row = 0; row < rows.length; row += 1) {
     let column = 0;
-    for (const span of lines[row]?.inlineSpans ?? []) {
+    for (const span of rows[row]?.inlineSpans ?? []) {
       const width = measureTextCells(span.text, { widthProfile }).cells;
       if (span.activation !== undefined && width > 0) {
         activations.push(Object.freeze({
@@ -100,12 +115,16 @@ export function layoutMarkdownPreview(
       }
       column += width;
     }
+    for (const entry of rows[row]?.media ?? []) {
+      media.push(Object.freeze({ ...entry, row }));
+    }
   }
   return Object.freeze({
     width: normalizedWidth,
     widthProfile,
-    lines: Object.freeze(lines),
+    rows: Object.freeze(rows),
     blocks: Object.freeze(blocks),
+    media: Object.freeze(media),
     rowOffsetMap,
     activations: Object.freeze(activations),
     accessibility: accessibleMarkdownDocument(tree, resources.diagnostics),
@@ -120,14 +139,23 @@ export function layoutMarkdownPreview(
 function translateBlock(block: MarkdownRenderedBlock, delta: number): MarkdownRenderedBlock {
   if (delta === 0) return block;
   const move = (span: SourceSpan): SourceSpan => Object.freeze({ start: span.start + delta, end: span.end + delta });
-  const lines = block.lines.map((line) => {
-    const inlineSpans = line.inlineSpans.map((span) => Object.freeze({ ...span, sourceSpan: move(span.sourceSpan) }));
+  const rows = block.rows.map((row) => {
+    const inlineSpans = row.inlineSpans.map((span) => Object.freeze({ ...span, sourceSpan: move(span.sourceSpan) }));
+    const media = row.media?.map((entry) => Object.freeze({
+      ...entry,
+      media: Object.freeze({ ...entry.media, sourceSpan: move(entry.media.sourceSpan) }),
+    }));
     return Object.freeze({
-      ...line,
-      sourceOffset: line.sourceOffset + delta,
+      ...row,
+      sourceOffset: row.sourceOffset + delta,
       spans: Object.freeze(inlineSpans),
-      inlineSpans: Object.freeze(inlineSpans)
+      inlineSpans: Object.freeze(inlineSpans),
+      ...(media === undefined ? {} : { media: Object.freeze(media) }),
     });
   });
-  return Object.freeze({ ...block, sourceSpan: move(block.sourceSpan), lines: Object.freeze(lines) });
+  return Object.freeze({
+    ...block,
+    sourceSpan: move(block.sourceSpan),
+    rows: Object.freeze(rows)
+  });
 }

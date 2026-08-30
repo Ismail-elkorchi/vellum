@@ -11,6 +11,7 @@ export function footnoteReferenceSpan(
     style: theme.link,
     nodeId: node.id,
     sourceSpan: node.span,
+    sourceMapping: 'anchor',
     activation: Object.freeze({
       kind: 'footnote',
       nodeId: node.id,

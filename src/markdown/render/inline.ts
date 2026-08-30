@@ -8,18 +8,19 @@ import { sanitizeTerminalText } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownInlineNode, SourceSpan } from 'markspan';
 import type { MarkdownTheme } from '../theme.js';
 import { footnoteReferenceSpan } from './footnote.js';
-import { imageFallbackSpan } from './image.js';
+import { imagePreviewSpan, type MarkdownRenderMedia } from './image.js';
 import type { MarkdownBlockResources } from './resources.js';
 
 export type MarkdownActivation =
   | { readonly kind: 'link'; readonly nodeId: number; readonly destination: string }
-  | { readonly kind: 'image'; readonly nodeId: number; readonly destination: string }
   | { readonly kind: 'footnote'; readonly nodeId: number; readonly definitionSpan: SourceSpan };
 
 export interface MarkdownRenderSpan extends RenderSpan {
   readonly nodeId: number;
   readonly sourceSpan: SourceSpan;
+  readonly sourceMapping: 'identity' | 'anchor';
   readonly activation?: MarkdownActivation;
+  readonly media?: MarkdownRenderMedia;
 }
 
 export function inlinePlainText(nodes: readonly MarkdownInlineNode[]): string {
@@ -65,9 +66,11 @@ export function renderInline(
   const visit = (node: MarkdownInlineNode, style: TerminalStyle, link?: TerminalLink): void => {
     switch (node.kind) {
       case 'text':
+        spans.push(valueSpan(node.value, node.id, node.span, style, link, true));
+        break;
       case 'escape':
       case 'characterReference':
-        spans.push(valueSpan(node.value, node.id, node.span, style, link));
+        spans.push(valueSpan(node.value, node.id, node.span, style, link, false));
         break;
       case 'strong':
         for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.strong) ?? style, link);
@@ -79,11 +82,20 @@ export function renderInline(
         for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.deleted) ?? style, link);
         break;
       case 'codeSpan':
-        spans.push(valueSpan(node.value, node.id, node.contentSpan, mergeTerminalStyles(style, theme.inlineCode), link));
+        spans.push(valueSpan(node.value, node.id, node.contentSpan, mergeTerminalStyles(style, theme.inlineCode), link, true));
         break;
-      case 'mathInline':
-        spans.push(valueSpan(resources.mathText?.get(node.id) ?? node.value, node.id, node.contentSpan, mergeTerminalStyles(style, theme.math), link));
+      case 'mathInline': {
+        const rendered = resources.mathText?.get(node.id);
+        spans.push(valueSpan(
+          rendered ?? node.value,
+          node.id,
+          node.contentSpan,
+          mergeTerminalStyles(style, theme.math),
+          link,
+          rendered === undefined,
+        ));
         break;
+      }
       case 'link': {
         const terminalLink = node.destination.length === 0
           ? link
@@ -104,16 +116,16 @@ export function renderInline(
         break;
       }
       case 'image':
-        spans.push(imageFallbackSpan(node, inlinePlainText(node.children), theme, resources.images?.get(node.id)));
+        spans.push(imagePreviewSpan(node, inlinePlainText(node.children), theme, resources.images?.get(node.id)));
         break;
       case 'softBreak':
-        spans.push(valueSpan(' ', node.id, node.span, style, link));
+        spans.push(valueSpan(' ', node.id, node.span, style, link, false));
         break;
       case 'hardBreak':
-        spans.push(valueSpan('\n', node.id, node.span, style, link));
+        spans.push(valueSpan('\n', node.id, node.span, style, link, false));
         break;
       case 'htmlInline':
-        spans.push(valueSpan('[HTML]', node.id, node.span, mergeTerminalStyles(style, theme.htmlPlaceholder), link));
+        spans.push(valueSpan('[HTML]', node.id, node.span, mergeTerminalStyles(style, theme.htmlPlaceholder), link, false));
         break;
       case 'footnoteReference':
         spans.push(footnoteReferenceSpan(node, theme));
@@ -129,13 +141,18 @@ function valueSpan(
   nodeId: number,
   sourceSpan: SourceSpan,
   style?: TerminalStyle,
-  link?: TerminalLink
+  link?: TerminalLink,
+  sourceDerived = false,
 ): MarkdownRenderSpan {
+  const sanitized = sanitizeTerminalText(value).text;
   return Object.freeze({
-    text: sanitizeTerminalText(value).text,
+    text: sanitized,
     ...(style === undefined ? {} : { style }),
     ...(link === undefined ? {} : { link }),
     nodeId,
-    sourceSpan
+    sourceSpan,
+    sourceMapping: sourceDerived && sanitized.length === sourceSpan.end - sourceSpan.start
+      ? 'identity'
+      : 'anchor',
   });
 }
