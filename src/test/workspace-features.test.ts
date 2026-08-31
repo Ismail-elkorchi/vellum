@@ -64,6 +64,34 @@ test('project directories cannot be moved or duplicated inside themselves', asyn
   }
 });
 
+test('project paths remain in the namespace selected by the user', {
+  skip: process.platform === 'win32' ? 'Creating test symlinks requires elevated privileges on Windows.' : false
+}, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-project-paths-'));
+  const alias = `${directory}-alias`;
+  const sourcePath = path.join(alias, 'source.md');
+  const movedPath = path.join(alias, 'notes', 'source.md');
+  await writeFile(path.join(directory, 'source.md'), '# Source\n', 'utf8');
+  await mkdir(path.join(directory, 'notes'));
+  await symlink(directory, alias, 'dir');
+  const application = createVellumApplication({ watchFiles: false });
+  try {
+    await application.openProjectDirectory(alias);
+    await application.refreshFileTree();
+    const bufferId = await application.openFile(sourcePath);
+    await application.moveProjectEntry('source.md', 'notes/source.md');
+
+    assert.equal(application.state().project.rootDirectory, alias);
+    assert.equal(application.state().project.buffers[bufferId]?.path, movedPath);
+    assert.equal(await readFile(movedPath, 'utf8'), '# Source\n');
+    assert.equal(application.state().project.index.orderedPaths.every((filePath) => filePath.startsWith(alias)), true);
+  } finally {
+    await application.dispose();
+    await rm(alias, { force: true });
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('project moves commit path and source-exact link changes as one editor transaction', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-project-move-'));
   const chapterPath = path.join(directory, 'docs', 'chapter.md');

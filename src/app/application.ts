@@ -1580,9 +1580,9 @@ function instantiateVellumApplication(
       assertActive();
       signal?.throwIfAborted();
       const exact = path.resolve(directoryPath);
-      const resolved = await realpath(exact);
+      const realDirectory = await realpath(exact);
       assertActive();
-      if (!(await stat(resolved)).isDirectory()) throw new Error(`The project directory is not a directory: ${exact}`);
+      if (!(await stat(realDirectory)).isDirectory()) throw new Error(`The project directory is not a directory: ${exact}`);
       for (const controller of directoryReads.values()) controller.abort();
       directoryReads.clear();
       projectIndexRead?.abort();
@@ -1598,14 +1598,14 @@ function instantiateVellumApplication(
         ...state,
         project: Object.freeze({
           ...state.project,
-          rootDirectory: resolved,
-          fileTree: createFileTreeState(resolved, state.project.fileTree.exclusionPatterns),
+          rootDirectory: exact,
+          fileTree: createFileTreeState(exact, state.project.fileTree.exclusionPatterns),
           index: emptyProjectIndex(),
-          recentProjects: Object.freeze([resolved, ...state.project.recentProjects.filter((candidate) => candidate !== resolved)].slice(0, 20))
+          recentProjects: Object.freeze([exact, ...state.project.recentProjects.filter((candidate) => candidate !== exact)].slice(0, 20))
         })
       });
       invalidateProjectSearchResults();
-      await api.loadFileTreeDirectory(resolved);
+      await api.loadFileTreeDirectory(exact);
       void startProjectIndexRefresh().catch((error) => publishFailure('backgroundFailure', error));
       schedulePersistence();
     },

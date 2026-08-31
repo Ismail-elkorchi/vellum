@@ -365,7 +365,7 @@ const maximumCapturedOutputBytes = 1_000_000;
 async function commitExportOutput(temporaryPath: string, outputPath: string, overwrite: boolean): Promise<void> {
   const metadata = await lstat(temporaryPath);
   if (!metadata.isFile()) throw new Error(`Export did not produce a regular output file: ${outputPath}`);
-  const handle = await open(temporaryPath, 'r');
+  const handle = await open(temporaryPath, process.platform === 'win32' ? 'r+' : 'r');
   try {
     await handle.sync();
   } finally {

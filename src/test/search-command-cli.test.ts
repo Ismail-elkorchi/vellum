@@ -232,7 +232,7 @@ test('project-directory search opens a result and selects its exact UTF-16 sourc
       assert.deepEqual(dialog.results.map((result) => [path.basename(result.path), result.line, result.column]), [
         ['a.md', 1, 7], ['b.md', 1, 11], ['c.md', 1, 8]
       ]);
-      assert.equal(quickOpenEntries(application.state().project.index, 'c.md', []).at(0)?.relativePath, path.join('nested', 'c.md'));
+      assert.equal(quickOpenEntries(application.state().project.index, 'c.md', []).at(0)?.relativePath, 'nested/c.md');
       await application.activateProjectDirectorySearchResult(1);
       const buffer = application.state().project.buffers[application.state().project.activeBufferId as string];
       assert.equal(buffer?.editor.selection?.anchor.offset, 10);
