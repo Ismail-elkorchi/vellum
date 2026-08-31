@@ -34,6 +34,7 @@ import type {
 } from './app/application.js';
 import { markdownPreview, type MarkdownPreviewAction } from './markdown/render/component.js';
 import { terminalFileTreeView } from './project/file-tree.js';
+import { documentOutline } from './navigation/outline.js';
 import {
   vellumBodyGeometry,
   vellumPaneGeometry,
@@ -96,6 +97,15 @@ export function viewVellum(
   const columns = Math.max(1, context.terminalSize.columns);
   const geometry = vellumBodyGeometry(state, context.terminalSize);
   const widthProfile = context.capabilities.unicode.widthProfile;
+  if (state.writingMode.distractionFree) {
+    const activeId = state.project.activeBufferId;
+    const buffer = activeId === undefined ? undefined : state.project.buffers[activeId];
+    const root = buffer === undefined
+      ? text({ id: 'vellum-empty', content: 'Open a Markdown file or create a new source document.', textRole: 'body' })
+      : applicationContent(application, state, buffer, columns, context.terminalSize.rows, widthProfile);
+    const modal = activeDialog(state, columns);
+    return modal === undefined ? root : overlay([root, modal], { id: 'vellum-overlay' });
+  }
   const root = grid({
     id: 'vellum-root',
     areas: `header\nbody\nstatus`,
@@ -106,7 +116,7 @@ export function viewVellum(
       body: geometry.fileTreeWidth === 0
         ? bufferTabs(application, state, geometry.bodyWidth, geometry.bodyRows, widthProfile)
         : row([
-          fileTree(state),
+          navigator(state),
           bufferTabs(application, state, geometry.bodyWidth, geometry.bodyRows, widthProfile)
         ], { sizes: [{ kind: 'fixed', cells: geometry.fileTreeWidth }, { kind: 'fill' }], gap: 1 }),
       status: status(state)
@@ -135,7 +145,7 @@ function status(state: AppState) {
   const textValue = state.notice !== undefined
     ? `${state.notice.status.toUpperCase()}: ${state.notice.message}`
     : buffer === undefined
-      ? 'Ctrl+N new file · Ctrl+O open file · Ctrl+Alt+D open project directory'
+      ? 'Ctrl+N new file · Ctrl+O open file · Alt+D open project directory'
       : `${buffer.label} · ${bufferIsDirty(buffer) ? 'UNSAVED' : 'SAVED'} · ${buffer.preview.kind === 'ready' ? `${String(buffer.preview.metrics.wordCount)} words` : 'PREVIEW FAILED'}`;
   return surface(text({ id: 'vellum-status-text', content: textValue, textRole: 'metadata' }), {
     id: 'vellum-status', appearance: 'bar', border: { kind: 'none' }, padding: { left: 1, right: 1 }
@@ -170,9 +180,19 @@ function bufferTabs(
     }];
   });
   if (items.length === 0) {
+    const recent = [...new Set([...state.project.pinnedProjects, ...state.project.recentProjects])].slice(0, 8);
     return surface(text({
       id: 'vellum-empty',
-      content: 'Open a Markdown file or create a new source document.',
+      content: [
+        'Open File       Ctrl+O',
+        'Open Project    Alt+D',
+        'New Document    Ctrl+N',
+        'Command Palette F1',
+        'Keyboard Help   vellum --keyboard-report',
+        'Terminal Check  vellum --check-keymap',
+        ...(recent.length === 0 ? [] : ['', 'Recent and pinned projects:', ...recent.map((projectPath) => `  ${projectPath}`)]),
+        ...(state.configurationDiagnostics.some((diagnostic) => diagnostic.source === 'recovery') ? ['', 'Recovery diagnostics are available in the Diagnostics navigator.'] : [])
+      ].join('\n'),
       textRole: 'body'
     }), { id: 'vellum-empty-surface', title: 'Vellum', border: { kind: 'rounded' }, padding: 1 });
   }
@@ -321,7 +341,8 @@ function previewPane(
   });
 }
 
-function fileTree(state: AppState) {
+function navigator(state: AppState) {
+  if (state.navigator.mode !== 'files') return navigatorSummary(state);
   const view = terminalFileTreeView(state.project.fileTree);
   return tree({
     id: VELLUM_IDS.fileTree,
@@ -341,10 +362,100 @@ function fileTree(state: AppState) {
   });
 }
 
+function navigatorSummary(state: AppState) {
+  const activeId = state.project.activeBufferId;
+  const buffer = activeId === undefined ? undefined : state.project.buffers[activeId];
+  let content = '';
+  if (state.navigator.mode === 'outline') {
+    content = buffer?.preview.kind === 'ready'
+      ? documentOutline(buffer.preview, buffer.editor.caret.position.offset)
+          .flatMap(flattenOutlineItems)
+          .map((entry) => `${'  '.repeat(Math.max(0, entry.depth - 1))}${entry.active ? '›' : ' '} ${entry.title}`)
+          .join('\n')
+      : 'No outline is available.';
+  } else if (state.navigator.mode === 'search') {
+    content = [
+      state.projectSearch.query.length === 0 ? 'No project search query.' : `Query: ${state.projectSearch.query}`,
+      ...(state.projectSearch.query.length > 0 || state.projectSearch.recentQueries.length === 0
+        ? []
+        : ['Recent:', ...state.projectSearch.recentQueries.map((query) => `  ${query}`)]),
+      ...state.projectSearch.results.slice(0, 200).map((result) => (
+        `${path.relative(state.project.rootDirectory ?? '', result.path)}:${String(result.line)} ${result.context}`
+      ))
+    ].join('\n');
+  } else if (state.navigator.mode === 'diagnostics') {
+    const ranks = { info: 0, warning: 1, error: 2 } as const;
+    const preferences = state.diagnosticPreferences;
+    content = [
+      `Filter: ${preferences.source} · ${preferences.minimumSeverity}+`,
+      ...state.configurationDiagnostics.map((diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.source}: ${diagnostic.message}`),
+      ...state.project.unusedAssets.map((asset) => `WARNING assets: unused ${path.relative(state.project.rootDirectory ?? path.dirname(asset), asset)}`),
+      ...(buffer === undefined ? [] : (state.diagnostics[buffer.id] ?? []).filter((diagnostic) => (
+        ranks[diagnostic.severity] >= ranks[preferences.minimumSeverity]
+        && (preferences.source === 'all' || diagnostic.source === preferences.source)
+        && !preferences.ignoredRules.includes(diagnostic.rule)
+      )).map((diagnostic) => (
+        `${diagnostic.severity.toUpperCase()} ${diagnostic.source}: ${diagnostic.message}`
+      )))
+    ].join('\n') || 'No diagnostics.';
+  } else if (state.navigator.mode === 'export') {
+    content = state.exports.history.map((entry) => {
+      const outputs = entry.outputPaths.length === 0 ? '' : ` → ${entry.outputPaths.join(', ')}`;
+      const elapsed = entry.elapsedMilliseconds === undefined ? '' : ` · ${String(Math.round(entry.elapsedMilliseconds))} ms`;
+      const error = entry.error === undefined ? '' : ` · ${entry.error}`;
+      return `${entry.status.toUpperCase()} ${entry.scope}/${entry.profileId}${elapsed}${outputs}${error}`;
+    }).join('\n') || 'No exports yet.';
+  } else if (state.navigator.mode === 'properties') {
+    const properties = buffer?.path === undefined ? undefined : state.project.index.documents[buffer.path]?.properties;
+    content = properties === undefined || Object.keys(properties).length === 0
+      ? 'No indexed properties.'
+      : Object.entries(properties).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`).join('\n');
+  } else {
+    const target = buffer?.path;
+    content = target === undefined
+      ? 'Save the active document to inspect backlinks.'
+      : Object.values(state.project.index.documents).flatMap((document) => (
+          document.links.some((link) => {
+            if (link.destination.startsWith('#') || /^[a-z][a-z0-9+.-]*:/iu.test(link.destination)) return false;
+            const raw = link.destination.split('#')[0] ?? '';
+            try {
+              return path.resolve(path.dirname(document.path), decodeURIComponent(raw)) === target;
+            } catch {
+              return false;
+            }
+          }) ? [document.relativePath] : []
+        )).join('\n') || 'No backlinks.';
+  }
+  return surface(text({
+    id: `vellum-navigator-${state.navigator.mode}`,
+    content,
+    textRole: 'body'
+  }), {
+    id: 'vellum-navigator',
+    title: state.navigator.mode[0]?.toUpperCase() + state.navigator.mode.slice(1),
+    border: { kind: 'rounded' },
+    padding: 1
+  });
+}
+
+function flattenOutlineItems(
+  item: ReturnType<typeof documentOutline>[number]
+): readonly ReturnType<typeof documentOutline>[number][] {
+  return Object.freeze([item, ...item.children.flatMap(flattenOutlineItems)]);
+}
+
 function activeDialog(state: AppState, columns: number) {
   const active = state.dialogState;
-  if (active?.kind === 'commandPalette' || active?.kind === 'quickOpen') {
-    const title = active.kind === 'commandPalette' ? 'Command Palette' : 'Quick Open';
+  if (active?.kind === 'commandPalette' || active?.kind === 'quickOpen' || active?.kind === 'completion' || active?.kind === 'recentProject' || active?.kind === 'recoverySelection') {
+    const title = active.kind === 'commandPalette'
+      ? 'Command Palette'
+      : active.kind === 'quickOpen'
+        ? 'Quick Open'
+        : active.kind === 'recentProject'
+          ? 'Open Recent Project'
+          : active.kind === 'recoverySelection'
+            ? 'Select Recovery Snapshot'
+            : 'Markdown Completion';
     return dialog({
       id: `vellum-${active.kind}-dialog`,
       title,
@@ -360,8 +471,8 @@ function activeDialog(state: AppState, columns: number) {
         content: commandInput({
           id: VELLUM_IDS.selection,
           view: commandInputView(active.command),
-          prompt: active.kind === 'commandPalette' ? 'Command › ' : 'File › ',
-          placeholder: active.kind === 'commandPalette' ? 'Search commands' : 'Search the file tree',
+          prompt: active.kind === 'commandPalette' ? 'Command › ' : active.kind === 'quickOpen' ? 'File › ' : active.kind === 'recentProject' ? 'Project › ' : active.kind === 'recoverySelection' ? 'Snapshot › ' : 'Complete › ',
+          placeholder: active.kind === 'commandPalette' ? 'Search commands' : active.kind === 'quickOpen' ? 'Search project documents' : active.kind === 'recentProject' ? 'Search recent and pinned projects' : active.kind === 'recoverySelection' ? 'Compare timestamps, buffers, and source sizes' : 'Filter completion candidates',
           display: 'expanded',
           maxVisibleSuggestions: 12,
           ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
@@ -456,7 +567,7 @@ function activeDialog(state: AppState, columns: number) {
     });
   }
   if (active?.kind === 'exportProfile') {
-    const title = active.scope === 'activeBuffer' ? 'Export Active Buffer' : 'Export Project Directory';
+    const title = active.scope === 'activeBuffer' ? 'Export Active Buffer' : 'Batch Export Project Directory';
     return dialog({
       id: 'vellum-export-profile-dialog', title, accessibleName: title, modal: true,
       width: Math.max(1, Math.min(64, columns - 2)), border: { kind: 'rounded' }, padding: 1,
@@ -497,11 +608,22 @@ function activeDialog(state: AppState, columns: number) {
     });
   }
   if (active?.kind === 'filePath') {
-    const title = active.operation === 'openFile' ? 'Open file' : active.operation === 'openProjectDirectory' ? 'Open project directory' : 'Save as';
+    const title: Readonly<Record<typeof active.operation, string>> = {
+      openFile: 'Open file',
+      openProjectDirectory: 'Open project directory',
+      saveAs: 'Save as',
+      createProjectFile: 'Create project file',
+      createProjectDirectory: 'Create project directory',
+      renameProjectEntry: 'Rename project entry',
+      moveProjectEntry: 'Move project entry',
+      duplicateProjectEntry: 'Duplicate project entry',
+      importAsset: 'Import image asset',
+      filterProjectTree: 'Filter project files'
+    };
     return dialog({
       id: 'vellum-file-path-dialog',
-      title,
-      accessibleName: title,
+      title: title[active.operation],
+      accessibleName: title[active.operation],
       modal: true,
       width: Math.max(1, Math.min(72, columns - 2)),
       border: { kind: 'rounded' },
@@ -518,7 +640,7 @@ function activeDialog(state: AppState, columns: number) {
           display: 'expanded',
           ...(active.error === undefined ? {} : { validation: { level: 'error' as const, message: active.error } }),
           footer: 'Enter confirms · Esc cancels',
-          meta: { accessibleName: title, focus: { order: 1 } },
+          meta: { accessibleName: title[active.operation], focus: { order: 1 } },
           onTransition: (transition: CommandInputTransition): AppMessage => ({ kind: 'filePath', transition }),
           onSubmit: ({ value }): AppMessage => ({ kind: 'submitFilePath', value })
         }),
@@ -609,3 +731,4 @@ function searchOptionButton(
     onPress: (): AppMessage => ({ kind: 'configureDocumentSearch', option })
   });
 }
+import path from 'node:path';

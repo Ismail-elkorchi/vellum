@@ -43,17 +43,14 @@ try {
   await run(tarExecutable, ['-xzf', first.path, '-C', extracted], repository);
   const packedPackage = path.join(extracted, 'package');
   const packedModules = path.join(packedPackage, 'node_modules');
-  const packedScope = path.join(packedModules, '@ismail-elkorchi');
-  await mkdir(packedScope, { recursive: true });
   const linkType = process.platform === 'win32' ? 'junction' : 'dir';
-  await symlink(path.join(repository, 'node_modules', 'markspan'), path.join(packedModules, 'markspan'), linkType);
-  await symlink(
-    path.join(repository, 'node_modules', '@ismail-elkorchi', 'terminal-ui'),
-    path.join(packedScope, 'terminal-ui'),
-    linkType
-  );
+  for (const dependency of ['@ismail-elkorchi/terminal-ui', 'ignore', 'markspan', 'minimatch', 'sharp']) {
+    const destination = path.join(packedModules, dependency);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await symlink(path.join(repository, 'node_modules', dependency), destination, linkType);
+  }
   const help = await run(process.execPath, [path.join(packedPackage, 'dist', 'cli.js'), '--help'], packedPackage);
-  if (!help.standardOutput.includes('vellum export <file-or-project-directory>')) {
+  if (!help.standardOutput.includes('vellum export <file> --profile <id>')) {
     throw new Error('The packed vellum executable help is incomplete.');
   }
   process.stdout.write(`Verified reproducible ${first.filename} and the vellum executable.\n`);

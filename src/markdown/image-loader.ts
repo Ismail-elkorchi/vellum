@@ -3,6 +3,8 @@ import { open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { crc32, inflateSync } from 'node:zlib';
 import { rasterImage, type RasterImage } from '@ismail-elkorchi/terminal-ui';
+import { BoundedLruMap } from '../cache/lru.js';
+import sharp from 'sharp';
 
 export interface MarkdownImageSettings {
   readonly remoteImages: boolean;
@@ -10,6 +12,8 @@ export interface MarkdownImageSettings {
   readonly maximumEncodedBytes: number;
   readonly maximumWidth: number;
   readonly maximumHeight: number;
+  readonly maximumDecodedCacheEntries: number;
+  readonly maximumRemoteCacheEntries: number;
 }
 
 export type MarkdownImageResult =
@@ -25,8 +29,22 @@ interface RemoteCacheEntry {
 
 export interface MarkdownImageLoader {
   load(destination: string, sourceDocumentPath: string | undefined, signal?: AbortSignal): Promise<MarkdownImageResult>;
-  decode(bytes: Uint8Array, source: string, contentType: string): MarkdownImageResult;
+  decode(bytes: Uint8Array, source: string, contentType: string, signal?: AbortSignal): Promise<MarkdownImageResult>;
+  stats(): { readonly decodedCacheEntries: number; readonly remoteCacheEntries: number };
   clear(): void;
+}
+
+interface DecodedImage {
+  readonly width: number;
+  readonly height: number;
+  readonly format: 'rgba8';
+  readonly data: Uint8Array;
+}
+
+export interface MarkdownImageDecoder {
+  readonly id: string;
+  readonly contentTypes: readonly string[];
+  decode(bytes: Uint8Array, contentType: string, settings: MarkdownImageSettings, signal?: AbortSignal): Promise<DecodedImage>;
 }
 
 const defaults: MarkdownImageSettings = Object.freeze({
@@ -34,15 +52,19 @@ const defaults: MarkdownImageSettings = Object.freeze({
   requestTimeoutMilliseconds: 5_000,
   maximumEncodedBytes: 10_000_000,
   maximumWidth: 4_096,
-  maximumHeight: 4_096
+  maximumHeight: 4_096,
+  maximumDecodedCacheEntries: 128,
+  maximumRemoteCacheEntries: 64
 });
 
 export function createMarkdownImageLoader(
-  settings: Partial<MarkdownImageSettings> = {}
+  settings: Partial<MarkdownImageSettings> = {},
+  decoders: readonly MarkdownImageDecoder[] = builtInImageDecoders()
 ): MarkdownImageLoader {
   const configuration = resolveSettings(settings);
-  const decoded = new Map<string, RasterImage>();
-  const remote = new Map<string, RemoteCacheEntry>();
+  const decoderByContentType = decoderRegistry(decoders);
+  const decoded = new BoundedLruMap<string, RasterImage>(configuration.maximumDecodedCacheEntries);
+  const remote = new BoundedLruMap<string, RemoteCacheEntry>(configuration.maximumRemoteCacheEntries);
   return Object.freeze({
     async load(destination: string, sourceDocumentPath: string | undefined, signal?: AbortSignal) {
       signal?.throwIfAborted();
@@ -53,7 +75,7 @@ export function createMarkdownImageLoader(
             return Object.freeze({ kind: 'failed', message: 'Remote image loading is disabled.', source: destination });
           }
           const result = await fetchRemote(url, configuration, remote, signal);
-          return ready(result.bytes, destination, result.contentType, configuration, decoded);
+          return await ready(result.bytes, destination, result.contentType, configuration, decoded, decoderByContentType, signal);
         }
         if (sourceDocumentPath === undefined && !path.isAbsolute(destination)) {
           return Object.freeze({ kind: 'failed', message: 'A relative image requires a saved source document.', source: destination });
@@ -63,7 +85,7 @@ export function createMarkdownImageLoader(
           : path.resolve(path.dirname(sourceDocumentPath as string), destination);
         const resolved = await realpath(requested);
         const bytes = await readBoundedFile(resolved, configuration.maximumEncodedBytes, signal);
-        return ready(bytes, resolved, mimeFromPath(resolved), configuration, decoded);
+        return await ready(bytes, resolved, mimeFromPath(resolved), configuration, decoded, decoderByContentType, signal);
       } catch (error) {
         if (signal?.aborted === true) throw signal.reason;
         return Object.freeze({
@@ -73,16 +95,20 @@ export function createMarkdownImageLoader(
         });
       }
     },
-    decode(bytes: Uint8Array, source: string, contentType: string) {
+    async decode(bytes: Uint8Array, source: string, contentType: string, signal?: AbortSignal) {
       try {
-        return ready(bytes, source, contentType, configuration, decoded);
+        return await ready(bytes, source, contentType, configuration, decoded, decoderByContentType, signal);
       } catch (error) {
+        if (signal?.aborted === true) throw signal.reason;
         return Object.freeze({
           kind: 'failed',
           message: error instanceof Error ? error.message : String(error),
           source
         });
       }
+    },
+    stats() {
+      return Object.freeze({ decodedCacheEntries: decoded.size, remoteCacheEntries: remote.size });
     },
     clear() {
       decoded.clear();
@@ -91,20 +117,27 @@ export function createMarkdownImageLoader(
   });
 }
 
-function ready(
+async function ready(
   bytes: Uint8Array,
   source: string,
   contentType: string,
   settings: MarkdownImageSettings,
-  cache: Map<string, RasterImage>
-): MarkdownImageResult {
+  cache: BoundedLruMap<string, RasterImage>,
+  decoders: ReadonlyMap<string, MarkdownImageDecoder>,
+  signal?: AbortSignal
+): Promise<MarkdownImageResult> {
+  signal?.throwIfAborted();
   if (bytes.length > settings.maximumEncodedBytes) {
     throw new Error('Encoded image exceeds the configured size limit.');
   }
-  const key = createHash('sha256').update(bytes).digest('hex');
+  const normalizedContentType = contentType.toLowerCase();
+  const decoder = decoders.get(normalizedContentType);
+  if (decoder === undefined) throw new Error(`Unsupported image content type: ${normalizedContentType || 'missing'}.`);
+  const key = createHash('sha256').update(decoder.id).update('\0').update(normalizedContentType).update('\0').update(bytes).digest('hex');
   let image = cache.get(key);
   if (image === undefined) {
-    const decoded = decodeImage(bytes, contentType, settings);
+    const decoded = await decoder.decode(bytes, normalizedContentType, settings, signal);
+    signal?.throwIfAborted();
     image = rasterImage(decoded);
     cache.set(key, image);
   }
@@ -114,7 +147,7 @@ function ready(
 async function fetchRemote(
   url: URL,
   settings: MarkdownImageSettings,
-  cache: Map<string, RemoteCacheEntry>,
+  cache: BoundedLruMap<string, RemoteCacheEntry>,
   signal?: AbortSignal
 ): Promise<RemoteCacheEntry> {
   const previous = cache.get(url.href);
@@ -122,6 +155,7 @@ async function fetchRemote(
   const timeout = setTimeout(() => controller.abort(new Error('Image request timed out.')), settings.requestTimeoutMilliseconds);
   const abort = (): void => controller.abort(signal?.reason);
   signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted === true) abort();
   try {
     const headers = new Headers();
     if (previous?.etag !== undefined) headers.set('If-None-Match', previous.etag);
@@ -130,7 +164,7 @@ async function fetchRemote(
     if (response.status === 304 && previous !== undefined) return previous;
     if (!response.ok) throw new Error(`Image request failed with status ${String(response.status)}.`);
     const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
-    if (!['image/png', 'image/x-portable-pixmap'].includes(contentType)) {
+    if (!supportedRemoteContentTypes.has(contentType)) {
       throw new Error(`Unsupported remote image content type: ${contentType || 'missing'}.`);
     }
     const declared = Number(response.headers.get('content-length'));
@@ -172,18 +206,115 @@ async function fetchRemote(
 }
 
 function mimeFromPath(value: string): string {
-  return path.extname(value).toLowerCase() === '.ppm' ? 'image/x-portable-pixmap' : 'image/png';
+  switch (path.extname(value).toLowerCase()) {
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
+    case '.gif': return 'image/gif';
+    case '.svg': return 'image/svg+xml';
+    case '.ppm': return 'image/x-portable-pixmap';
+    default: return 'application/octet-stream';
+  }
 }
 
-function decodeImage(
+function decodeNativeImage(
   bytes: Uint8Array,
   contentType: string,
   settings: MarkdownImageSettings
-): { readonly width: number; readonly height: number; readonly format: 'rgba8'; readonly data: Uint8Array } {
+): DecodedImage {
   return contentType === 'image/x-portable-pixmap'
     ? decodePpm(bytes, settings)
     : decodePng(bytes, settings);
 }
+
+function builtInImageDecoders(): readonly MarkdownImageDecoder[] {
+  return Object.freeze([
+    Object.freeze({
+      id: 'vellum-png-ppm-1',
+      contentTypes: Object.freeze(['image/png', 'image/x-portable-pixmap']),
+      async decode(bytes: Uint8Array, contentType: string, settings: MarkdownImageSettings, signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        return decodeNativeImage(bytes, contentType, settings);
+      }
+    }),
+    Object.freeze({
+      id: `sharp-${sharp.versions.sharp}`,
+      contentTypes: Object.freeze(['image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']),
+      async decode(bytes: Uint8Array, contentType: string, settings: MarkdownImageSettings, signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        if (contentType === 'image/svg+xml') validateSvg(bytes);
+        const pipeline = sharp(Buffer.from(bytes), {
+          animated: false,
+          failOn: 'error',
+          limitInputPixels: settings.maximumWidth * settings.maximumHeight
+        });
+        const abort = (): void => {
+          pipeline.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        try {
+          const metadata = await pipeline.metadata();
+          if (metadata.width === undefined || metadata.height === undefined) throw new Error('Image dimensions are unavailable.');
+          assertImageDimensions(metadata.width, metadata.height, settings);
+          const result = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+          signal?.throwIfAborted();
+          assertImageDimensions(result.info.width, result.info.height, settings);
+          return Object.freeze({
+            width: result.info.width,
+            height: result.info.height,
+            format: 'rgba8' as const,
+            data: new Uint8Array(result.data)
+          });
+        } finally {
+          signal?.removeEventListener('abort', abort);
+        }
+      }
+    })
+  ]);
+}
+
+function decoderRegistry(decoders: readonly MarkdownImageDecoder[]): ReadonlyMap<string, MarkdownImageDecoder> {
+  const registry = new Map<string, MarkdownImageDecoder>();
+  for (const decoder of decoders) {
+    if (decoder.id.trim().length === 0) throw new TypeError('Image decoder id cannot be empty.');
+    for (const declared of decoder.contentTypes) {
+      const contentType = declared.trim().toLowerCase();
+      if (contentType.length === 0) throw new TypeError(`Image decoder ${decoder.id} has an empty content type.`);
+      if (registry.has(contentType)) throw new Error(`Duplicate image decoder content type: ${contentType}`);
+      registry.set(contentType, decoder);
+    }
+  }
+  return registry;
+}
+
+function validateSvg(bytes: Uint8Array): void {
+  const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  if (!/<svg(?:\s|>)/iu.test(source)) throw new Error('Invalid SVG document.');
+  if (/<(?:script|style|foreignObject|image|iframe|object|embed|audio|video|link)(?:\s|>)/iu.test(source)
+    || /<!DOCTYPE/iu.test(source)
+    || /<\?(?!xml\s)[\s\S]*?\?>/iu.test(source)
+    || /\son[a-z]+\s*=/iu.test(source)
+    || /\sstyle\s*=/iu.test(source)
+    || /@import\b/iu.test(source)) {
+    throw new Error('SVG contains active or externally defined content.');
+  }
+  for (const match of source.matchAll(/\b(?:href|xlink:href)\s*=\s*["']([^"']*)["']/giu)) {
+    if (!(match[1] ?? '').trim().startsWith('#')) throw new Error('SVG contains an external resource reference.');
+  }
+  for (const match of source.matchAll(/url\(\s*["']?\s*([^)'"\s]+)["']?\s*\)/giu)) {
+    if (!(match[1] ?? '').startsWith('#')) throw new Error('SVG contains an external resource reference.');
+  }
+}
+
+const supportedRemoteContentTypes = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'image/svg+xml',
+  'image/x-portable-pixmap'
+]);
 
 function decodePpm(
   bytes: Uint8Array,
@@ -310,7 +441,14 @@ function assertImageDimensions(width: number, height: number, settings: Markdown
 function resolveSettings(settings: Partial<MarkdownImageSettings>): MarkdownImageSettings {
   const value = Object.freeze({ ...defaults, ...settings });
   if (typeof value.remoteImages !== 'boolean') throw new TypeError('remoteImages must be boolean.');
-  for (const key of ['requestTimeoutMilliseconds', 'maximumEncodedBytes', 'maximumWidth', 'maximumHeight'] as const) {
+  for (const key of [
+    'requestTimeoutMilliseconds',
+    'maximumEncodedBytes',
+    'maximumWidth',
+    'maximumHeight',
+    'maximumDecodedCacheEntries',
+    'maximumRemoteCacheEntries'
+  ] as const) {
     if (!Number.isSafeInteger(value[key]) || value[key] < 1) {
       throw new RangeError(`${key} must be a positive integer.`);
     }

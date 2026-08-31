@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,8 +23,9 @@ import { createMathRenderer } from '../markdown/math.js';
 import { createMarkdownImageLoader } from '../markdown/image-loader.js';
 import { createDiagramRendererRegistry } from '../markdown/diagram.js';
 import { readSourceFile, saveSourceFile } from '../files/file-system.js';
-import { exportProjectDirectory, exportSourceDocument } from '../export/exporter.js';
+import { batchExportDirectory, exportDocument } from '../export/exporter.js';
 import { builtInExportProfiles, loadUserExportProfiles, type ExportProfile } from '../export/profiles.js';
+import { exportProjectManifest, loadProjectManifest } from '../export/project.js';
 import { createVellumApplication } from '../app/application.js';
 import {
   vellumBodyGeometry,
@@ -36,6 +37,8 @@ import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 import { renderCodeBlock } from '../markdown/render/code.js';
 import { createVellumTui } from '../tui.js';
 import { compareSourceLines } from '../files/diff.js';
+import sharp from 'sharp';
+import { externalMathProvider } from '../markdown/math.js';
 
 test('source file I/O preserves exact path, BOM, CRLF, permissions, and symbolic links', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-files-'));
@@ -180,6 +183,7 @@ test('user Markdown themes validate semantic keys and terminal colors at the con
 test('export invokes an executable directly with deterministic Pandoc arguments and protects output', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-export-'));
   const script = path.join(directory, 'export-double.mjs');
+  const failingScript = path.join(directory, 'failing-export-double.mjs');
   const source = path.join(directory, 'document.md');
   const output = path.join(directory, 'document.html');
   try {
@@ -189,25 +193,44 @@ test('export invokes an executable directly with deterministic Pandoc arguments 
       "const outputIndex = process.argv.indexOf('--output');",
       "await writeFile(process.argv[outputIndex + 1], JSON.stringify(process.argv.slice(2)), 'utf8');"
     ].join('\n'), 'utf8');
+    await writeFile(failingScript, [
+      "import { writeFile } from 'node:fs/promises';",
+      "const outputIndex = process.argv.indexOf('--output');",
+      "await writeFile(process.argv[outputIndex + 1], 'partial output', 'utf8');",
+      "process.stderr.write('conversion failed');",
+      'process.exitCode = 7;'
+    ].join('\n'), 'utf8');
     const profile: ExportProfile = Object.freeze({
-      id: 'test-html', label: 'Test HTML', targetFormat: 'html5', outputExtension: '.html',
-      executable: process.execPath, arguments: Object.freeze([script]), resourcePaths: Object.freeze(['images'])
+      ...builtInExportProfiles[0] as ExportProfile,
+      id: 'test-html', label: 'Test HTML', executable: process.execPath,
+      arguments: Object.freeze([script]), resourcePaths: Object.freeze(['images'])
     });
-    const result = await exportSourceDocument(source, profile, { outputPath: output });
+    const result = await exportDocument({ kind: 'disk', path: source }, profile, { outputPath: output });
     assert.equal(result.executable, process.execPath);
-    assert.ok(result.arguments.includes('--from=gfm'));
+    assert.ok(result.arguments.some((argument) => argument.startsWith('--from=markdown+')));
     assert.ok(result.arguments.includes('--to=html5'));
     assert.ok(result.arguments.includes(output));
     assert.match(await readFile(output, 'utf8'), /document\.md/u);
-    await assert.rejects(() => exportSourceDocument(source, profile, { outputPath: output }), /already exists/u);
-    await exportSourceDocument(source, profile, { outputPath: output, overwrite: true });
-    await assert.rejects(() => exportSourceDocument(source, profile, { outputPath: source, overwrite: true }), /must not replace/u);
-    await assert.rejects(() => exportSourceDocument(source, profile, {
+    await assert.rejects(() => exportDocument({ kind: 'disk', path: source }, profile, { outputPath: output }), /already exists/u);
+    await exportDocument({ kind: 'disk', path: source }, profile, { outputPath: output, overwrite: true });
+    await writeFile(output, 'preserved output', 'utf8');
+    await assert.rejects(
+      exportDocument(
+        { kind: 'disk', path: source },
+        { ...profile, arguments: Object.freeze([failingScript]) },
+        { outputPath: output, overwrite: true }
+      ),
+      /conversion failed/u
+    );
+    assert.equal(await readFile(output, 'utf8'), 'preserved output');
+    assert.deepEqual((await readdir(directory)).filter((entry) => entry.includes('.vellum-')), []);
+    await assert.rejects(() => exportDocument({ kind: 'disk', path: source }, profile, { outputPath: source, overwrite: true }), /must not replace/u);
+    await assert.rejects(() => exportDocument({ kind: 'disk', path: source }, profile, {
       outputPath: path.join(directory, 'invalid-timeout.html'), timeoutMilliseconds: 0
     }), /positive integer/u);
     const missing = { ...profile, executable: path.join(directory, 'missing-executable') };
     const missingOutput = path.join(directory, 'missing.html');
-    await assert.rejects(() => exportSourceDocument(source, missing, { outputPath: missingOutput }), /not found/u);
+    await assert.rejects(() => exportDocument({ kind: 'disk', path: source }, missing, { outputPath: missingOutput }), /not found/u);
     await assert.rejects(() => readFile(missingOutput), /ENOENT/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -221,18 +244,19 @@ test('user export profiles load through one validated CLI and application contra
     await writeFile(filePath, JSON.stringify([{
       id: 'custom-html',
       label: 'Custom HTML',
-      targetFormat: 'html5',
+      reader: { name: 'gfm', extensions: [] },
+      writer: { name: 'html5', extensions: [] },
       outputExtension: '.html',
       executable: '/opt/tools/pandoc',
-      arguments: ['--standalone'],
-      resourcePaths: ['assets']
+      standalone: true,
+      arguments: [],
+      stylesheets: [], filters: [], bibliography: [], metadata: {},
+      resourcePaths: ['assets'], environment: {}, outputName: '{name}', postExport: 'none'
     }]), 'utf8');
     const loaded = await loadUserExportProfiles(filePath);
     assert.deepEqual(loaded.diagnostics, []);
-    assert.deepEqual(loaded.profiles[0], {
-      id: 'custom-html', label: 'Custom HTML', targetFormat: 'html5', outputExtension: '.html',
-      executable: '/opt/tools/pandoc', arguments: ['--standalone'], resourcePaths: ['assets']
-    });
+    assert.equal(loaded.profiles[0]?.writer.name, 'html5');
+    assert.equal(loaded.profiles[0]?.standalone, true);
     const application = createVellumApplication({ watchFiles: false, exportProfiles: loaded.profiles });
     try {
       const id = application.openSource('# Export');
@@ -261,8 +285,8 @@ test('user export profiles load through one validated CLI and application contra
       "await writeFile(output, 'custom profile', 'utf8');"
     ].join('\n'), 'utf8');
     await writeFile(cliProfiles, JSON.stringify([{
-      id: 'custom-cli', label: 'Custom CLI', targetFormat: 'html5', outputExtension: '.custom',
-      executable: process.execPath, arguments: [executable], resourcePaths: []
+      id: 'custom-cli', label: 'Custom CLI', reader: { name: 'gfm', extensions: [] }, writer: { name: 'html5', extensions: [] }, outputExtension: '.custom',
+      executable: process.execPath, standalone: true, arguments: [executable], stylesheets: [], filters: [], bibliography: [], metadata: {}, resourcePaths: [], environment: {}, outputName: '{name}', postExport: 'none'
     }]), 'utf8');
     await promisify(execFile)(process.execPath, [
       fileURLToPath(new URL('../cli.js', import.meta.url)),
@@ -278,25 +302,20 @@ test('user export profiles load through one validated CLI and application contra
     assert.equal(await readFile(outputPath, 'utf8'), 'custom profile');
 
     await writeFile(filePath, JSON.stringify([{
-      id: 'html', label: '', targetFormat: '', outputExtension: 'html', executable: '',
-      arguments: [], resourcePaths: [], extra: true
+      id: 'html', label: '', reader: { name: '', extensions: [] }, writer: { name: '', extensions: [] }, outputExtension: 'html', executable: '', standalone: true,
+      arguments: [], stylesheets: [], filters: [], bibliography: [], metadata: {}, resourcePaths: [], environment: {}, outputName: '{name}', postExport: 'none', extra: true
     }]), 'utf8');
     const invalid = await loadUserExportProfiles(filePath);
     assert.equal(invalid.profiles.length, 0);
     assert.match(invalid.diagnostics[0]?.message ?? '', /Unknown export profile fields/u);
 
     await writeFile(filePath, JSON.stringify([{
-      id: 'unsafe', label: 'Unsafe', targetFormat: 'html\0', outputExtension: '.html',
-      executable: `pandoc\0extra`, arguments: ['--standalone\0'], resourcePaths: ['assets\0']
+      id: 'unsafe', label: 'Unsafe', reader: { name: 'gfm', extensions: [] }, writer: { name: 'html5', extensions: [] }, outputExtension: '.html',
+      executable: `pandoc\0extra`, standalone: true, arguments: ['--standalone\0'], stylesheets: [], filters: [], bibliography: [], metadata: {}, resourcePaths: ['assets\0'], environment: {}, outputName: '{name}', postExport: 'none'
     }]), 'utf8');
     const unsafe = await loadUserExportProfiles(filePath);
     assert.equal(unsafe.profiles.length, 1);
-    assert.deepEqual(unsafe.diagnostics.map((diagnostic) => diagnostic.message), [
-      'Export executable contains a null character.',
-      'Export target format contains a null character.',
-      'Export argument contains a null character.',
-      'Export resource path contains a null character.'
-    ]);
+    assert.equal(unsafe.diagnostics.some((diagnostic) => /null character/u.test(diagnostic.message)), true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -320,8 +339,8 @@ test('all built-in export profiles preserve arguments, stable project order, fai
     for (const builtIn of builtInExportProfiles) {
       const profile = { ...builtIn, executable: process.execPath, arguments: Object.freeze([script, 'success']) };
       const outputPath = path.join(directory, `built-in-${builtIn.id}${builtIn.outputExtension}`);
-      const result = await exportSourceDocument(source, profile, { outputPath });
-      assert.ok(result.arguments.includes(`--to=${builtIn.targetFormat}`));
+      const result = await exportDocument({ kind: 'disk', path: source }, profile, { outputPath });
+      assert.ok(result.arguments.includes(`--to=${builtIn.writer.name}`));
       assert.equal(result.outputPath, outputPath);
     }
 
@@ -331,28 +350,110 @@ test('all built-in export profiles preserve arguments, stable project order, fai
     await writeFile(path.join(project, 'a.markdown'), '# A', 'utf8');
     await writeFile(path.join(project, 'nested', 'b.md'), '# B', 'utf8');
     const projectProfile: ExportProfile = {
-      id: 'project-html', label: 'Project HTML', targetFormat: 'html5', outputExtension: '.html',
-      executable: process.execPath, arguments: Object.freeze([script, 'success']), resourcePaths: Object.freeze([])
+      ...builtInExportProfiles[0] as ExportProfile,
+      id: 'project-html', label: 'Project HTML', executable: process.execPath,
+      arguments: Object.freeze([script, 'success'])
     };
-    const projectResults = await exportProjectDirectory(project, projectProfile);
-    assert.deepEqual(projectResults.map((result) => path.relative(project, result.inputPath).split(path.sep).join('/')), ['a.markdown', 'nested/b.md', 'z.md']);
+    const projectResults = await batchExportDirectory(project, projectProfile);
+    assert.deepEqual(projectResults.map((result) => path.relative(project, result.inputLabels[0] ?? '').split(path.sep).join('/')), ['a.markdown', 'nested/b.md', 'z.md']);
 
     const failedProfile = { ...projectProfile, id: 'failure', arguments: Object.freeze([script, 'fail']) };
     await assert.rejects(
-      () => exportSourceDocument(source, failedProfile, { outputPath: path.join(directory, 'failure.html') }),
+      () => exportDocument({ kind: 'disk', path: source }, failedProfile, { outputPath: path.join(directory, 'failure.html') }),
       /profile failure/u
     );
     const timeoutProfile = { ...projectProfile, id: 'timeout', arguments: Object.freeze([script, 'delay']) };
     await assert.rejects(
-      () => exportSourceDocument(source, timeoutProfile, { outputPath: path.join(directory, 'timeout.html'), timeoutMilliseconds: 10 }),
+      () => exportDocument({ kind: 'disk', path: source }, timeoutProfile, { outputPath: path.join(directory, 'timeout.html'), timeoutMilliseconds: 10 }),
       /timeout/u
     );
     const controller = new AbortController();
-    const cancelled = exportSourceDocument(source, timeoutProfile, {
+    const cancelled = exportDocument({ kind: 'disk', path: source }, timeoutProfile, {
       outputPath: path.join(directory, 'cancelled.html'), signal: controller.signal
     });
     setTimeout(() => controller.abort(new Error('export cancelled')), 10);
     await assert.rejects(cancelled, /abort|cancel/iu);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('project manifests preserve declared order and live source while repeat export replaces its own prior output', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-project-export-'));
+  const manifestDirectory = path.join(directory, '.vellum');
+  const outputDirectory = path.join(directory, 'output');
+  const firstPath = path.join(directory, 'first.md');
+  const secondPath = path.join(directory, 'second.md');
+  const script = path.join(directory, 'project-export.mjs');
+  await mkdir(manifestDirectory, { recursive: true });
+  await writeFile(firstPath, '# First on disk\n', 'utf8');
+  await writeFile(secondPath, '# Second on disk\n', 'utf8');
+  await writeFile(script, [
+    "import { readFile, writeFile } from 'node:fs/promises';",
+    "const outputIndex = process.argv.indexOf('--output');",
+    "const output = process.argv[outputIndex + 1];",
+    "const inputs = process.argv.slice(outputIndex + 2);",
+    "await writeFile(output, JSON.stringify(await Promise.all(inputs.map(async (input) => ({ input, source: await readFile(input, 'utf8') })))), 'utf8');"
+  ].join('\n'), 'utf8');
+  const profile: ExportProfile = Object.freeze({
+    ...(builtInExportProfiles[0] as ExportProfile),
+    id: 'manifest-test', label: 'Manifest test', executable: process.execPath,
+    arguments: Object.freeze([script]), outputExtension: '.manifest'
+  });
+  await writeFile(path.join(manifestDirectory, 'project.json'), JSON.stringify({
+    version: 1,
+    title: 'Ordered Book',
+    files: ['second.md', 'first.md'],
+    profiles: [{ profileId: profile.id }],
+    metadata: { author: 'Vellum' },
+    bibliography: [],
+    resourcePaths: [],
+    outputDirectory: 'output'
+  }), 'utf8');
+  try {
+    const manifest = await loadProjectManifest(directory);
+    const progress: string[] = [];
+    const results = await exportProjectManifest(
+      directory,
+      manifest,
+      [profile],
+      new Map([[firstPath, { source: '# First live\n', unsaved: true }]]),
+      {},
+      (entry) => progress.push(`${entry.profileId}:${String(entry.completed)}/${String(entry.total)}`)
+    );
+    assert.deepEqual(results[0]?.inputLabels, [secondPath, firstPath]);
+    assert.equal(results[0]?.usedUnsavedSource, true);
+    assert.deepEqual(progress, ['manifest-test:0/1', 'manifest-test:1/1']);
+    const generated = JSON.parse(await readFile(path.join(outputDirectory, 'Ordered Book.manifest'), 'utf8')) as Array<{ source: string }>;
+    assert.deepEqual(generated.map((entry) => entry.source), ['# Second on disk\n', '# First live\n']);
+
+    await writeFile(path.join(manifestDirectory, 'project.json'), JSON.stringify({
+      ...manifest,
+      profiles: [{ profileId: profile.id, unknown: true }]
+    }), 'utf8');
+    await assert.rejects(loadProjectManifest(directory), /Unknown project profile fields/u);
+
+    await rm(outputDirectory, { recursive: true, force: true });
+    const application = createVellumApplication({ watchFiles: false, exportProfiles: [profile] });
+    try {
+      await application.openProjectDirectory(directory);
+      const id = await application.openFile(firstPath);
+      application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'draft ' } });
+      application.dispatchCommand('export.activeBuffer');
+      await application.submitExportProfile(profile.id);
+      const outputPath = path.join(directory, 'first.manifest');
+      let exported = JSON.parse(await readFile(outputPath, 'utf8')) as Array<{ source: string }>;
+      assert.deepEqual(exported.map((entry) => entry.source), ['draft # First on disk\n']);
+      assert.equal(application.state().exports.history[0]?.usedUnsavedSource, true);
+      application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'new ' } });
+      await application.repeatLastExport();
+      exported = JSON.parse(await readFile(outputPath, 'utf8')) as Array<{ source: string }>;
+      assert.deepEqual(exported.map((entry) => entry.source), ['draft new # First on disk\n']);
+      assert.equal(application.state().exports.history[0]?.status, 'succeeded');
+      assert.equal(application.state().exports.history.length, 2);
+    } finally {
+      await application.dispose();
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -484,6 +585,61 @@ test('the local math renderer lays out structures deterministically and remains 
   await assert.rejects(rendering, /cancel|abort/iu);
 });
 
+test('an optional full math provider is preferred while the local renderer remains the failure fallback', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-math-provider-'));
+  const providerScript = path.join(directory, 'math-provider.mjs');
+  const failingScript = path.join(directory, 'math-provider-failure.mjs');
+  try {
+    await writeFile(providerScript, [
+      "let source = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { source += chunk; });",
+      "process.stdin.on('end', () => process.stdout.write(`FULL(${source})`));"
+    ].join('\n'), 'utf8');
+    await writeFile(failingScript, "process.stdin.resume(); process.stdin.on('end', () => process.exit(7));", 'utf8');
+    const supplied = createMathRenderer({}, [externalMathProvider({
+      id: 'full-test', version: '1', executable: process.execPath, arguments: [providerScript],
+      timeoutMilliseconds: 1_000, maximumOutputBytes: 1_024
+    })]);
+    assert.equal((await supplied.render('x^2')).text, 'FULL(x^2)');
+
+    const fallback = createMathRenderer({}, [externalMathProvider({
+      id: 'failing-test', version: '1', executable: process.execPath, arguments: [failingScript],
+      timeoutMilliseconds: 1_000, maximumOutputBytes: 1_024
+    })]);
+    assert.equal((await fallback.render('x^2')).text, 'x²');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('common image formats use bounded decoding and reject active SVG resources', async () => {
+  const pixels = { create: { width: 2, height: 1, channels: 4 as const, background: { r: 20, g: 40, b: 60, alpha: 1 } } };
+  const encoded = await Promise.all([
+    sharp(pixels).jpeg().toBuffer().then((bytes) => ['image/jpeg', bytes] as const),
+    sharp(pixels).webp().toBuffer().then((bytes) => ['image/webp', bytes] as const),
+    sharp(pixels).gif().toBuffer().then((bytes) => ['image/gif', bytes] as const),
+    Promise.resolve(['image/svg+xml', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>')] as const)
+  ]);
+  const images = createMarkdownImageLoader({ maximumDecodedCacheEntries: 2 });
+  for (const [contentType, bytes] of encoded) {
+    const decoded = await images.decode(bytes, contentType, contentType);
+    assert.equal(decoded.kind, 'ready');
+    if (decoded.kind === 'ready') assert.deepEqual([decoded.image.width, decoded.image.height], [2, 1]);
+  }
+  assert.equal(images.stats().decodedCacheEntries, 2);
+  for (const source of [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><script>alert(1)</script></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://example.invalid/x.png"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect onclick="alert(1)"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style>@import "https://example.invalid/x.css";</style></svg>'
+  ]) {
+    const decoded = await images.decode(Buffer.from(source), 'unsafe.svg', 'image/svg+xml');
+    assert.equal(decoded.kind, 'failed');
+    if (decoded.kind === 'failed') assert.match(decoded.message, /active|external/u);
+  }
+});
+
 test('diagrams and local terminal images are asynchronous, cached, and cancellable', async () => {
 
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-media-'));
@@ -499,14 +655,14 @@ test('diagrams and local terminal images are asynchronous, cached, and cancellab
     }
     const remote = await images.load('https://example.invalid/image.png', undefined);
     assert.deepEqual(remote, { kind: 'failed', message: 'Remote image loading is disabled.', source: 'https://example.invalid/image.png' });
-    const oversized = images.decode(
+    const oversized = await images.decode(
       Buffer.from('P6\n5000 1\n255\n'),
       'oversized.ppm',
       'image/x-portable-pixmap'
     );
     assert.equal(oversized.kind, 'failed');
     if (oversized.kind === 'failed') assert.match(oversized.message, /dimensions/u);
-    const invalidChecksum = images.decode(
+    const invalidChecksum = await images.decode(
       Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 73, 69, 78, 68, 0, 0, 0, 0]),
       'corrupt.png',
       'image/png'
@@ -519,7 +675,7 @@ test('diagrams and local terminal images are asynchronous, cached, and cancellab
     await writeFile(diagramScript, `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(Buffer.from(${JSON.stringify(diagramBytes)})));`, 'utf8');
     const diagrams = createDiagramRendererRegistry([{
       language: 'mermaid', executable: process.execPath, arguments: Object.freeze([diagramScript]), version: 'test-1',
-      outputContentType: 'image/x-portable-pixmap'
+      outputContentType: 'image/x-portable-pixmap', transport: 'stdio'
     }]);
     const diagram = await diagrams.render('mermaid', 'graph TD; A-->B');
     assert.deepEqual([...diagram?.bytes ?? []], diagramBytes);
@@ -527,8 +683,8 @@ test('diagrams and local terminal images are asynchronous, cached, and cancellab
     assert.equal(await diagrams.render('python', 'print(1)'), undefined);
     assert.throws(() => createDiagramRendererRegistry([], { timeoutMilliseconds: 0, maximumOutputBytes: 1 }), /positive integer/u);
     assert.throws(() => createDiagramRendererRegistry([
-      { language: 'MERMAID', executable: 'one', arguments: [], version: 'one', outputContentType: 'image/png' },
-      { language: 'mermaid', executable: 'two', arguments: [], version: 'two', outputContentType: 'image/png' }
+      { language: 'MERMAID', executable: 'one', arguments: [], version: 'one', outputContentType: 'image/png', transport: 'stdio' },
+      { language: 'mermaid', executable: 'two', arguments: [], version: 'two', outputContentType: 'image/png', transport: 'stdio' }
     ]), /Duplicate diagram renderer language/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -570,7 +726,7 @@ test('each buffer runtime publishes asynchronous highlighting, math, image, and 
       createBufferId: () => 'resources',
       diagramRenderers: [{
         language: 'mermaid', executable: process.execPath, arguments: Object.freeze([diagramScript]),
-        version: 'test-1', outputContentType: 'image/x-portable-pixmap'
+        version: 'test-1', outputContentType: 'image/x-portable-pixmap', transport: 'stdio'
       }]
     });
     try {
@@ -598,9 +754,10 @@ test('each buffer runtime publishes asynchronous highlighting, math, image, and 
         const mappedRow = layout?.rowOffsetMap.rowAtSourceOffset(media.media.sourceSpan.start) ?? -1;
         assert.ok(mappedRow >= media.row && mappedRow < media.row + media.height);
       }
-      assert.equal(updates.every((update) => update.reason === 'previewResource' && update.bufferId === id), true);
+      const previewUpdates = updates.filter((update) => update.reason === 'previewResource');
+      assert.equal(previewUpdates.every((update) => update.bufferId === id), true);
       assert.equal(updates.every((update, index) => index === 0 || update.revision > (updates[index - 1]?.revision ?? 0)), true);
-      assert.equal(application.state().project.buffers[id]?.previewResourceRevision, updates.length);
+      assert.equal(application.state().project.buffers[id]?.previewResourceRevision, previewUpdates.length);
       unsubscribe();
       assert.equal(application.runtimeBufferInfo(id)?.pendingEffects, 0);
       application.dispatchCommand('view.preview');

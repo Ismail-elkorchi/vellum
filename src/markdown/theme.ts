@@ -102,7 +102,13 @@ export async function loadUserMarkdownTheme(
     if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return Object.freeze({ theme: base, diagnostics: Object.freeze([]) });
     }
-    throw error;
+    return Object.freeze({
+      theme: base,
+      diagnostics: Object.freeze([{
+        key: '',
+        message: `Markdown theme could not be loaded: ${error instanceof Error ? error.message : String(error)}`
+      }])
+    });
   }
   try {
     return validateMarkdownTheme(JSON.parse(source) as unknown, base);

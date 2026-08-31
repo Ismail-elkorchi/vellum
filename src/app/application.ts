@@ -23,6 +23,7 @@ import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { TreeTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   defaultTextWidthProfile,
+  createTextChangeSet,
   textCaretAt,
   textDocumentSelectionBetween,
   textDocumentText
@@ -38,6 +39,7 @@ import type {
   ClosedBufferRecord,
   ExternalFileFingerprint,
   ExternalFileState,
+  ExportHistoryEntry,
   FileFormat,
   FilePathDialogState,
   NavigationLocation
@@ -65,7 +67,8 @@ import {
   validateExportProfiles,
   type ExportProfile
 } from '../export/profiles.js';
-import { exportProjectDirectory, exportSourceDocument } from '../export/exporter.js';
+import { batchExportDirectory, exportDocument, type ExportResult } from '../export/exporter.js';
+import { exportProjectManifest, loadProjectManifest } from '../export/project.js';
 import {
   automaticMarkdownTransition,
   listIndentTransition,
@@ -80,17 +83,41 @@ import {
 } from '../files/file-system.js';
 import {
   commitDirectoryNodes,
-  commitIndexedFiles,
   clearDirectoryLoading,
   createFileTreeState,
-  indexProjectFiles,
-  indexedFilePaths,
+  cycleFileTreeSort,
   markDirectoryLoading,
   reduceFileTree,
-  readDirectoryNodes
+  readDirectoryNodes,
+  setFileTreeFilter
 } from '../project/file-tree.js';
+import {
+  buildProjectIndex,
+  emptyProjectIndex,
+  overlayOpenBuffers,
+  updateProjectIndexPaths,
+  type ProjectIndexSettings
+} from '../project/index.js';
 import { createBufferParser, type BufferParser } from '../markdown/preview.js';
 import { compareSourceLines, type DiffLine } from '../files/diff.js';
+import {
+  copyTextToClipboard,
+  createProjectDirectory as createProjectDirectoryOnDisk,
+  createProjectFile as createProjectFileOnDisk,
+  duplicateProjectPath as duplicateProjectPathOnDisk,
+  executeProjectFileTransaction,
+  moveProjectPath as moveProjectPathOnDisk,
+  planProjectMoveLinkChanges,
+  revealProjectPath,
+  resolveProjectPath,
+  trashProjectPath
+} from '../files/project-operations.js';
+import {
+  findUnusedAssets,
+  importAssetFile,
+  importClipboardImage,
+  markdownAssetReference
+} from '../files/assets.js';
 import {
   location,
   navigateBack,
@@ -115,29 +142,34 @@ import { darkTerminalMarkdownTheme, type MarkdownTheme } from '../markdown/theme
 import {
   createHybridTextDecorations,
 } from '../markdown/hybrid.js';
+import type { CodeHighlighter, CodeHighlightLanguage, CodeHighlightSettings } from '../markdown/highlight.js';
+import type { MathRenderer, MathRenderProvider, MathRenderSettings } from '../markdown/math.js';
+import type { DiagramRendererDefinition, DiagramRendererRegistry } from '../markdown/diagram.js';
 import {
-  createCodeHighlighter,
-  builtInCodeHighlightLanguages,
-  type CodeHighlighter,
-  type CodeHighlightLanguage,
-  type CodeHighlightSettings
-} from '../markdown/highlight.js';
-import { createMathRenderer, type MathRenderer } from '../markdown/math.js';
-import {
-  createDiagramRendererRegistry,
-  type DiagramRendererDefinition,
-  type DiagramRendererRegistry
-} from '../markdown/diagram.js';
-import {
-  createMarkdownImageLoader,
   type MarkdownImageLoader,
   type MarkdownImageResult,
   type MarkdownImageSettings
 } from '../markdown/image-loader.js';
 import {
-  recoverApplicationSeed,
+  createPreviewResourcePool,
+  type PreviewResourcePool,
+  type PreviewResourcePoolStats
+} from '../markdown/resource-pool.js';
+import {
+  type RecoveryJournal,
   type RecoveryStore
 } from '../recovery/recovery.js';
+import type { SessionRecord, SessionStore } from '../session/session.js';
+import { restoreApplicationSeed } from '../session/restore.js';
+import {
+  builtInDiagnosticProviders,
+  addPersonalDictionaryWord,
+  collectDiagnostics,
+  exportDiagnosticProvider,
+  type DiagnosticProvider,
+  type WordDictionary
+} from '../diagnostics/service.js';
+import { defaultVellumConfigurationDirectory } from '../config/paths.js';
 
 interface BufferRuntime {
   parser: BufferParser;
@@ -157,6 +189,7 @@ interface BufferRuntime {
   readonly resourceRefreshWaiters: Array<{ revision: number; resolve(): void; reject(error: unknown): void }>;
   lastPreviewLayout: MarkdownPreviewLayout | undefined;
   hybridDecorations: HybridDecorationCache | undefined;
+  diagnosticController: AbortController | undefined;
 }
 
 type PreviewResourceCompletion =
@@ -171,12 +204,17 @@ interface HybridDecorationCache {
   readonly selectionStart?: number;
   readonly selectionEnd?: number;
   readonly previewIdentity: object;
+  readonly focusMode: boolean;
+  readonly resourceRevision: number;
+  readonly widthProfile: TextWidthProfile;
   readonly decorations: TextAreaDecorations;
 }
 
 function hybridDecorationCache(
   buffer: BufferState,
   decorations: TextAreaDecorations,
+  focusMode: boolean,
+  widthProfile: TextWidthProfile,
 ): HybridDecorationCache {
   const selection = buffer.editor.selection;
   return Object.freeze({
@@ -187,6 +225,9 @@ function hybridDecorationCache(
       selectionEnd: selection.focus.offset,
     }),
     previewIdentity: buffer.preview.kind === 'ready' ? buffer.preview.identity : buffer.preview,
+    focusMode,
+    resourceRevision: buffer.previewResourceRevision,
+    widthProfile,
     decorations,
   });
 }
@@ -194,6 +235,8 @@ function hybridDecorationCache(
 function hybridDecorationCacheMatches(
   cache: HybridDecorationCache | undefined,
   buffer: BufferState,
+  focusMode: boolean,
+  widthProfile: TextWidthProfile,
 ): cache is HybridDecorationCache {
   const selection = buffer.editor.selection;
   return cache !== undefined
@@ -201,6 +244,9 @@ function hybridDecorationCacheMatches(
     && cache.caretOffset === buffer.editor.caret.position.offset
     && cache.selectionStart === selection?.anchor.offset
     && cache.selectionEnd === selection?.focus.offset
+    && cache.focusMode === focusMode
+    && cache.resourceRevision === buffer.previewResourceRevision
+    && cache.widthProfile === widthProfile
     && cache.previewIdentity === (buffer.preview.kind === 'ready' ? buffer.preview.identity : buffer.preview);
 }
 
@@ -209,21 +255,35 @@ export interface VellumApplicationOptions {
   readonly watchFiles?: boolean;
   readonly createBufferId?: () => BufferId;
   readonly initialState?: AppState;
+  readonly sessionStore?: SessionStore;
   readonly recoveryStore?: RecoveryStore;
-  readonly recoveryDelayMilliseconds?: number;
+  readonly recoveryJournal?: RecoveryJournal;
+  readonly sessionRecord?: SessionRecord;
+  readonly persistenceDelayMilliseconds?: number;
+  readonly startupDiagnostics?: readonly import('./types.js').ConfigurationDiagnostic[];
+  readonly projectIndexSettings?: Partial<ProjectIndexSettings>;
+  readonly diagnosticProviders?: readonly DiagnosticProvider[];
+  readonly wordDictionary?: WordDictionary;
+  readonly personalDictionaryPath?: string;
   readonly diagramRenderers?: readonly DiagramRendererDefinition[];
   readonly imageSettings?: Partial<MarkdownImageSettings>;
+  readonly mathSettings?: Partial<MathRenderSettings>;
+  readonly mathProviders?: readonly MathRenderProvider[];
   readonly highlightLanguages?: readonly CodeHighlightLanguage[];
   readonly highlightSettings?: Partial<CodeHighlightSettings>;
   readonly openExternalLink?: (url: URL, signal?: AbortSignal) => Promise<void>;
   readonly exportProfiles?: readonly ExportProfile[];
   readonly markdownTheme?: MarkdownTheme;
+  readonly previewResourcePool?: PreviewResourcePool;
 }
 
 export type VellumApplicationUpdateReason =
   | 'previewResource'
   | 'externalFileRevision'
-  | 'recoveryFailure'
+  | 'projectIndex'
+  | 'diagnostics'
+  | 'export'
+  | 'persistenceFailure'
   | 'backgroundFailure';
 
 export interface VellumApplicationUpdate {
@@ -250,11 +310,26 @@ export interface VellumApplication {
   activateBuffer(bufferId: BufferId): void;
   applyFileTreeTransition(transition: TreeTransition): Promise<void>;
   activateFileTreeNode(nodeId: string): Promise<void>;
+  createProjectFile(requestedPath: string, source?: string): Promise<BufferId>;
+  createProjectDirectory(requestedPath: string): Promise<string>;
+  moveProjectEntry(sourcePath: string, destinationPath: string, updateLinks?: boolean): Promise<void>;
+  duplicateProjectEntry(sourcePath: string, destinationPath: string): Promise<void>;
+  trashProjectEntry(requestedPath: string): Promise<void>;
+  copyProjectPath(requestedPath: string, relative: boolean): Promise<void>;
+  importProjectAsset(sourcePath: string, assetDirectory?: string): Promise<string>;
+  importClipboardAsset(assetDirectory?: string): Promise<string>;
+  refreshUnusedAssets(): Promise<readonly string[]>;
+  refreshProjectEntry(requestedPath: string): Promise<void>;
+  revealProjectEntry(requestedPath: string): Promise<void>;
+  setProjectTreeFilter(filter: string): void;
+  cycleProjectTreeSort(): void;
+  toggleProjectPin(): void;
   dispatchCommand(commandId: import('./types.js').CommandId): AppUpdate;
   updateFilePathDialog(transition: CommandInputTransition): void;
-  submitFilePathDialog(value?: string): Promise<boolean>;
+  submitFilePathDialog(value?: string, signal?: AbortSignal): Promise<boolean>;
   updateSelectionDialog(transition: CommandInputTransition): void;
-  submitSelectionDialog(value?: string): Promise<void>;
+  submitSelectionDialog(value?: string, signal?: AbortSignal): Promise<void>;
+  restoreRecoveryGeneration(generation: number, signal?: AbortSignal): Promise<void>;
   updateDocumentSearch(field: 'query' | 'replacement', transition: CommandInputTransition): void;
   configureDocumentSearch(option: 'regularExpression' | 'caseSensitive' | 'wholeWord' | 'selectionOnly'): void;
   navigateDocumentSearch(direction: 'next' | 'previous'): void;
@@ -270,6 +345,9 @@ export interface VellumApplication {
   activatePreview(bufferId: BufferId, target: MarkdownPreviewActivation, signal?: AbortSignal): Promise<void>;
   updateExportProfile(transition: CommandInputTransition): void;
   submitExportProfile(value?: string, signal?: AbortSignal): Promise<void>;
+  runProjectManifestExport(signal?: AbortSignal): Promise<void>;
+  repeatLastExport(signal?: AbortSignal): Promise<void>;
+  cancelExport(): void;
   dismissDialog(): void;
   resizeSplitPane(transition: SplitPaneTransition): void;
   resizeTerminal(previous: TerminalSize, next: TerminalSize, widthProfile: TextWidthProfile): void;
@@ -294,6 +372,7 @@ export interface VellumApplication {
   navigateTo(bufferId: BufferId, sourceOffset: number, recordHistory?: boolean, selection?: import('markspan').SourceSpan): void;
   navigateHistory(direction: 'back' | 'forward'): void;
   runtimeBufferInfo(bufferId: BufferId): RuntimeBufferInfo | undefined;
+  previewResourceStats(): PreviewResourcePoolStats;
   markdownTheme(): MarkdownTheme;
   hybridDecorations(bufferId: BufferId): TextAreaDecorations;
   previewLayout(
@@ -310,7 +389,16 @@ export interface VellumApplication {
     widthProfile?: TextWidthProfile,
   ): MarkdownPreviewLayout | undefined;
   refreshPreviewResources(bufferId: BufferId): Promise<void>;
-  persistRecoveryRecord(): Promise<void>;
+  refreshDiagnostics(bufferId: BufferId): Promise<void>;
+  applyDiagnosticFix(bufferId: BufferId, diagnosticId: string, fixIndex?: number): void;
+  navigateDiagnostic(bufferId: BufferId, direction: 'next' | 'previous'): void;
+  applyCurrentDiagnosticFix(): void;
+  ignoreCurrentDiagnosticRule(): void;
+  cycleDiagnosticSeverity(): void;
+  cycleDiagnosticSource(): void;
+  refreshProjectDiagnostics(): Promise<void>;
+  addCurrentWordToDictionary(): Promise<void>;
+  persistState(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -333,20 +421,73 @@ function instantiateVellumApplication(
   restoredParsers: ReadonlyMap<BufferId, BufferParser> = new Map()
 ): VellumApplication {
   let state = options.initialState ?? initialAppState();
+  if ((options.startupDiagnostics?.length ?? 0) > 0) {
+    state = Object.freeze({
+      ...state,
+      configurationDiagnostics: Object.freeze([
+        ...state.configurationDiagnostics,
+        ...(options.startupDiagnostics ?? [])
+      ]),
+      notice: Object.freeze({
+        status: 'warning',
+        message: `${String(options.startupDiagnostics?.length ?? 0)} configuration or restoration diagnostic${options.startupDiagnostics?.length === 1 ? '' : 's'} available.`
+      })
+    });
+  }
+  if ((options.recoveryJournal?.snapshots.length ?? 0) > 1) {
+    state = Object.freeze({
+      ...state,
+      dialogState: Object.freeze({
+        kind: 'recoverySelection',
+        command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) }),
+        entries: Object.freeze((options.recoveryJournal?.snapshots ?? []).toReversed().map((snapshot) => Object.freeze({
+          id: String(snapshot.generation),
+          label: `Generation ${String(snapshot.generation)} · ${snapshot.timestamp}`,
+          detail: snapshot.buffers.map((buffer) => `${buffer.label} (${String(buffer.source.length)} UTF-16 units)`).join(', '),
+          generation: snapshot.generation
+        })))
+      })
+    });
+  }
   const exportProfiles = Object.freeze([...builtInExportProfiles, ...(options.exportProfiles ?? [])]);
+  const diagnosticProviders = options.diagnosticProviders ?? Object.freeze([
+    ...builtInDiagnosticProviders(options.wordDictionary),
+    exportDiagnosticProvider(exportProfiles)
+  ]);
   const markdownTheme = options.markdownTheme ?? darkTerminalMarkdownTheme;
+  const personalDictionaryPath = options.personalDictionaryPath
+    ?? path.join(defaultVellumConfigurationDirectory(), 'personal-dictionary.txt');
+  const ownsPreviewResourcePool = options.previewResourcePool === undefined;
+  const previewResourcePool = options.previewResourcePool ?? createPreviewResourcePool({
+    ...(options.diagramRenderers === undefined ? {} : { diagramRenderers: options.diagramRenderers }),
+    ...(options.imageSettings === undefined ? {} : { imageSettings: options.imageSettings }),
+    ...(options.highlightLanguages === undefined ? {} : { highlightLanguages: options.highlightLanguages }),
+    ...(options.highlightSettings === undefined ? {} : { highlightSettings: options.highlightSettings }),
+    ...(options.mathSettings === undefined ? {} : { mathSettings: options.mathSettings }),
+    ...(options.mathProviders === undefined ? {} : { mathProviders: options.mathProviders })
+  });
   const exportDiagnostics = validateExportProfiles(exportProfiles);
   if (exportDiagnostics.length > 0) {
     throw new Error(exportDiagnostics.map((diagnostic) => `${diagnostic.profileId}: ${diagnostic.message}`).join('\n'));
   }
   const runtimes = new Map<BufferId, BufferRuntime>();
   const directoryReads = new Map<string, AbortController>();
+  const saveQueues = new Map<BufferId, Promise<void>>();
+  const projectWatchers = new Map<string, FSWatcher>();
   let projectIndexRead: AbortController | undefined;
+  let projectSearchRead: AbortController | undefined;
+  let projectIndexTask: Promise<void> | undefined;
+  let projectWatchTimer: NodeJS.Timeout | undefined;
+  const pendingProjectIndexPaths = new Set<string>();
+  let forceFullProjectIndexRefresh = false;
   const createId = options.createBufferId ?? randomUUID;
   let disposed = false;
-  let recoveryTimer: NodeJS.Timeout | undefined;
-  let recoveryWriteQueue = Promise.resolve();
+  let persistenceTimer: NodeJS.Timeout | undefined;
+  let persistenceWriteQueue = Promise.resolve();
   let applicationRevision = 0;
+  let currentTerminalSize: TerminalSize = Object.freeze({ columns: 80, rows: 24 });
+  let currentWidthProfile: TextWidthProfile = defaultTextWidthProfile;
+  let exportController: AbortController | undefined;
   const listeners = new Set<(update: VellumApplicationUpdate) => void>();
 
   const publishApplicationUpdate = (
@@ -363,7 +504,7 @@ function instantiateVellumApplication(
   };
 
   const publishFailure = (
-    reason: Extract<VellumApplicationUpdateReason, 'recoveryFailure' | 'backgroundFailure'>,
+    reason: Extract<VellumApplicationUpdateReason, 'persistenceFailure' | 'backgroundFailure'>,
     error: unknown,
     bufferId?: BufferId
   ): void => {
@@ -374,48 +515,276 @@ function instantiateVellumApplication(
     publishApplicationUpdate(reason, bufferId);
   };
 
-  const writeRecovery = async (): Promise<void> => {
-    const recoveryStore = options.recoveryStore;
-    if (recoveryStore === undefined) return;
+  const writePersistence = async (): Promise<void> => {
+    if (options.sessionStore === undefined && options.recoveryStore === undefined) return;
     const snapshot = state;
-    const operation = recoveryWriteQueue.then(() => recoveryStore.write(snapshot));
-    recoveryWriteQueue = operation.catch(() => undefined);
+    const operation = persistenceWriteQueue.then(async () => {
+      await options.sessionStore?.write(snapshot);
+      await options.recoveryStore?.write(snapshot);
+    });
+    persistenceWriteQueue = operation.catch(() => undefined);
     try {
       await operation;
     } catch (error) {
-      if (!disposed) publishFailure('recoveryFailure', error);
+      if (!disposed) publishFailure('persistenceFailure', error);
       throw error;
     }
   };
 
-  const scheduleRecovery = (): void => {
-    if (options.recoveryStore === undefined) return;
-    if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
-    recoveryTimer = setTimeout(() => {
-      recoveryTimer = undefined;
-      void writeRecovery().catch(() => undefined);
-    }, options.recoveryDelayMilliseconds ?? 500);
-    recoveryTimer.unref();
+  const schedulePersistence = (): void => {
+    if (options.sessionStore === undefined && options.recoveryStore === undefined) return;
+    if (persistenceTimer !== undefined) clearTimeout(persistenceTimer);
+    persistenceTimer = setTimeout(() => {
+      persistenceTimer = undefined;
+      void writePersistence().catch(() => undefined);
+    }, options.persistenceDelayMilliseconds ?? 500);
+    persistenceTimer.unref();
+  };
+
+  const projectSearchSourceIdentity = (): string => JSON.stringify({
+    rootDirectory: state.project.rootDirectory,
+    indexRevision: state.project.index.revision,
+    dirtyBuffers: state.project.bufferOrder.flatMap((id) => {
+      const buffer = state.project.buffers[id];
+      return buffer === undefined || buffer.path === undefined || !bufferIsDirty(buffer)
+        ? []
+        : [[id, buffer.path, buffer.sourceRevision]];
+    })
+  });
+
+  const cancelProjectSearchRead = (): void => {
+    projectSearchRead?.abort(new DOMException('Project search superseded.', 'AbortError'));
+    projectSearchRead = undefined;
+  };
+
+  const stopProjectSearch = (): void => {
+    const dialog = state.dialogState;
+    state = dialog?.kind === 'projectDirectorySearch'
+      ? Object.freeze({
+          ...state,
+          projectSearch: Object.freeze({ ...state.projectSearch, searching: false }),
+          dialogState: Object.freeze({ ...dialog, searching: false })
+        })
+      : Object.freeze({
+          ...state,
+          projectSearch: Object.freeze({ ...state.projectSearch, searching: false })
+        });
+  };
+
+  const invalidateProjectSearchResults = (): void => {
+    cancelProjectSearchRead();
+    const nextSearch = { ...state.projectSearch, searching: false, results: Object.freeze([]) };
+    delete nextSearch.error;
+    const dialog = state.dialogState;
+    state = dialog?.kind === 'projectDirectorySearch'
+      ? Object.freeze({
+          ...state,
+          projectSearch: Object.freeze(nextSearch),
+          dialogState: Object.freeze({
+            ...dialog,
+            searching: false,
+            results: Object.freeze([]),
+            query: commandInputReducer(dialog.query, {
+              kind: 'setSuggestions',
+              suggestions: createCommandSuggestions([])
+            })
+          })
+        })
+      : Object.freeze({ ...state, projectSearch: Object.freeze(nextSearch) });
   };
 
   const refreshProjectIndex = async (): Promise<void> => {
+    const root = state.project.rootDirectory;
+    if (root === undefined) return;
     projectIndexRead?.abort();
     const controller = new AbortController();
     projectIndexRead = controller;
-    const snapshot = state.project.fileTree;
+    const previous = state.project.index;
+    state = Object.freeze({
+      ...state,
+      project: Object.freeze({
+        ...state.project,
+        index: Object.freeze({ ...previous, indexing: true })
+      })
+    });
     try {
-      const files = await indexProjectFiles(snapshot, controller.signal);
-      if (projectIndexRead !== controller || state.project.fileTree.rootIds[0] !== snapshot.rootIds[0]) return;
+      const built = await buildProjectIndex(root, previous, options.projectIndexSettings, controller.signal);
+      if (projectIndexRead !== controller || state.project.rootDirectory !== root) return;
       state = Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
-          fileTree: commitIndexedFiles(state.project.fileTree, files)
+          index: built.state
         })
       });
+      invalidateProjectSearchResults();
+      if (options.watchFiles !== false) replaceProjectWatchers(built.directories);
+      for (const bufferId of state.project.bufferOrder) scheduleDiagnostics(bufferId);
+      schedulePersistence();
+      publishApplicationUpdate('projectIndex');
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      state = Object.freeze({
+        ...state,
+        project: Object.freeze({
+          ...state.project,
+          index: Object.freeze({
+            ...state.project.index,
+            indexing: false,
+            lastError: error instanceof Error ? error.message : String(error)
+          })
+        })
+      });
+      throw error;
     } finally {
       if (projectIndexRead === controller) projectIndexRead = undefined;
     }
+  };
+
+  const refreshProjectIndexPaths = async (changedPaths: readonly string[]): Promise<void> => {
+    const root = state.project.rootDirectory;
+    if (root === undefined || changedPaths.length === 0) return;
+    projectIndexRead?.abort();
+    const controller = new AbortController();
+    projectIndexRead = controller;
+    const previous = state.project.index;
+    state = Object.freeze({
+      ...state,
+      project: Object.freeze({
+        ...state.project,
+        index: Object.freeze({ ...previous, indexing: true })
+      })
+    });
+    let requiresFullRefresh = false;
+    try {
+      const next = await updateProjectIndexPaths(
+        root,
+        previous,
+        changedPaths,
+        options.projectIndexSettings,
+        controller.signal
+      );
+      if (projectIndexRead !== controller || state.project.rootDirectory !== root) return;
+      if (next === undefined) {
+        requiresFullRefresh = true;
+      } else {
+        state = Object.freeze({
+          ...state,
+          project: Object.freeze({ ...state.project, index: next })
+        });
+        invalidateProjectSearchResults();
+        for (const changedPath of changedPaths) {
+          let missing = false;
+          try {
+            await stat(changedPath);
+          } catch (error) {
+            if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') missing = true;
+            else throw error;
+          }
+          if (!missing) continue;
+          for (const [directory, watcher] of projectWatchers) {
+            if (!pathIsWithin(changedPath, directory)) continue;
+            watcher.close();
+            projectWatchers.delete(directory);
+          }
+        }
+        for (const bufferId of state.project.bufferOrder) scheduleDiagnostics(bufferId);
+        schedulePersistence();
+        publishApplicationUpdate('projectIndex');
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      state = Object.freeze({
+        ...state,
+        project: Object.freeze({
+          ...state.project,
+          index: Object.freeze({
+            ...state.project.index,
+            indexing: false,
+            lastError: error instanceof Error ? error.message : String(error)
+          })
+        })
+      });
+      throw error;
+    } finally {
+      if (projectIndexRead === controller) projectIndexRead = undefined;
+    }
+    if (requiresFullRefresh && !disposed && state.project.rootDirectory === root) await refreshProjectIndex();
+  };
+
+  const trackProjectIndexTask = (task: Promise<void>): Promise<void> => {
+    projectIndexTask = task;
+    void task.finally(() => {
+      if (projectIndexTask === task) projectIndexTask = undefined;
+    }).catch(() => undefined);
+    return task;
+  };
+
+  const startProjectIndexRefresh = (): Promise<void> => {
+    return trackProjectIndexTask(refreshProjectIndex());
+  };
+
+  const startProjectIndexPathRefresh = (changedPaths: readonly string[]): Promise<void> => {
+    return trackProjectIndexTask(refreshProjectIndexPaths(changedPaths));
+  };
+
+  const replaceProjectWatchers = (directories: readonly string[]): void => {
+    const wanted = new Set(directories);
+    for (const [directory, watcher] of projectWatchers) {
+      if (wanted.has(directory)) continue;
+      watcher.close();
+      projectWatchers.delete(directory);
+    }
+    for (const directory of wanted) {
+      if (projectWatchers.has(directory)) continue;
+      try {
+        const watcher = watch(directory, { persistent: false }, (_eventType, filename) => {
+          if (filename === null) {
+            forceFullProjectIndexRefresh = true;
+          } else {
+            const changedPath = path.join(directory, filename.toString());
+            pendingProjectIndexPaths.add(changedPath);
+            const basename = path.basename(changedPath);
+            if (basename === '.gitignore' || basename === '.ignore') forceFullProjectIndexRefresh = true;
+          }
+          if (projectWatchTimer !== undefined) clearTimeout(projectWatchTimer);
+          projectWatchTimer = setTimeout(() => {
+            projectWatchTimer = undefined;
+            const changedPaths = Object.freeze([...pendingProjectIndexPaths]);
+            pendingProjectIndexPaths.clear();
+            const fullRefresh = forceFullProjectIndexRefresh;
+            forceFullProjectIndexRefresh = false;
+            const task = fullRefresh ? startProjectIndexRefresh() : startProjectIndexPathRefresh(changedPaths);
+            void task.catch((error) => publishFailure('backgroundFailure', error));
+          }, 50);
+          projectWatchTimer.unref();
+        });
+        watcher.on('error', (error) => publishFailure('backgroundFailure', error));
+        projectWatchers.set(directory, watcher);
+      } catch (error) {
+        publishFailure('backgroundFailure', error);
+      }
+    }
+  };
+
+  const refreshChangedProjectPaths = async (changedPaths: readonly string[]): Promise<void> => {
+    const root = state.project.rootDirectory;
+    if (root === undefined) return;
+    const paths = Object.freeze([...new Set(changedPaths
+      .map((candidate) => path.resolve(candidate))
+      .filter((candidate) => candidate !== root && pathIsWithin(root, candidate)))]);
+    if (paths.length === 0) return;
+    const directories = new Set(paths.map((candidate) => path.dirname(candidate)));
+    const treeRefreshes = [...directories].flatMap((directory) => {
+      const node = state.project.fileTree.nodes[directory];
+      return node?.kind === 'directory' && node.loaded ? [api.loadFileTreeDirectory(directory)] : [];
+    });
+    const requiresNewWatcher = options.watchFiles !== false
+      && [...directories].some((directory) => !projectWatchers.has(directory));
+    await Promise.all([
+      ...treeRefreshes,
+      requiresNewWatcher ? startProjectIndexRefresh() : startProjectIndexPathRefresh(paths)
+    ]);
   };
 
   const assertActive = (): void => {
@@ -427,13 +796,10 @@ function instantiateVellumApplication(
     watcher: undefined,
     pending: new Set(),
     previewLayouts: createPreviewLayoutCache(),
-    highlighter: createCodeHighlighter(
-      options.highlightLanguages ?? builtInCodeHighlightLanguages(),
-      options.highlightSettings
-    ),
-    mathRenderer: createMathRenderer(),
-    diagramRenderers: createDiagramRendererRegistry(options.diagramRenderers ?? []),
-    imageLoader: createMarkdownImageLoader(options.imageSettings),
+    highlighter: previewResourcePool.highlighter,
+    mathRenderer: previewResourcePool.mathRenderer,
+    diagramRenderers: previewResourcePool.diagramRenderers,
+    imageLoader: previewResourcePool.imageLoader,
     highlightedCode: new Map(),
     mathText: new Map(),
     diagramText: new Map(),
@@ -443,6 +809,7 @@ function instantiateVellumApplication(
     resourceRefreshWaiters: [],
     lastPreviewLayout: undefined,
     hybridDecorations: undefined,
+    diagnosticController: undefined,
   });
 
   const schedulePreviewResources = (bufferId: BufferId): void => {
@@ -455,8 +822,18 @@ function instantiateVellumApplication(
     });
   };
 
+  const scheduleDiagnostics = (bufferId: BufferId): void => {
+    queueMicrotask(() => {
+      void api.refreshDiagnostics(bufferId).catch((error) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        if (state.project.buffers[bufferId] === undefined) return;
+        publishFailure('backgroundFailure', error, bufferId);
+      });
+    });
+  };
+
   const selectionSuggestions = (
-    dialog: Extract<NonNullable<AppState['dialogState']>, { kind: 'commandPalette' | 'quickOpen' }>,
+    dialog: Extract<NonNullable<AppState['dialogState']>, { kind: 'commandPalette' | 'quickOpen' | 'completion' | 'recentProject' | 'recoverySelection' }>,
     command = dialog.command
   ) => {
     const query = command.editor.input.text;
@@ -468,17 +845,24 @@ function instantiateVellumApplication(
           disabled: !entry.enabled,
           completion: { range: { startOffset: 0, endOffsetExclusive: query.length }, text: entry.commandId }
         }))
-      : quickOpenEntries(state.project.fileTree, query, state.project.recentlyOpenedPaths).map((entry) => ({
+      : dialog.kind === 'quickOpen'
+        ? quickOpenEntries(state.project.index, query, state.project.recentlyOpenedPaths).map((entry) => ({
           id: entry.path,
           label: entry.relativePath,
           completion: { range: { startOffset: 0, endOffsetExclusive: query.length }, text: entry.path }
+        }))
+        : dialog.entries.filter((entry) => entry.label.toLowerCase().includes(query.toLowerCase())).map((entry) => ({
+          id: entry.id,
+          label: entry.label,
+          description: entry.detail,
+          completion: { range: { startOffset: 0, endOffsetExclusive: query.length }, text: entry.id }
         }));
     return commandInputReducer(command, { kind: 'setSuggestions', suggestions: createCommandSuggestions(entries) });
   };
 
   const refreshSelectionDialog = (): void => {
     const dialog = state.dialogState;
-    if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen') return;
+    if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen' && dialog?.kind !== 'completion' && dialog?.kind !== 'recentProject' && dialog?.kind !== 'recoverySelection') return;
     state = Object.freeze({
       ...state,
       dialogState: Object.freeze({ ...dialog, command: selectionSuggestions(dialog) })
@@ -555,7 +939,7 @@ function instantiateVellumApplication(
       .map((profile) => ({
         id: `export-profile-${profile.id}`,
         label: profile.label,
-        description: profile.targetFormat,
+        description: `${profile.reader.name} → ${profile.writer.name}`,
         completion: { range: { startOffset: 0, endOffsetExclusive: query.length }, text: profile.id }
       })));
     state = Object.freeze({
@@ -618,12 +1002,14 @@ function instantiateVellumApplication(
     });
     if (input.path !== undefined && options.watchFiles !== false) attachWatcher(id, input.path);
     schedulePreviewResources(id);
-    scheduleRecovery();
+    scheduleDiagnostics(id);
+    schedulePersistence();
     return id;
   };
 
   const replaceBuffer = (buffer: BufferState): void => {
-    if (state.project.buffers[buffer.id] === undefined) return;
+    const previous = state.project.buffers[buffer.id];
+    if (previous === undefined) return;
     state = Object.freeze({
       ...state,
       project: Object.freeze({
@@ -631,6 +1017,9 @@ function instantiateVellumApplication(
         buffers: Object.freeze({ ...state.project.buffers, [buffer.id]: Object.freeze(buffer) })
       })
     });
+    if (previous.editor.document !== buffer.editor.document || previous.path !== buffer.path) {
+      invalidateProjectSearchResults();
+    }
   };
 
   const commitPreviewResource = (
@@ -696,13 +1085,10 @@ function instantiateVellumApplication(
     const runtime = runtimes.get(bufferId);
     if (runtime === undefined) return;
     runtime.watcher?.close();
+    runtime.diagnosticController?.abort();
     for (const controller of runtime.pending) controller.abort();
     runtime.pending.clear();
     runtime.previewLayouts.clear();
-    runtime.highlighter.clear();
-    runtime.mathRenderer.clear();
-    runtime.diagramRenderers.clear();
-    runtime.imageLoader.clear();
     runtime.highlightedCode.clear();
     runtime.mathText.clear();
     runtime.diagramText.clear();
@@ -752,8 +1138,11 @@ function instantiateVellumApplication(
     if (activeBufferId === undefined) delete project.activeBufferId;
     else project.activeBufferId = activeBufferId;
     const navigation = state.commandState.navigation;
+    const diagnostics = { ...state.diagnostics };
+    delete diagnostics[bufferId];
     state = clearDialog(Object.freeze({
       ...state,
+      diagnostics: Object.freeze(diagnostics),
       project: Object.freeze(project),
       commandState: Object.freeze({
         ...state.commandState,
@@ -763,8 +1152,9 @@ function instantiateVellumApplication(
         })
       })
     }));
+    invalidateProjectSearchResults();
     releaseBuffer(bufferId);
-    scheduleRecovery();
+    schedulePersistence();
   };
 
   const applyTransition = (
@@ -787,7 +1177,7 @@ function instantiateVellumApplication(
       if (editor !== buffer.editor) {
         const nextBuffer = Object.freeze({ ...buffer, editor });
         replaceBuffer(nextBuffer);
-        if (!hybridDecorationCacheMatches(runtime.hybridDecorations, nextBuffer)) {
+        if (!hybridDecorationCacheMatches(runtime.hybridDecorations, nextBuffer, state.writingMode.focus, currentWidthProfile)) {
           runtime.hybridDecorations = undefined;
         }
       }
@@ -821,7 +1211,8 @@ function instantiateVellumApplication(
     }
     runtime.hybridDecorations = undefined;
     schedulePreviewResources(bufferId);
-    scheduleRecovery();
+    scheduleDiagnostics(bufferId);
+    schedulePersistence();
   };
 
   const synchronizedEditorMap = (
@@ -896,6 +1287,242 @@ function instantiateVellumApplication(
     }
   };
 
+  const anchorTypewriterViewport = (bufferId: BufferId): void => {
+    if (!state.writingMode.typewriter) return;
+    const buffer = state.project.buffers[bufferId];
+    if (buffer === undefined) return;
+    const body = vellumBodyGeometry(state, currentTerminalSize);
+    const panes = vellumPaneGeometry(state, body.bodyWidth, body.contentRows);
+    const editorPane = panes.editor;
+    if (editorPane === undefined) return;
+    const decorations = state.editorMode === 'hybrid' ? api.hybridDecorations(bufferId) : undefined;
+    const map = createTextAreaRowOffsetMap({
+      document: buffer.editor.document,
+      terminalWidth: editorPane.width,
+      terminalRows: editorPane.rows,
+      widthProfile: currentWidthProfile,
+      ...(decorations === undefined ? {} : { decorations }),
+      lineNumbers: { minWidth: 3 },
+      wrap: { mode: 'soft' },
+      scrollbar: { visible: 'auto' }
+    });
+    const caretRow = map.rowAtSourceOffset(buffer.editor.caret.position.offset);
+    const offsetRow = Math.max(0, caretRow - Math.floor((editorPane.rows - 1) * state.writingMode.typewriterAnchor));
+    const editor = textAreaReducer(buffer.editor, {
+      kind: 'scroll',
+      request: {
+        nextState: Object.freeze({ ...buffer.editor.scroll, offsetRow, followTail: false }),
+        source: 'focus',
+        target: 'content'
+      }
+    }).state;
+    replaceBuffer({ ...buffer, editor });
+  };
+
+  const insertTextAtSelection = (bufferId: BufferId, insertedText: string): void => {
+    const buffer = state.project.buffers[bufferId];
+    if (buffer === undefined) return;
+    const selection = buffer.editor.selection;
+    const start = selection === undefined
+      ? buffer.editor.caret.position.offset
+      : Math.min(selection.anchor.offset, selection.focus.offset);
+    const end = selection === undefined
+      ? start
+      : Math.max(selection.anchor.offset, selection.focus.offset);
+    applyTransition(bufferId, {
+      kind: 'applyChanges',
+      changeSet: createTextChangeSet([{
+        startOffset: start,
+        endOffsetExclusive: end,
+        insertedText
+      }])
+    }, start + insertedText.length);
+    anchorTypewriterViewport(bufferId);
+  };
+
+  const blockResources = (buffer: BufferState, runtime: BufferRuntime): MarkdownBlockResources => {
+    const tableOfContents = new Map<number, string>();
+    if (buffer.preview.kind === 'ready') {
+      const source = runtime.parser.source();
+      const headings = [...walkMarkdown(buffer.preview.snapshot.document.tree)].flatMap(({ node }) => node.kind === 'heading'
+        ? [`${'  '.repeat(node.depth - 1)}• ${source.slice(node.contentSpan.start, node.contentSpan.end).trim()}`]
+        : []);
+      for (const { node } of walkMarkdown(buffer.preview.snapshot.document.tree)) {
+        if (node.kind === 'paragraph' && /^\s*\[(?:toc|_toc_)\]\s*$/iu.test(source.slice(node.span.start, node.span.end))) {
+          tableOfContents.set(node.id, headings.join('\n') || 'Table of contents is empty.');
+        }
+      }
+    }
+    return Object.freeze({
+      highlightedCode: runtime.highlightedCode,
+      mathText: runtime.mathText,
+      diagramText: runtime.diagramText,
+      images: runtime.images,
+      tableOfContents,
+      diagnostics: buffer.preview.kind === 'ready' ? buffer.preview.snapshot.document.diagnostics : Object.freeze([])
+    });
+  };
+
+  const visibleDiagnosticsFor = (bufferId: BufferId): readonly import('./types.js').VellumDiagnostic[] => {
+    const ranks = { info: 0, warning: 1, error: 2 } as const;
+    return (state.diagnostics[bufferId] ?? []).filter((diagnostic) => (
+      ranks[diagnostic.severity] >= ranks[state.diagnosticPreferences.minimumSeverity]
+      && (state.diagnosticPreferences.source === 'all' || diagnostic.source === state.diagnosticPreferences.source)
+      && !state.diagnosticPreferences.ignoredRules.includes(diagnostic.rule)
+    ));
+  };
+
+  const currentDiagnostic = (requireFix = false) => {
+    const buffer = activeBuffer(state);
+    if (buffer === undefined) return undefined;
+    const diagnostics = visibleDiagnosticsFor(buffer.id).filter((diagnostic) => !requireFix || diagnostic.fixes.length > 0);
+    const caret = buffer.editor.caret.position.offset;
+    return diagnostics.find((diagnostic) => diagnostic.span.start <= caret && diagnostic.span.end >= caret)
+      ?? diagnostics.find((diagnostic) => diagnostic.span.start >= caret)
+      ?? diagnostics[0];
+  };
+
+  const liveExportSources = (): ReadonlyMap<string, { readonly source: string; readonly unsaved: boolean }> => new Map(
+    Object.values(state.project.buffers).flatMap((buffer) => buffer.path === undefined ? [] : [[
+      path.resolve(buffer.path),
+      Object.freeze({ source: textDocumentText(buffer.editor.document), unsaved: bufferIsDirty(buffer) })
+    ] as const])
+  );
+
+  const replaceExportHistoryEntry = (entry: ExportHistoryEntry, active: boolean): void => {
+    state = Object.freeze({
+      ...state,
+      exports: Object.freeze({
+        ...state.exports,
+        ...(active ? { activeId: entry.id } : {}),
+        history: Object.freeze([
+          entry,
+          ...state.exports.history.filter((candidate) => candidate.id !== entry.id)
+        ].slice(0, 50))
+      })
+    });
+    if (!active) {
+      const exports = { ...state.exports };
+      delete exports.activeId;
+      state = Object.freeze({ ...state, exports: Object.freeze(exports) });
+    }
+    publishApplicationUpdate('export');
+  };
+
+  const executeExportRequest = async (
+    scope: ExportHistoryEntry['scope'],
+    profile: ExportProfile | undefined,
+    signal?: AbortSignal,
+    overwrite = false
+  ): Promise<readonly ExportResult[]> => {
+    if (exportController !== undefined) throw new Error('Another export is already running.');
+    if (scope !== 'projectManifest' && profile === undefined) throw new Error('An export profile is required.');
+    const controller = new AbortController();
+    exportController = controller;
+    const abort = (): void => controller.abort(signal?.reason);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted === true) abort();
+    const id = randomUUID();
+    const startedAt = new Date().toISOString();
+    const started = performance.now();
+    const profileId = profile?.id ?? 'manifest';
+    const running: ExportHistoryEntry = Object.freeze({
+      id,
+      scope,
+      profileId,
+      status: 'running',
+      startedAt,
+      outputPaths: Object.freeze([]),
+      standardError: '',
+      usedUnsavedSource: false
+    });
+    state = Object.freeze({
+      ...state,
+      navigator: Object.freeze({ ...state.navigator, mode: 'export', visible: true }),
+      exports: Object.freeze({
+        ...state.exports,
+        activeId: id,
+        lastRequest: Object.freeze({ scope, profileId }),
+        history: Object.freeze([running, ...state.exports.history].slice(0, 50))
+      })
+    });
+    publishApplicationUpdate('export');
+    try {
+      let results: readonly ExportResult[];
+      if (scope === 'activeBuffer') {
+        const buffer = activeBuffer(state);
+        if (buffer === undefined) throw new Error('Open a buffer before exporting it.');
+        const baseDirectory = buffer.path === undefined
+          ? state.project.rootDirectory ?? process.cwd()
+          : path.dirname(buffer.path);
+        results = Object.freeze([await exportDocument(Object.freeze({
+          kind: 'buffer',
+          source: textDocumentText(buffer.editor.document),
+          label: buffer.label,
+          baseDirectory,
+          ...(buffer.path === undefined ? {} : { path: buffer.path }),
+          unsaved: bufferIsDirty(buffer) || buffer.path === undefined
+        }), profile as ExportProfile, { signal: controller.signal, overwrite })]);
+      } else if (scope === 'batchDirectory') {
+        const root = state.project.rootDirectory;
+        if (root === undefined) throw new Error('Open a project directory before batch export.');
+        results = await batchExportDirectory(root, profile as ExportProfile, liveExportSources(), { signal: controller.signal, overwrite });
+      } else {
+        const root = state.project.rootDirectory;
+        if (root === undefined) throw new Error('Open a project directory before exporting its manifest.');
+        const manifest = await loadProjectManifest(root);
+        results = await exportProjectManifest(
+          root,
+          manifest,
+          exportProfiles,
+          liveExportSources(),
+          { signal: controller.signal, overwrite },
+          (progress) => {
+            state = Object.freeze({
+              ...state,
+              notice: Object.freeze({
+                status: 'warning',
+                message: `Exporting ${progress.profileId}: ${String(progress.completed)}/${String(progress.total)} profiles.`
+              })
+            });
+            publishApplicationUpdate('export');
+          }
+        );
+      }
+      replaceExportHistoryEntry(Object.freeze({
+        ...running,
+        status: 'succeeded',
+        elapsedMilliseconds: performance.now() - started,
+        outputPaths: Object.freeze(results.map((result) => result.outputPath)),
+        standardError: results.map((result) => result.standardError).filter((value) => value.length > 0).join('\n'),
+        usedUnsavedSource: results.some((result) => result.usedUnsavedSource)
+      }), false);
+      state = Object.freeze({
+        ...state,
+        notice: Object.freeze({
+          status: 'success',
+          message: `Export completed${results.some((result) => result.usedUnsavedSource) ? ' from current unsaved source' : ''}: ${String(results.length)} output${results.length === 1 ? '' : 's'}.`
+        })
+      });
+      return results;
+    } catch (error) {
+      const cancelled = controller.signal.aborted;
+      replaceExportHistoryEntry(Object.freeze({
+        ...running,
+        status: cancelled ? 'cancelled' : 'failed',
+        elapsedMilliseconds: performance.now() - started,
+        outputPaths: Object.freeze([]),
+        standardError: '',
+        usedUnsavedSource: false,
+        error: error instanceof Error ? error.message : String(error)
+      }), false);
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (exportController === controller) exportController = undefined;
+    }
+  };
+
   const api: VellumApplication = {
     state: () => state,
     subscribe(listener) {
@@ -959,15 +1586,28 @@ function instantiateVellumApplication(
       for (const controller of directoryReads.values()) controller.abort();
       directoryReads.clear();
       projectIndexRead?.abort();
+      if (projectWatchTimer !== undefined) {
+        clearTimeout(projectWatchTimer);
+        projectWatchTimer = undefined;
+      }
+      pendingProjectIndexPaths.clear();
+      forceFullProjectIndexRefresh = false;
+      for (const watcher of projectWatchers.values()) watcher.close();
+      projectWatchers.clear();
       state = Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
-          rootDirectory: exact,
-          fileTree: createFileTreeState(exact, state.project.fileTree.exclusionPatterns)
+          rootDirectory: resolved,
+          fileTree: createFileTreeState(resolved, state.project.fileTree.exclusionPatterns),
+          index: emptyProjectIndex(),
+          recentProjects: Object.freeze([resolved, ...state.project.recentProjects.filter((candidate) => candidate !== resolved)].slice(0, 20))
         })
       });
-      await Promise.all([api.loadFileTreeDirectory(exact), refreshProjectIndex()]);
+      invalidateProjectSearchResults();
+      await api.loadFileTreeDirectory(resolved);
+      void startProjectIndexRefresh().catch((error) => publishFailure('backgroundFailure', error));
+      schedulePersistence();
     },
     async loadFileTreeDirectory(directoryId) {
       assertActive();
@@ -1007,7 +1647,7 @@ function instantiateVellumApplication(
     async refreshFileTree() {
       const root = state.project.rootDirectory;
       if (root === undefined) return;
-      await Promise.all([api.loadFileTreeDirectory(root), refreshProjectIndex()]);
+      await Promise.all([api.loadFileTreeDirectory(root), startProjectIndexRefresh()]);
     },
     activateBuffer(bufferId) {
       assertActive();
@@ -1016,6 +1656,7 @@ function instantiateVellumApplication(
         ...state,
         project: Object.freeze({ ...state.project, activeBufferId: bufferId })
       });
+      schedulePersistence();
     },
     async applyFileTreeTransition(transition) {
       assertActive();
@@ -1029,6 +1670,7 @@ function instantiateVellumApplication(
         const node = next.nodes[activeId];
         if (node?.kind === 'directory' && !node.loaded && !node.loading) await api.loadFileTreeDirectory(activeId);
       }
+      schedulePersistence();
     },
     async activateFileTreeNode(nodeId) {
       const node = state.project.fileTree.nodes[nodeId];
@@ -1038,6 +1680,302 @@ function instantiateVellumApplication(
       } else {
         await api.applyFileTreeTransition({ kind: 'toggle', id: nodeId });
       }
+    },
+    async createProjectFile(requestedPath, source = '') {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before creating a project file.');
+      const created = await createProjectFileOnDisk(root, requestedPath, source);
+      await refreshChangedProjectPaths([created]);
+      const id = await api.openFile(created);
+      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Created ${path.relative(root, created)}.` }) });
+      schedulePersistence();
+      return id;
+    },
+    async createProjectDirectory(requestedPath) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before creating a directory.');
+      const created = await createProjectDirectoryOnDisk(root, requestedPath);
+      await refreshChangedProjectPaths([created]);
+      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Created ${path.relative(root, created)}.` }) });
+      schedulePersistence();
+      return created;
+    },
+    async moveProjectEntry(sourcePath, destinationPath, updateLinks = true) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before moving a project entry.');
+      const source = resolveProjectPath(root, sourcePath);
+      const destination = resolveProjectPath(root, destinationPath);
+      const overlaidIndex = overlayOpenBuffers(state.project.index, Object.values(state.project.buffers).map((buffer) => ({
+        ...(buffer.path === undefined ? {} : { path: buffer.path }),
+        source: textDocumentText(buffer.editor.document)
+      })));
+      const changes = updateLinks ? planProjectMoveLinkChanges(root, overlaidIndex, source, destination) : Object.freeze([]);
+      const changesByPath = new Map<string, typeof changes>();
+      for (const change of changes) {
+        const previous = changesByPath.get(change.documentPath) ?? Object.freeze([]);
+        changesByPath.set(change.documentPath, Object.freeze([...previous, change]));
+      }
+      const openByOldPath = new Map(Object.values(state.project.buffers).flatMap((buffer) => (
+        buffer.path === undefined ? [] : [[buffer.path, buffer] as const]
+      )));
+      for (const [oldPath, buffer] of openByOldPath) {
+        if (remapMovedPath(oldPath, source, destination) === oldPath && !changesByPath.has(oldPath)) continue;
+        if (buffer.externalFileState.kind === 'conflict' || buffer.externalFileState.kind === 'deleted') {
+          throw new Error(`Resolve the external file state before moving ${oldPath}.`);
+        }
+      }
+      const preparedWrites = new Map<string, {
+        readonly source: string;
+        readonly original: Awaited<ReturnType<typeof readSourceFile>>;
+      }>();
+      for (const [documentPath, documentChanges] of changesByPath) {
+        const openBuffer = openByOldPath.get(documentPath);
+        if (openBuffer !== undefined && bufferIsDirty(openBuffer)) continue;
+        const file = await readSourceFile(documentPath);
+        if (openBuffer?.externalFileState.kind === 'current'
+          && !sameExternalFileRevision(file.fingerprint, openBuffer.externalFileState.fingerprint)) {
+          throw new Error(`The file changed externally before the project move: ${documentPath}`);
+        }
+        const indexed = overlaidIndex.documents[documentPath];
+        if (openBuffer === undefined && indexed?.contentHash !== file.fingerprint.contentHash) {
+          throw new Error(`The project index is stale for ${documentPath}; refresh the project before moving files.`);
+        }
+        const baseSource = openBuffer === undefined ? file.source : textDocumentText(openBuffer.editor.document);
+        preparedWrites.set(documentPath, Object.freeze({
+          source: applyProjectLinkChanges(baseSource, documentChanges),
+          original: file
+        }));
+      }
+      const watchedBufferIds = new Set<string>();
+      for (const [oldPath, buffer] of openByOldPath) {
+        if (remapMovedPath(oldPath, source, destination) === oldPath && !changesByPath.has(oldPath)) continue;
+        const runtime = runtimes.get(buffer.id);
+        runtime?.watcher?.close();
+        if (runtime !== undefined) runtime.watcher = undefined;
+        watchedBufferIds.add(buffer.id);
+      }
+      const committedFiles = new Map<string, Awaited<ReturnType<typeof readSourceFile>>>();
+      try {
+        await executeProjectFileTransaction(async (transaction) => {
+          await moveProjectPathOnDisk(root, source, destination);
+          transaction.addRollback(async () => {
+            await moveProjectPathOnDisk(root, destination, source);
+          });
+          for (const [oldPath, prepared] of preparedWrites) {
+            const target = remapMovedPath(oldPath, source, destination);
+            const current = await readSourceFile(target);
+            const saved = await saveSourceFile(target, prepared.source, {
+              expectedFingerprint: current.fingerprint,
+              format: current.format
+            });
+            committedFiles.set(target, saved);
+            transaction.addRollback(async () => {
+              await saveSourceFile(target, prepared.original.source, {
+                expectedFingerprint: saved.fingerprint,
+                format: prepared.original.format
+              });
+            });
+          }
+          for (const oldPath of openByOldPath.keys()) {
+            const futurePath = remapMovedPath(oldPath, source, destination);
+            if (futurePath === oldPath && !changesByPath.has(oldPath)) continue;
+            const current = committedFiles.get(futurePath) ?? await readSourceFile(futurePath);
+            committedFiles.set(futurePath, current);
+          }
+        });
+      } catch (error) {
+        for (const bufferId of watchedBufferIds) {
+          const buffer = state.project.buffers[bufferId];
+          if (buffer?.path !== undefined && options.watchFiles !== false) attachWatcher(bufferId, buffer.path);
+        }
+        throw error;
+      }
+      for (const [oldPath, documentChanges] of changesByPath) {
+        const original = openByOldPath.get(oldPath);
+        if (original === undefined) continue;
+        const wasDirty = bufferIsDirty(original);
+        applyTransition(original.id, {
+          kind: 'applyChanges',
+          changeSet: createTextChangeSet(documentChanges.map((change) => ({
+            startOffset: change.start,
+            endOffsetExclusive: change.end,
+            insertedText: change.replacement
+          })))
+        });
+        if (!wasDirty) {
+          const current = state.project.buffers[original.id];
+          const futurePath = remapMovedPath(oldPath, source, destination);
+          const saved = committedFiles.get(futurePath);
+          if (current !== undefined && saved !== undefined) {
+            replaceBuffer({
+              ...current,
+              savedRevision: current.sourceRevision,
+              externalFileState: Object.freeze({ kind: 'current', fingerprint: saved.fingerprint })
+            });
+          }
+        }
+      }
+      for (const [oldPath, original] of openByOldPath) {
+        const current = state.project.buffers[original.id];
+        if (current === undefined) continue;
+        const futurePath = remapMovedPath(oldPath, source, destination);
+        const file = committedFiles.get(futurePath);
+        if (futurePath !== oldPath || file !== undefined) {
+          const fingerprint = file?.fingerprint ?? await externalFileFingerprint(futurePath);
+          if (fingerprint === undefined) throw new Error(`The moved buffer path cannot be read: ${futurePath}`);
+          replaceBuffer({
+            ...current,
+            path: futurePath,
+            label: path.basename(futurePath),
+            externalFileState: Object.freeze({ kind: 'current', fingerprint })
+          });
+        }
+        if (watchedBufferIds.has(original.id) && options.watchFiles !== false) attachWatcher(original.id, futurePath);
+      }
+      state = Object.freeze({
+        ...state,
+        project: Object.freeze({
+          ...state.project,
+          recentlyOpenedPaths: Object.freeze(state.project.recentlyOpenedPaths.map((candidate) => (
+            remapMovedPath(candidate, source, destination)
+          ))),
+          recentlyClosed: Object.freeze(state.project.recentlyClosed.map((record) => (
+            record.path === undefined
+              ? record
+              : Object.freeze({ ...record, path: remapMovedPath(record.path, source, destination) })
+          )))
+        }),
+        notice: Object.freeze({
+          status: 'success',
+          message: `Moved ${path.relative(root, source)} to ${path.relative(root, destination)}${changes.length === 0 ? '.' : ` and updated ${String(changes.length)} link${changes.length === 1 ? '' : 's'}.`}`
+        })
+      });
+      await refreshChangedProjectPaths([source, destination]);
+      schedulePersistence();
+    },
+    async duplicateProjectEntry(sourcePath, destinationPath) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before duplicating a project entry.');
+      const duplicated = await duplicateProjectPathOnDisk(root, sourcePath, destinationPath);
+      await refreshChangedProjectPaths([duplicated]);
+      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Duplicated ${path.relative(root, duplicated)}.` }) });
+    },
+    async trashProjectEntry(requestedPath) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before moving an entry to trash.');
+      const target = resolveProjectPath(root, requestedPath);
+      const affected = Object.values(state.project.buffers).filter((buffer) => (
+        buffer.path !== undefined && pathIsWithin(target, buffer.path)
+      ));
+      if (affected.some(bufferIsDirty)) throw new Error('Save or close dirty buffers below this project entry before moving it to trash.');
+      await trashProjectPath(root, target);
+      for (const buffer of affected) closeBuffer(buffer.id);
+      await refreshChangedProjectPaths([target]);
+      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Moved ${path.relative(root, target)} to trash.` }) });
+      schedulePersistence();
+    },
+    async copyProjectPath(requestedPath, relative) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before copying a project path.');
+      const target = resolveProjectPath(root, requestedPath);
+      const value = relative ? path.relative(root, target) : target;
+      await copyTextToClipboard(value);
+      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Copied ${value}.` }) });
+    },
+    async importProjectAsset(sourcePath, assetDirectory = 'assets') {
+      const root = state.project.rootDirectory;
+      const buffer = activeBuffer(state);
+      if (root === undefined) throw new Error('Open a project before importing an asset.');
+      if (buffer?.path === undefined) throw new Error('Save the active document before importing an asset.');
+      const imported = await importAssetFile(root, sourcePath, assetDirectory);
+      const reference = markdownAssetReference(buffer.path, imported.path);
+      insertTextAtSelection(buffer.id, reference);
+      await refreshChangedProjectPaths([imported.path]);
+      state = Object.freeze({
+        ...state,
+        notice: Object.freeze({ status: 'success', message: `Imported ${path.relative(root, imported.path)}.` })
+      });
+      return imported.path;
+    },
+    async importClipboardAsset(assetDirectory = 'assets') {
+      const root = state.project.rootDirectory;
+      const buffer = activeBuffer(state);
+      if (root === undefined) throw new Error('Open a project before importing a clipboard image.');
+      if (buffer?.path === undefined) throw new Error('Save the active document before importing a clipboard image.');
+      const imported = await importClipboardImage(root, assetDirectory);
+      insertTextAtSelection(buffer.id, markdownAssetReference(buffer.path, imported.path));
+      await refreshChangedProjectPaths([imported.path]);
+      state = Object.freeze({
+        ...state,
+        notice: Object.freeze({ status: 'success', message: `Imported ${path.relative(root, imported.path)} from the clipboard.` })
+      });
+      return imported.path;
+    },
+    async refreshUnusedAssets() {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before checking assets.');
+      const unusedAssets = await findUnusedAssets(root, overlayOpenBuffers(
+        state.project.index,
+        Object.values(state.project.buffers).map((buffer) => ({
+          ...(buffer.path === undefined ? {} : { path: buffer.path }),
+          source: textDocumentText(buffer.editor.document)
+        }))
+      ));
+      state = Object.freeze({
+        ...state,
+        navigator: Object.freeze({ ...state.navigator, mode: 'diagnostics', visible: true }),
+        project: Object.freeze({ ...state.project, unusedAssets }),
+        notice: Object.freeze({
+          status: unusedAssets.length === 0 ? 'success' : 'warning',
+          message: unusedAssets.length === 0 ? 'No unused image assets found.' : `${String(unusedAssets.length)} unused image asset${unusedAssets.length === 1 ? '' : 's'} found.`
+        })
+      });
+      return unusedAssets;
+    },
+    async refreshProjectEntry(requestedPath) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before refreshing its files.');
+      const target = requestedPath === root ? root : resolveProjectPath(root, requestedPath);
+      const node = state.project.fileTree.nodes[target];
+      const directory = node?.kind === 'file' ? node.parentId ?? root : target;
+      if (state.project.fileTree.nodes[directory]?.kind !== 'directory') throw new Error(`The selected project directory is unavailable: ${directory}`);
+      await Promise.all([api.loadFileTreeDirectory(directory), startProjectIndexRefresh()]);
+      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Refreshed ${path.relative(root, directory) || path.basename(root)}.` }) });
+    },
+    async revealProjectEntry(requestedPath) {
+      const root = state.project.rootDirectory;
+      if (root === undefined) throw new Error('Open a project before revealing its files.');
+      await revealProjectPath(root, requestedPath);
+    },
+    setProjectTreeFilter(filter) {
+      state = Object.freeze({
+        ...state,
+        project: Object.freeze({ ...state.project, fileTree: setFileTreeFilter(state.project.fileTree, filter) })
+      });
+      schedulePersistence();
+    },
+    cycleProjectTreeSort() {
+      const fileTree = cycleFileTreeSort(state.project.fileTree);
+      state = Object.freeze({
+        ...state,
+        project: Object.freeze({ ...state.project, fileTree }),
+        notice: Object.freeze({ status: 'success', message: `Project files sorted by ${fileTree.sort}.` })
+      });
+      schedulePersistence();
+    },
+    toggleProjectPin() {
+      const root = state.project.rootDirectory;
+      if (root === undefined) return;
+      const pinned = state.project.pinnedProjects.includes(root);
+      const pinnedProjects = pinned
+        ? state.project.pinnedProjects.filter((candidate) => candidate !== root)
+        : [root, ...state.project.pinnedProjects];
+      state = Object.freeze({
+        ...state,
+        project: Object.freeze({ ...state.project, pinnedProjects: Object.freeze(pinnedProjects) }),
+        notice: Object.freeze({ status: 'success', message: `${pinned ? 'Unpinned' : 'Pinned'} ${path.basename(root)}.` })
+      });
+      schedulePersistence();
     },
     dispatchCommand(commandId) {
       assertActive();
@@ -1052,11 +1990,23 @@ function instantiateVellumApplication(
           api.executeMarkdownCommand(state.project.activeBufferId, effect.commandId);
         } else if (effect.kind === 'navigate') {
           executeNavigationEffect(api, effect.commandId);
+        } else if (effect.kind === 'cancelExport') {
+          api.cancelExport();
+        } else if (effect.kind === 'cycleFileTreeSort') {
+          api.cycleProjectTreeSort();
+        } else if (effect.kind === 'pinProject') {
+          api.toggleProjectPin();
+        } else if (effect.kind === 'diagnosticAction') {
+          if (effect.action === 'applyFix') api.applyCurrentDiagnosticFix();
+          else if (effect.action === 'ignoreRule') api.ignoreCurrentDiagnosticRule();
+          else if (effect.action === 'cycleSeverity') api.cycleDiagnosticSeverity();
+          else api.cycleDiagnosticSource();
         }
       }
       refreshSelectionDialog();
       refreshOutline();
       refreshExportDialog();
+      schedulePersistence();
       return Object.freeze({ state, effects: update.effects });
     },
     updateFilePathDialog(transition) {
@@ -1070,11 +2020,12 @@ function instantiateVellumApplication(
         })
       });
     },
-    async submitFilePathDialog(value) {
+    async submitFilePathDialog(value, signal) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'filePath') return false;
+      signal?.throwIfAborted();
       const entered = value ?? dialog.command.editor.input.text;
-      if (entered.trim().length === 0) {
+      if (entered.trim().length === 0 && dialog.operation !== 'filterProjectTree') {
         state = Object.freeze({
           ...state,
           dialogState: Object.freeze({ ...dialog, error: 'Enter a path.' })
@@ -1082,19 +2033,35 @@ function instantiateVellumApplication(
         return false;
       }
       try {
-        if (dialog.operation === 'openFile') await api.openFile(entered);
-        else if (dialog.operation === 'openProjectDirectory') await api.openProjectDirectory(entered);
+        if (dialog.operation === 'filterProjectTree') api.setProjectTreeFilter(entered);
+        else if (dialog.operation === 'openFile') await api.openFile(entered, signal);
+        else if (dialog.operation === 'openProjectDirectory') await api.openProjectDirectory(entered, signal);
+        else if (dialog.operation === 'createProjectFile') await api.createProjectFile(entered);
+        else if (dialog.operation === 'createProjectDirectory') await api.createProjectDirectory(entered);
+        else if (dialog.operation === 'importAsset') await api.importProjectAsset(entered);
+        else if (dialog.operation === 'renameProjectEntry' || dialog.operation === 'moveProjectEntry') {
+          if (dialog.projectSourcePath === undefined) throw new Error('The selected project entry is no longer available.');
+          const destination = dialog.operation === 'renameProjectEntry' && !entered.includes('/') && !entered.includes('\\')
+            ? path.join(path.dirname(dialog.projectSourcePath), entered)
+            : entered;
+          await api.moveProjectEntry(dialog.projectSourcePath, destination, true);
+        } else if (dialog.operation === 'duplicateProjectEntry') {
+          if (dialog.projectSourcePath === undefined) throw new Error('The selected project entry is no longer available.');
+          await api.duplicateProjectEntry(dialog.projectSourcePath, entered);
+        }
         else {
           const id = dialog.afterSave?.kind === 'closeBuffer'
             ? dialog.afterSave.bufferId
             : dialog.afterSave?.kind === 'closeApplication' || dialog.afterSave?.kind === 'saveAll'
               ? dialog.afterSave.bufferIds.find((bufferId) => state.project.buffers[bufferId]?.path === undefined)
               : state.project.activeBufferId;
-          if (id !== undefined && !await api.saveBuffer(id, entered)) return false;
+          if (id !== undefined && !await api.saveBuffer(id, entered, false, signal)) return false;
         }
+        signal?.throwIfAborted();
+        if (state.dialogState !== dialog) return false;
         if (dialog.afterSave?.kind === 'closeBuffer') {
           closeBuffer(dialog.afterSave.bufferId);
-          await api.persistRecoveryRecord();
+          await api.persistState();
         } else if (dialog.afterSave?.kind === 'closeApplication') {
           const remaining = dialog.afterSave.bufferIds.filter((bufferId) => {
             const buffer = state.project.buffers[bufferId];
@@ -1110,9 +2077,9 @@ function instantiateVellumApplication(
             return false;
           }
           state = clearDialog(state);
-          if (!await api.saveAll()) return false;
+          if (!await api.saveAll(signal)) return false;
           for (const bufferId of [...state.project.bufferOrder]) closeBuffer(bufferId);
-          await api.persistRecoveryRecord();
+          await api.persistState();
           return true;
         } else if (dialog.afterSave?.kind === 'saveAll') {
           const remaining = dialog.afterSave.bufferIds.filter((bufferId) => {
@@ -1129,24 +2096,27 @@ function instantiateVellumApplication(
             return false;
           }
           state = clearDialog(state);
-          await api.saveAll();
+          await api.saveAll(signal);
         } else {
           state = clearDialog(state);
         }
       } catch (error) {
-        state = Object.freeze({
-          ...state,
-          dialogState: Object.freeze({
-            ...dialog,
-            error: error instanceof Error ? error.message : String(error)
-          })
-        });
+        if (signal?.aborted === true) throw error;
+        if (state.dialogState === dialog) {
+          state = Object.freeze({
+            ...state,
+            dialogState: Object.freeze({
+              ...dialog,
+              error: error instanceof Error ? error.message : String(error)
+            })
+          });
+        }
       }
       return false;
     },
     updateSelectionDialog(transition) {
       const dialog = state.dialogState;
-      if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen') return;
+      if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen' && dialog?.kind !== 'completion' && dialog?.kind !== 'recentProject' && dialog?.kind !== 'recoverySelection') return;
       const nextCommand = commandInputReducer(dialog.command, transition);
       const withoutError = { ...dialog, command: nextCommand };
       delete withoutError.error;
@@ -1157,9 +2127,63 @@ function instantiateVellumApplication(
         dialogState: Object.freeze({ ...nextDialog, command: selectionSuggestions(nextDialog) })
       });
     },
-    async submitSelectionDialog(value) {
+    async submitSelectionDialog(value, signal) {
       const dialog = state.dialogState;
-      if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen') return;
+      if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen' && dialog?.kind !== 'completion' && dialog?.kind !== 'recentProject' && dialog?.kind !== 'recoverySelection') return;
+      signal?.throwIfAborted();
+      if (dialog.kind === 'recoverySelection') {
+        const query = dialog.command.editor.input.text.toLocaleLowerCase();
+        const entry = dialog.entries.find((candidate) => candidate.id === value)
+          ?? dialog.entries.find((candidate) => candidate.label.toLocaleLowerCase().includes(query));
+        if (entry === undefined) {
+          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'Select a recovery generation.' }) });
+          return;
+        }
+        await api.restoreRecoveryGeneration(entry.generation, signal);
+        return;
+      }
+      if (dialog.kind === 'recentProject') {
+        const query = dialog.command.editor.input.text.toLocaleLowerCase();
+        const entry = dialog.entries.find((candidate) => candidate.id === value)
+          ?? dialog.entries.find((candidate) => candidate.label.toLocaleLowerCase().includes(query));
+        if (entry === undefined) {
+          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No recent project matches the query.' }) });
+          return;
+        }
+        try {
+          await api.openProjectDirectory(entry.id, signal);
+          if (state.dialogState === dialog) state = clearDialog(state);
+        } catch (error) {
+          if (signal?.aborted === true) throw error;
+          if (state.dialogState === dialog) {
+            state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) }) });
+          }
+        }
+        return;
+      }
+      if (dialog.kind === 'completion') {
+        const query = dialog.command.editor.input.text.toLowerCase();
+        const entry = dialog.entries.find((candidate) => candidate.id === value)
+          ?? dialog.entries.find((candidate) => candidate.label.toLowerCase().includes(query));
+        if (entry === undefined) {
+          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No completion matches the query.' }) });
+          return;
+        }
+        if (state.project.buffers[dialog.bufferId] === undefined) {
+          state = clearDialog(state);
+          return;
+        }
+        applyTransition(dialog.bufferId, {
+          kind: 'applyChanges',
+          changeSet: createTextChangeSet([{
+            startOffset: entry.range.start,
+            endOffsetExclusive: entry.range.end,
+            insertedText: entry.replacement
+          }])
+        });
+        state = clearDialog(state);
+        return;
+      }
       if (dialog.kind === 'commandPalette') {
         const candidate = value === undefined ? undefined : commandById(value);
         if (candidate !== undefined && !candidate.enabled(state)) {
@@ -1179,23 +2203,71 @@ function instantiateVellumApplication(
         api.dispatchCommand(commandId);
         return;
       }
-      const paths = indexedFilePaths(state.project.fileTree);
+      await projectIndexTask;
+      signal?.throwIfAborted();
+      if (state.dialogState !== dialog) return;
+      const paths = state.project.index.orderedPaths;
       const candidate = value !== undefined && paths.includes(value)
         ? value
-        : quickOpenEntries(state.project.fileTree, dialog.command.editor.input.text, state.project.recentlyOpenedPaths)[0]?.path;
+        : quickOpenEntries(state.project.index, dialog.command.editor.input.text, state.project.recentlyOpenedPaths)[0]?.path;
       if (candidate === undefined) {
         state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No file matches the query.' }) });
         return;
       }
       try {
-        await api.openFile(candidate);
-        state = clearDialog(state);
+        await api.openFile(candidate, signal);
+        if (state.dialogState === dialog) state = clearDialog(state);
       } catch (error) {
-        state = Object.freeze({
-          ...state,
-          dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) })
-        });
+        if (signal?.aborted === true) throw error;
+        if (state.dialogState === dialog) {
+          state = Object.freeze({
+            ...state,
+            dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) })
+          });
+        }
       }
+    },
+    async restoreRecoveryGeneration(generation, signal) {
+      signal?.throwIfAborted();
+      const snapshot = options.recoveryJournal?.snapshots.find((candidate) => candidate.generation === generation);
+      if (snapshot === undefined) throw new Error(`Recovery generation is unavailable: ${String(generation)}`);
+      const restored = await restoreApplicationSeed(options.sessionRecord, Object.freeze({
+        schemaVersion: 1,
+        snapshots: Object.freeze([snapshot])
+      }));
+      signal?.throwIfAborted();
+      for (const controller of directoryReads.values()) controller.abort();
+      directoryReads.clear();
+      projectIndexRead?.abort();
+      projectIndexRead = undefined;
+      cancelProjectSearchRead();
+      if (projectWatchTimer !== undefined) clearTimeout(projectWatchTimer);
+      projectWatchTimer = undefined;
+      pendingProjectIndexPaths.clear();
+      forceFullProjectIndexRefresh = false;
+      for (const watcher of projectWatchers.values()) watcher.close();
+      projectWatchers.clear();
+      exportController?.abort(new DOMException('Workspace recovery restored.', 'AbortError'));
+      for (const id of [...runtimes.keys()]) releaseBuffer(id);
+      const configurationDiagnostics = state.configurationDiagnostics;
+      state = Object.freeze({
+        ...restored.state,
+        configurationDiagnostics,
+        notice: Object.freeze({
+          status: 'warning',
+          message: `Restored recovery generation ${String(generation)} from ${snapshot.timestamp}.`
+        })
+      });
+      for (const buffer of Object.values(state.project.buffers)) {
+        const parser = restored.parsers.get(buffer.id)
+          ?? createBufferParser(textDocumentText(buffer.editor.document), buffer.sourceRevision, options.parseOptions);
+        runtimes.set(buffer.id, createRuntime(parser));
+        if (options.watchFiles !== false && buffer.path !== undefined) attachWatcher(buffer.id, buffer.path);
+        schedulePreviewResources(buffer.id);
+        scheduleDiagnostics(buffer.id);
+      }
+      if (state.project.rootDirectory !== undefined) await api.refreshFileTree();
+      await api.persistState();
     },
     updateDocumentSearch(field, transition) {
       const dialog = state.dialogState;
@@ -1280,22 +2352,67 @@ function instantiateVellumApplication(
       const dialog = state.dialogState;
       if (dialog?.kind !== 'projectDirectorySearch') return;
       const query = commandInputReducer(dialog.query, transition);
-      state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, query }) });
+      state = Object.freeze({
+        ...state,
+        projectSearch: Object.freeze({
+          ...state.projectSearch,
+          query: query.editor.input.text
+        }),
+        dialogState: Object.freeze({ ...dialog, query })
+      });
+      invalidateProjectSearchResults();
+      schedulePersistence();
     },
     async runProjectDirectorySearch(searchOptions = {}, signal = new AbortController().signal) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'projectDirectorySearch') return;
-      const query = dialog.query.editor.input.text;
-      const indexedFiles = state.project.fileTree.indexedFiles;
-      state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, searching: true, results: Object.freeze([]) }) });
+      await projectIndexTask;
+      signal.throwIfAborted();
+      const activeDialog = state.dialogState;
+      if (activeDialog?.kind !== 'projectDirectorySearch') return;
+      cancelProjectSearchRead();
+      const controller = new AbortController();
+      projectSearchRead = controller;
+      const searchSignal = AbortSignal.any([signal, controller.signal]);
+      const query = activeDialog.query.editor.input.text;
       try {
-        const results = await searchProjectDirectory(state.project.fileTree, query, searchOptions, signal);
+        const indexedRevision = state.project.index.revision;
+        const sourceIdentity = projectSearchSourceIdentity();
+        const searchIndex = overlayOpenBuffers(state.project.index, Object.values(state.project.buffers).map((buffer) => ({
+          ...(buffer.path === undefined ? {} : { path: buffer.path }),
+          source: textDocumentText(buffer.editor.document)
+        })));
+        state = Object.freeze({
+          ...state,
+          projectSearch: Object.freeze({ ...state.projectSearch, query, searching: true, results: Object.freeze([]) }),
+          dialogState: Object.freeze({ ...activeDialog, searching: true, results: Object.freeze([]) })
+        });
+        const results = await searchProjectDirectory(searchIndex, query, {
+          ...searchOptions,
+          onBatch: (batch) => {
+            const active = state.dialogState;
+            if (active?.kind !== 'projectDirectorySearch'
+              || active.query.editor.input.text !== query
+              || state.project.index.revision !== indexedRevision
+              || projectSearchSourceIdentity() !== sourceIdentity) return;
+            state = Object.freeze({
+              ...state,
+              projectSearch: Object.freeze({
+                ...state.projectSearch,
+                query,
+                searching: true,
+                results: Object.freeze([...state.projectSearch.results, ...batch])
+              }),
+              dialogState: Object.freeze({ ...active, results: Object.freeze([...active.results, ...batch]) })
+            });
+            publishApplicationUpdate('projectIndex');
+          }
+        }, searchSignal);
         if (state.dialogState?.kind !== 'projectDirectorySearch') return;
-        if (state.dialogState.query.editor.input.text !== query || state.project.fileTree.indexedFiles !== indexedFiles) {
-          state = Object.freeze({
-            ...state,
-            dialogState: Object.freeze({ ...state.dialogState, searching: false, results: Object.freeze([]) })
-          });
+        if (state.dialogState.query.editor.input.text !== query
+          || state.project.index.revision !== indexedRevision
+          || projectSearchSourceIdentity() !== sourceIdentity) {
+          invalidateProjectSearchResults();
           return;
         }
         const queryText = state.dialogState.query.editor.input.text;
@@ -1307,22 +2424,45 @@ function instantiateVellumApplication(
         })));
         state = Object.freeze({
           ...state,
+          projectSearch: Object.freeze({
+            ...state.projectSearch,
+            query,
+            recentQueries: query.trim().length === 0
+              ? state.projectSearch.recentQueries
+              : Object.freeze([query, ...state.projectSearch.recentQueries.filter((candidate) => candidate !== query)].slice(0, 20)),
+            searching: false,
+            results
+          }),
           dialogState: Object.freeze({
             ...state.dialogState, searching: false, results,
             query: commandInputReducer(state.dialogState.query, { kind: 'setSuggestions', suggestions })
           })
         });
       } catch (error) {
-        if (signal.aborted) throw error;
+        if (controller.signal.aborted) return;
+        if (signal.aborted) {
+          if (projectSearchRead === controller) stopProjectSearch();
+          throw error;
+        }
         if (state.dialogState?.kind !== 'projectDirectorySearch') return;
         state = Object.freeze({
           ...state,
+          projectSearch: Object.freeze({
+            ...state.projectSearch,
+            query,
+            searching: false,
+            results: state.projectSearch.results,
+            error: error instanceof Error ? error.message : String(error)
+          }),
           dialogState: Object.freeze({
             ...state.dialogState, searching: false,
             error: error instanceof Error ? error.message : String(error)
           })
         });
+      } finally {
+        if (projectSearchRead === controller) projectSearchRead = undefined;
       }
+      schedulePersistence();
     },
     async submitProjectDirectorySearch(value, signal) {
       const dialog = state.dialogState;
@@ -1436,20 +2576,9 @@ function instantiateVellumApplication(
         return;
       }
       try {
-        if (dialog.scope === 'activeBuffer') {
-          const buffer = activeBuffer(state);
-          if (buffer?.path === undefined) throw new Error('Save the active buffer before exporting it.');
-          if (bufferIsDirty(buffer)) throw new Error('Save the active buffer before exporting its current source document.');
-          await exportSourceDocument(buffer.path, profile, { ...(signal === undefined ? {} : { signal }) });
-        } else {
-          const root = state.project.rootDirectory;
-          if (root === undefined) throw new Error('Open a project directory before exporting it.');
-          await exportProjectDirectory(root, profile, { ...(signal === undefined ? {} : { signal }) });
-        }
-        state = Object.freeze({
-          ...clearDialog(state),
-          notice: Object.freeze({ status: 'success', message: `Export completed with the ${profile.label} profile.` })
-        });
+        await executeExportRequest(dialog.scope, profile, signal);
+        const notice = state.notice;
+        state = Object.freeze({ ...clearDialog(state), ...(notice === undefined ? {} : { notice }) });
       } catch (error) {
         if (signal?.aborted === true) throw error;
         state = Object.freeze({
@@ -1458,16 +2587,42 @@ function instantiateVellumApplication(
         });
       }
     },
+    async runProjectManifestExport(signal) {
+      await executeExportRequest('projectManifest', undefined, signal);
+    },
+    async repeatLastExport(signal) {
+      const request = state.exports.lastRequest;
+      if (request === undefined) throw new Error('No export is available to repeat.');
+      if (request.scope === 'projectManifest') {
+        await executeExportRequest('projectManifest', undefined, signal, true);
+        return;
+      }
+      const profile = exportProfiles.find((candidate) => candidate.id === request.profileId);
+      if (profile === undefined) throw new Error(`The previous export profile is no longer configured: ${request.profileId}`);
+      await executeExportRequest(request.scope, profile, signal, true);
+    },
+    cancelExport() {
+      exportController?.abort(new Error('Export cancelled by the user.'));
+    },
     dismissDialog() {
+      if (state.dialogState?.kind === 'projectDirectorySearch') {
+        cancelProjectSearchRead();
+        stopProjectSearch();
+      }
       state = clearDialog(state);
     },
     resizeSplitPane(transition) {
       const splitPane = splitPaneReducer(state.splitPane, transition, {
         constraints: Object.freeze([{ minShare: 0.2, maxShare: 0.8 }, { minShare: 0.2, maxShare: 0.8 }])
       });
-      if (splitPane !== state.splitPane) state = Object.freeze({ ...state, splitPane });
+      if (splitPane !== state.splitPane) {
+        state = Object.freeze({ ...state, splitPane });
+        schedulePersistence();
+      }
     },
     resizeTerminal(previous, next, widthProfile) {
+      currentTerminalSize = next;
+      currentWidthProfile = widthProfile;
       const previousBody = vellumBodyGeometry(state, previous);
       const nextBody = vellumBodyGeometry(state, next);
       const previousPanes = vellumPaneGeometry(state, previousBody.bodyWidth, previousBody.contentRows);
@@ -1535,13 +2690,14 @@ function instantiateVellumApplication(
         }
         replaceBuffer(Object.freeze({ ...buffer, editor, previewScroll }));
       }
-      scheduleRecovery();
+      schedulePersistence();
     },
     updatePreviewScroll(bufferId, request, synchronization) {
       const buffer = state.project.buffers[bufferId];
       if (buffer === undefined) return;
       if (synchronization === undefined) {
         replaceBuffer({ ...buffer, previewScroll: request.nextState });
+        schedulePersistence();
         return;
       }
       const editorMap = synchronizedEditorMap(bufferId, synchronization);
@@ -1568,6 +2724,7 @@ function instantiateVellumApplication(
         request: { nextState, source: request.source, target: 'content' },
       }).state;
       replaceBuffer({ ...buffer, editor, previewScroll });
+      schedulePersistence();
     },
     applyTextAreaTransition(bufferId, transition, synchronization) {
       assertActive();
@@ -1585,6 +2742,7 @@ function instantiateVellumApplication(
         applyTransition(bufferId, automatic?.action ?? transition, automatic?.caretOffset);
       }
       if (synchronization !== undefined) synchronizeEditorViewport(bufferId, synchronization);
+      anchorTypewriterViewport(bufferId);
     },
     executeMarkdownCommand(bufferId, commandId, commandOptions) {
       assertActive();
@@ -1597,6 +2755,7 @@ function instantiateVellumApplication(
         kind: 'pointer',
         transition: { kind: 'placeCaret', offset: transition.caretOffset }
       });
+      anchorTypewriterViewport(bufferId);
     },
     indentList(bufferId, outdent) {
       const buffer = state.project.buffers[bufferId];
@@ -1606,42 +2765,54 @@ function instantiateVellumApplication(
       if (transition.action !== undefined) applyTransition(bufferId, transition.action, transition.caretOffset);
     },
     async saveBuffer(bufferId, destination, overwriteConflict = false, signal) {
-      assertActive();
-      const snapshot = state.project.buffers[bufferId];
-      if (snapshot === undefined) return false;
-      const target = destination ?? snapshot.path;
-      if (target === undefined) throw new Error('A destination path is required for an unsaved buffer.');
-      const savingSamePath = destination === undefined || path.resolve(target) === snapshot.path;
-      if (savingSamePath && snapshot.externalFileState.kind === 'conflict' && !overwriteConflict) {
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
-        return false;
-      }
-      const expected = savingSamePath && snapshot.externalFileState.kind === 'current'
-        ? snapshot.externalFileState.fingerprint
-        : undefined;
-      const savedRevision = snapshot.sourceRevision;
-      const file = await saveSourceFile(target, textDocumentText(snapshot.editor.document), {
-        format: snapshot.format,
-        ...(expected === undefined ? {} : { expectedFingerprint: expected }),
-        overwriteExisting: overwriteConflict,
-        ...(signal === undefined ? {} : { signal })
-      });
-      assertActive();
-      const current = state.project.buffers[bufferId];
-      if (current !== undefined) {
-        replaceBuffer({
-          ...current,
-          path: file.path,
-          label: file.label,
-          savedRevision,
-          externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
-          format: file.format
+      const previous = saveQueues.get(bufferId);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const queued = (previous ?? Promise.resolve()).catch(() => undefined).then(() => gate);
+      saveQueues.set(bufferId, queued);
+      if (previous !== undefined) await previous.catch(() => undefined);
+      try {
+        signal?.throwIfAborted();
+        assertActive();
+        const snapshot = state.project.buffers[bufferId];
+        if (snapshot === undefined) return false;
+        const target = destination ?? snapshot.path;
+        if (target === undefined) throw new Error('A destination path is required for an unsaved buffer.');
+        const savingSamePath = destination === undefined || path.resolve(target) === snapshot.path;
+        if (savingSamePath && snapshot.externalFileState.kind === 'conflict' && !overwriteConflict) {
+          state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
+          return false;
+        }
+        const expected = savingSamePath && snapshot.externalFileState.kind === 'current'
+          ? snapshot.externalFileState.fingerprint
+          : undefined;
+        const savedRevision = snapshot.sourceRevision;
+        const file = await saveSourceFile(target, textDocumentText(snapshot.editor.document), {
+          format: snapshot.format,
+          ...(expected === undefined ? {} : { expectedFingerprint: expected }),
+          overwriteExisting: overwriteConflict,
+          ...(signal === undefined ? {} : { signal })
         });
-        if (current.path !== file.path) attachWatcher(bufferId, file.path);
+        assertActive();
+        const current = state.project.buffers[bufferId];
+        if (current !== undefined) {
+          replaceBuffer({
+            ...current,
+            path: file.path,
+            label: file.label,
+            savedRevision,
+            externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
+            format: file.format
+          });
+          if (current.path !== file.path) attachWatcher(bufferId, file.path);
+        }
+        await refreshChangedProjectPaths([file.path]);
+        await api.persistState();
+        return true;
+      } finally {
+        release();
+        if (saveQueues.get(bufferId) === queued) saveQueues.delete(bufferId);
       }
-      await api.refreshFileTree();
-      await api.persistRecoveryRecord();
-      return true;
     },
     async saveAll(signal) {
       const dirty = state.project.bufferOrder.filter((bufferId) => {
@@ -1690,7 +2861,7 @@ function instantiateVellumApplication(
       }
       if (action === 'save' && !await api.saveBuffer(bufferId, destination)) return false;
       closeBuffer(bufferId);
-      await api.persistRecoveryRecord();
+      await api.persistState();
       return true;
     },
     reopenRecentlyClosed() {
@@ -1745,7 +2916,7 @@ function instantiateVellumApplication(
         if (!await api.saveAll()) return false;
       }
       for (const bufferId of [...state.project.bufferOrder]) closeBuffer(bufferId);
-      await api.persistRecoveryRecord();
+      await api.persistState();
       return true;
     },
     async checkExternalFile(bufferId) {
@@ -1761,7 +2932,7 @@ function instantiateVellumApplication(
         buffer = state.project.buffers[bufferId];
         if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
         const latestPrevious = externalFileStateFingerprint(buffer.externalFileState);
-        const renamed = await findRenamedPath(state.project.fileTree, latestPrevious);
+        const renamed = await findRenamedPath(state.project.index, latestPrevious);
         if (renamed !== undefined) {
           const renamedFingerprint = await externalFileFingerprint(renamed);
           buffer = state.project.buffers[bufferId];
@@ -1864,7 +3035,7 @@ function instantiateVellumApplication(
         state = Object.freeze({ ...state, dialogState: Object.freeze(nextDialog) });
       }
       schedulePreviewResources(bufferId);
-      scheduleRecovery();
+      schedulePersistence();
       return true;
     },
     keepBuffer(bufferId) {
@@ -1970,6 +3141,9 @@ function instantiateVellumApplication(
         watched: runtime.watcher !== undefined
       });
     },
+    previewResourceStats() {
+      return previewResourcePool.stats();
+    },
     markdownTheme() {
       return markdownTheme;
     },
@@ -1979,11 +3153,17 @@ function instantiateVellumApplication(
       if (buffer === undefined || runtime === undefined) {
         throw new Error(`Unknown buffer runtime: ${bufferId}`);
       }
-      if (hybridDecorationCacheMatches(runtime.hybridDecorations, buffer)) {
+      if (hybridDecorationCacheMatches(runtime.hybridDecorations, buffer, state.writingMode.focus, currentWidthProfile)) {
         return runtime.hybridDecorations.decorations;
       }
-      const decorations = createHybridTextDecorations(buffer, markdownTheme);
-      runtime.hybridDecorations = hybridDecorationCache(buffer, decorations);
+      const decorations = createHybridTextDecorations(
+        buffer,
+        markdownTheme,
+        state.writingMode.focus,
+        blockResources(buffer, runtime),
+        currentWidthProfile
+      );
+      runtime.hybridDecorations = hybridDecorationCache(buffer, decorations, state.writingMode.focus, currentWidthProfile);
       return decorations;
     },
     previewLayout(
@@ -1995,13 +3175,7 @@ function instantiateVellumApplication(
       const buffer = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
       if (buffer?.preview.kind !== 'ready' || runtime === undefined) return undefined;
-      const resources: MarkdownBlockResources = {
-        highlightedCode: runtime.highlightedCode,
-        mathText: runtime.mathText,
-        diagramText: runtime.diagramText,
-        images: runtime.images,
-        diagnostics: buffer.preview.snapshot.document.diagnostics
-      };
+      const resources = blockResources(buffer, runtime);
       const layout = layoutMarkdownPreview(
         buffer.preview.snapshot.document.tree,
         width,
@@ -2081,7 +3255,12 @@ function instantiateVellumApplication(
                 try {
                   const diagram = await runtime.diagramRenderers.render('mermaid', node.value, controller.signal);
                   if (diagram !== undefined) {
-                    const image = runtime.imageLoader.decode(diagram.bytes, 'Mermaid diagram', diagram.contentType);
+                    const image = await runtime.imageLoader.decode(
+                      diagram.bytes,
+                      'Mermaid diagram',
+                      diagram.contentType,
+                      controller.signal
+                    );
                     commitPreviewResource(
                       bufferId,
                       revision,
@@ -2092,6 +3271,15 @@ function instantiateVellumApplication(
                         text: image.kind === 'failed' ? `Diagram rendering failed.\n${node.value}` : 'Mermaid diagram',
                         image
                       },
+                      controller
+                    );
+                  } else {
+                    commitPreviewResource(
+                      bufferId,
+                      revision,
+                      node.id,
+                      topLevelNodeById.get(node.id),
+                      { kind: 'diagram', text: `Mermaid renderer is not configured.\n${node.value}` },
                       controller
                     );
                   }
@@ -2175,28 +3363,156 @@ function instantiateVellumApplication(
         }
       }
     },
-    async persistRecoveryRecord() {
-      assertActive();
-      if (recoveryTimer !== undefined) {
-        clearTimeout(recoveryTimer);
-        recoveryTimer = undefined;
+    async refreshDiagnostics(bufferId) {
+      const buffer = state.project.buffers[bufferId];
+      const runtime = runtimes.get(bufferId);
+      if (buffer === undefined || runtime === undefined) return;
+      runtime.diagnosticController?.abort();
+      const controller = new AbortController();
+      runtime.diagnosticController = controller;
+      try {
+        const diagnostics = await collectDiagnostics(
+          buffer,
+          overlayOpenBuffers(state.project.index, Object.values(state.project.buffers).map((candidate) => ({
+            ...(candidate.path === undefined ? {} : { path: candidate.path }),
+            source: textDocumentText(candidate.editor.document)
+          }))),
+          diagnosticProviders,
+          controller.signal
+        );
+        if (runtime.diagnosticController !== controller
+          || state.project.buffers[bufferId]?.sourceRevision !== buffer.sourceRevision) return;
+        state = Object.freeze({
+          ...state,
+          diagnostics: Object.freeze({ ...state.diagnostics, [bufferId]: diagnostics })
+        });
+        publishApplicationUpdate('diagnostics', bufferId);
+      } finally {
+        if (runtime.diagnosticController === controller) runtime.diagnosticController = undefined;
       }
-      await writeRecovery();
+    },
+    applyDiagnosticFix(bufferId, diagnosticId, fixIndex = 0) {
+      const buffer = state.project.buffers[bufferId];
+      const diagnostic = state.diagnostics[bufferId]?.find((candidate) => candidate.id === diagnosticId);
+      const fix = diagnostic?.fixes[fixIndex];
+      if (buffer === undefined || diagnostic === undefined || fix === undefined) return;
+      if (diagnostic.providerRevision !== buffer.sourceRevision) {
+        scheduleDiagnostics(bufferId);
+        return;
+      }
+      applyTransition(bufferId, {
+        kind: 'applyChanges',
+        changeSet: createTextChangeSet([{
+          startOffset: fix.span.start,
+          endOffsetExclusive: fix.span.end,
+          insertedText: fix.replacement
+        }])
+      });
+    },
+    navigateDiagnostic(bufferId, direction) {
+      const buffer = state.project.buffers[bufferId];
+      const diagnostics = visibleDiagnosticsFor(bufferId);
+      if (buffer === undefined || diagnostics.length === 0) return;
+      const caret = buffer.editor.caret.position.offset;
+      const target = direction === 'next'
+        ? diagnostics.find((diagnostic) => diagnostic.span.start > caret) ?? diagnostics[0]
+        : [...diagnostics].toReversed().find((diagnostic) => diagnostic.span.start < caret) ?? diagnostics.at(-1);
+      if (target !== undefined) {
+        state = Object.freeze({
+          ...state,
+          navigator: Object.freeze({ ...state.navigator, mode: 'diagnostics', visible: true })
+        });
+        api.navigateTo(bufferId, target.span.start, true, target.span);
+      }
+    },
+    applyCurrentDiagnosticFix() {
+      const buffer = activeBuffer(state);
+      const diagnostic = currentDiagnostic(true);
+      if (buffer !== undefined && diagnostic !== undefined) api.applyDiagnosticFix(buffer.id, diagnostic.id);
+    },
+    ignoreCurrentDiagnosticRule() {
+      const diagnostic = currentDiagnostic();
+      if (diagnostic === undefined || state.diagnosticPreferences.ignoredRules.includes(diagnostic.rule)) return;
+      state = Object.freeze({
+        ...state,
+        diagnosticPreferences: Object.freeze({
+          ...state.diagnosticPreferences,
+          ignoredRules: Object.freeze([...state.diagnosticPreferences.ignoredRules, diagnostic.rule])
+        }),
+        notice: Object.freeze({ status: 'success', message: `Ignored diagnostic rule ${diagnostic.rule}.` })
+      });
+      schedulePersistence();
+    },
+    cycleDiagnosticSeverity() {
+      const previous = state.diagnosticPreferences.minimumSeverity;
+      const minimumSeverity = previous === 'info' ? 'warning' : previous === 'warning' ? 'error' : 'info';
+      state = Object.freeze({
+        ...state,
+        diagnosticPreferences: Object.freeze({ ...state.diagnosticPreferences, minimumSeverity }),
+        notice: Object.freeze({ status: 'success', message: `Showing ${minimumSeverity} and higher diagnostics.` })
+      });
+      schedulePersistence();
+    },
+    cycleDiagnosticSource() {
+      const sources: readonly AppState['diagnosticPreferences']['source'][] = Object.freeze([
+        'all', 'parser', 'markdown', 'spelling', 'grammar', 'links', 'assets', 'export'
+      ]);
+      const current = sources.indexOf(state.diagnosticPreferences.source);
+      const source = sources[(current + 1) % sources.length] ?? 'all';
+      state = Object.freeze({
+        ...state,
+        diagnosticPreferences: Object.freeze({ ...state.diagnosticPreferences, source }),
+        notice: Object.freeze({ status: 'success', message: `Diagnostic source filter: ${source}.` })
+      });
+      schedulePersistence();
+    },
+    async refreshProjectDiagnostics() {
+      await Promise.all(state.project.bufferOrder.map((bufferId) => api.refreshDiagnostics(bufferId)));
+    },
+    async addCurrentWordToDictionary() {
+      const buffer = activeBuffer(state);
+      const diagnostic = currentDiagnostic();
+      if (buffer === undefined || diagnostic?.source !== 'spelling' || options.wordDictionary === undefined) {
+        throw new Error('No spelling diagnostic or writable dictionary is available.');
+      }
+      const word = textDocumentText(buffer.editor.document).slice(diagnostic.span.start, diagnostic.span.end);
+      const added = await addPersonalDictionaryWord(personalDictionaryPath, options.wordDictionary, word);
+      if (added) await api.refreshDiagnostics(buffer.id);
+      state = Object.freeze({
+        ...state,
+        notice: Object.freeze({ status: 'success', message: added ? `Added “${word}” to the personal dictionary.` : `“${word}” is already in the dictionary.` })
+      });
+    },
+    async persistState() {
+      assertActive();
+      if (persistenceTimer !== undefined) {
+        clearTimeout(persistenceTimer);
+        persistenceTimer = undefined;
+      }
+      await writePersistence();
     },
     async dispose() {
       if (disposed) return;
       disposed = true;
-      if (recoveryTimer !== undefined) {
-        clearTimeout(recoveryTimer);
-        recoveryTimer = undefined;
+      if (persistenceTimer !== undefined) {
+        clearTimeout(persistenceTimer);
+        persistenceTimer = undefined;
       }
       for (const controller of directoryReads.values()) controller.abort();
       directoryReads.clear();
+      if (projectWatchTimer !== undefined) clearTimeout(projectWatchTimer);
+      projectWatchTimer = undefined;
+      pendingProjectIndexPaths.clear();
+      forceFullProjectIndexRefresh = false;
+      for (const watcher of projectWatchers.values()) watcher.close();
+      projectWatchers.clear();
       projectIndexRead?.abort();
       projectIndexRead = undefined;
+      cancelProjectSearchRead();
       for (const id of [...runtimes.keys()]) releaseBuffer(id);
+      if (ownsPreviewResourcePool) previewResourcePool.clear();
       listeners.clear();
-      await writeRecovery();
+      await writePersistence();
     }
   };
 
@@ -2204,24 +3520,49 @@ function instantiateVellumApplication(
     const parser = restoredParsers.get(buffer.id)
       ?? createBufferParser(textDocumentText(buffer.editor.document), buffer.sourceRevision, options.parseOptions);
     runtimes.set(buffer.id, createRuntime(parser));
+    if (options.watchFiles !== false && buffer.path !== undefined) attachWatcher(buffer.id, buffer.path);
     schedulePreviewResources(buffer.id);
+    scheduleDiagnostics(buffer.id);
   }
   return Object.freeze(api);
 }
 
 export async function restoreVellumApplication(
-  store: RecoveryStore,
-  options: Omit<VellumApplicationOptions, 'initialState' | 'recoveryStore'> = {}
+  sessionStore: SessionStore,
+  recoveryStore: RecoveryStore,
+  options: Omit<VellumApplicationOptions, 'initialState' | 'sessionStore' | 'recoveryStore'> = {}
 ): Promise<VellumApplication> {
-  const record = await store.read();
-  if (record === undefined) return createVellumApplication({ ...options, recoveryStore: store });
-  const recovered = recoverApplicationSeed(record);
+  const [session, recovery] = await Promise.all([sessionStore.read(), recoveryStore.read()]);
+  const recovered = await restoreApplicationSeed(session, recovery);
+  const startupDiagnostics = Object.freeze([
+    ...(options.startupDiagnostics ?? []),
+    ...sessionStore.diagnostics().map((message) => Object.freeze({ source: 'session' as const, severity: 'error' as const, message })),
+    ...recoveryStore.diagnostics().map((message) => Object.freeze({ source: 'recovery' as const, severity: 'error' as const, message })),
+    ...recovered.diagnostics.map((message) => Object.freeze({ source: 'session' as const, severity: 'warning' as const, message }))
+  ]);
   const application = instantiateVellumApplication(
-    { ...options, recoveryStore: store, initialState: recovered.state },
+    {
+      ...options,
+      sessionStore,
+      recoveryStore,
+      ...(session === undefined ? {} : { sessionRecord: session }),
+      ...(recovery === undefined ? {} : { recoveryJournal: recovery }),
+      initialState: recovered.state,
+      startupDiagnostics
+    },
     recovered.parsers
   );
   try {
-    if (recovered.state.project.rootDirectory !== undefined) await application.refreshFileTree();
+    if (recovered.state.project.rootDirectory !== undefined) {
+      await application.refreshFileTree();
+      const pending = [...application.state().project.fileTree.pendingExpansionIds]
+        .toSorted((left, right) => left.split(path.sep).length - right.split(path.sep).length);
+      for (const directory of pending) {
+        if (application.state().project.fileTree.nodes[directory]?.kind === 'directory') {
+          await application.loadFileTreeDirectory(directory);
+        }
+      }
+    }
   } catch (error) {
     await application.dispose();
     throw error;
@@ -2252,11 +3593,34 @@ function clearDialog(value: AppState): AppState {
   return Object.freeze(mutable);
 }
 
+function applyProjectLinkChanges(
+  source: string,
+  changes: readonly { readonly start: number; readonly end: number; readonly replacement: string }[]
+): string {
+  let result = source;
+  for (const change of [...changes].toSorted((left, right) => right.start - left.start)) {
+    result = result.slice(0, change.start) + change.replacement + result.slice(change.end);
+  }
+  return result;
+}
+
+function remapMovedPath(candidate: string, source: string, destination: string): string {
+  if (candidate === source) return destination;
+  return pathIsWithin(source, candidate)
+    ? path.join(destination, path.relative(source, candidate))
+    : candidate;
+}
+
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
 async function findRenamedPath(
-  fileTree: AppState['project']['fileTree'],
+  index: AppState['project']['index'],
   previous: ExternalFileFingerprint
 ): Promise<string | undefined> {
-  for (const filePath of indexedFilePaths(fileTree)) {
+  for (const filePath of index.orderedPaths) {
     try {
       const metadata = await stat(await realpath(filePath), { bigint: true });
       if (metadata.dev.toString() === previous.device && metadata.ino.toString() === previous.inode) return filePath;
@@ -2270,6 +3634,11 @@ async function findRenamedPath(
 function executeNavigationEffect(application: VellumApplication, commandId: import('./types.js').CommandId): void {
   if (commandId === 'navigate.back' || commandId === 'navigate.forward') {
     application.navigateHistory(commandId === 'navigate.back' ? 'back' : 'forward');
+    return;
+  }
+  if (commandId === 'navigate.nextDiagnostic' || commandId === 'navigate.previousDiagnostic') {
+    const id = application.state().project.activeBufferId;
+    if (id !== undefined) application.navigateDiagnostic(id, commandId === 'navigate.nextDiagnostic' ? 'next' : 'previous');
     return;
   }
   if (commandId !== 'navigate.nextHeading' && commandId !== 'navigate.previousHeading') return;

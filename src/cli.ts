@@ -8,11 +8,16 @@ import {
 } from './app/application.js';
 import { commandHelp, parseCliArguments, type CliArguments, type OpenCliArguments } from './cli-options.js';
 import { builtInExportProfiles, loadUserExportProfiles, type ExportProfile } from './export/profiles.js';
-import { exportProjectDirectory, exportSourceDocument } from './export/exporter.js';
+import { batchExportDirectory, exportDocument } from './export/exporter.js';
+import { exportProjectManifest, loadProjectManifest } from './export/project.js';
 import { createRecoveryStore } from './recovery/recovery.js';
+import { createSessionStore } from './session/session.js';
 import { runVellum } from './tui.js';
 import { loadUserKeymap } from './commands/keymap.js';
 import { loadUserMarkdownTheme, type MarkdownTheme } from './markdown/theme.js';
+import { runKeyboardReport } from './keyboard-report.js';
+import type { ConfigurationDiagnostic } from './app/types.js';
+import { detectedDiagramRenderers } from './markdown/diagram.js';
 
 async function runCli(
   arguments_: readonly string[],
@@ -34,39 +39,89 @@ async function runCli(
     return 0;
   }
   try {
+    if (parsed.kind === 'keyboardReport') {
+      await runKeyboardReport();
+      return 0;
+    }
+    if (parsed.kind === 'checkKeymap') {
+      const keymap = await loadUserKeymap();
+      for (const diagnostic of keymap.diagnostics) {
+        streams.output.write(`${diagnostic.severity}: keymap entry ${String(diagnostic.index + 1)}: ${diagnostic.message}\n`);
+      }
+      streams.output.write(`${String(keymap.entries.length)} active key bindings.\n`);
+      return keymap.diagnostics.some((diagnostic) => diagnostic.severity === 'error') ? 1 : 0;
+    }
     const userProfiles = await loadUserExportProfiles();
-    if (userProfiles.diagnostics.length > 0) {
+    if (parsed.strictConfig === true && userProfiles.diagnostics.length > 0) {
       throw new Error(userProfiles.diagnostics.map((diagnostic) => (
         `Export profile ${diagnostic.profileId}: ${diagnostic.message}`
       )).join('\n'));
     }
     const exportProfiles = Object.freeze([...builtInExportProfiles, ...userProfiles.profiles]);
     if (parsed.kind === 'export') {
-      const profile = exportProfiles.find((candidate) => candidate.id === parsed.profileId);
-      if (profile === undefined) throw new Error(`Unknown export profile: ${parsed.profileId}`);
+      reportConfigurationDiagnostics(streams.error, userProfiles.diagnostics.map((diagnostic) => (
+        `Export profile ${diagnostic.profileId}: ${diagnostic.message}`
+      )));
       const status = await stat(parsed.path);
-      if (status.isDirectory()) {
-        if (parsed.outputPath !== undefined) throw new Error('--output cannot name one file when exporting a project directory.');
-        await exportProjectDirectory(parsed.path, profile, { overwrite: parsed.overwrite });
-      } else if (status.isFile()) {
-        await exportSourceDocument(parsed.path, profile, {
+      if (parsed.scope === 'projectManifest') {
+        if (!status.isDirectory()) throw new Error('Project manifest export requires a project directory.');
+        await exportProjectManifest(
+          parsed.path,
+          await loadProjectManifest(parsed.path),
+          exportProfiles,
+          new Map(),
+          { overwrite: parsed.overwrite }
+        );
+      } else {
+        const profile = exportProfiles.find((candidate) => candidate.id === parsed.profileId);
+        if (profile === undefined) throw new Error(`Unknown export profile: ${parsed.profileId}`);
+        if (parsed.scope === 'batchDirectory') {
+          if (!status.isDirectory()) throw new Error('Batch export requires a project directory.');
+          await batchExportDirectory(parsed.path, profile, new Map(), { overwrite: parsed.overwrite });
+        } else if (status.isFile()) {
+          await exportDocument({ kind: 'disk', path: parsed.path }, profile, {
           ...(parsed.outputPath === undefined ? {} : { outputPath: parsed.outputPath }),
           overwrite: parsed.overwrite
-        });
-      } else throw new Error(`Export input is neither a file nor a directory: ${parsed.path}`);
+          });
+        } else throw new Error('Document export requires one source file; use --batch or --project-manifest for a directory.');
+      }
       return 0;
     }
     const userTheme = await loadUserMarkdownTheme();
-    if (userTheme.diagnostics.length > 0) {
+    if (parsed.strictConfig === true && userTheme.diagnostics.length > 0) {
       throw new Error(userTheme.diagnostics.map((diagnostic) => (
         `${diagnostic.key.length === 0 ? 'Markdown theme' : `Markdown theme ${diagnostic.key}`}: ${diagnostic.message}`
       )).join('\n'));
     }
     const keymap = await loadUserKeymap();
-    if (keymap.diagnostics.length > 0) {
+    if (parsed.strictConfig === true && keymap.diagnostics.length > 0) {
       throw new Error(keymap.diagnostics.map((diagnostic) => `Keymap entry ${String(diagnostic.index + 1)}: ${diagnostic.message}`).join('\n'));
     }
-    const application = await prepareApplication(parsed, streams.input, userTheme.theme, userProfiles.profiles);
+    const startupDiagnostics: ConfigurationDiagnostic[] = [
+      ...userProfiles.diagnostics.map((diagnostic) => Object.freeze({
+        source: 'exportProfiles' as const,
+        severity: 'error' as const,
+        message: `${diagnostic.profileId}: ${diagnostic.message}`
+      })),
+      ...userTheme.diagnostics.map((diagnostic) => Object.freeze({
+        source: 'theme' as const,
+        severity: 'error' as const,
+        message: `${diagnostic.key.length === 0 ? 'Markdown theme' : diagnostic.key}: ${diagnostic.message}`
+      })),
+      ...keymap.diagnostics.map((diagnostic) => Object.freeze({
+        source: 'keymap' as const,
+        severity: diagnostic.severity,
+        message: `Entry ${String(diagnostic.index + 1)}: ${diagnostic.message}`
+      }))
+    ];
+    if (parsed.kind !== 'open') throw new Error(`Unsupported CLI mode: ${String(parsed.kind)}`);
+    const application = await prepareApplication(
+      parsed,
+      streams.input,
+      userTheme.theme,
+      userProfiles.profiles,
+      startupDiagnostics
+    );
     await runVellum(application, keymap);
     return 0;
   } catch (error) {
@@ -79,15 +134,30 @@ async function prepareApplication(
   parsed: OpenCliArguments,
   input: NodeJS.ReadableStream,
   markdownTheme: MarkdownTheme,
-  exportProfiles: readonly ExportProfile[]
+  exportProfiles: readonly ExportProfile[],
+  startupDiagnostics: readonly ConfigurationDiagnostic[]
 ): Promise<VellumApplication> {
   const requestedStatus = parsed.path === undefined || parsed.path === '-'
     ? undefined
     : await stat(parsed.path);
   const recoveryStore = createRecoveryStore();
+  const sessionStore = createSessionStore();
+  const diagramRenderers = detectedDiagramRenderers();
   const application = parsed.path === undefined
-    ? await restoreVellumApplication(recoveryStore, { markdownTheme, exportProfiles })
-    : createVellumApplication({ recoveryStore, markdownTheme, exportProfiles });
+    ? await restoreVellumApplication(sessionStore, recoveryStore, {
+        markdownTheme,
+        exportProfiles,
+        startupDiagnostics,
+        diagramRenderers
+      })
+    : createVellumApplication({
+        sessionStore,
+        recoveryStore,
+        markdownTheme,
+        exportProfiles,
+        startupDiagnostics,
+        diagramRenderers
+      });
   try {
     if (parsed.path === '-') {
       application.openSource(await readStandardInput(input));
@@ -95,8 +165,6 @@ async function prepareApplication(
       if (requestedStatus?.isDirectory() === true) await application.openProjectDirectory(parsed.path);
       else if (requestedStatus?.isFile() === true) await application.openFile(parsed.path);
       else throw new Error(`The requested path is neither a file nor a directory: ${parsed.path}`);
-    } else if (application.state().project.bufferOrder.length === 0) {
-      application.newBuffer();
     }
     if (parsed.editorMode === 'hybrid') application.dispatchCommand('view.editorHybrid');
     else if (parsed.editorMode === 'source') application.dispatchCommand('view.editorSource');
@@ -107,6 +175,10 @@ async function prepareApplication(
     await application.dispose();
     throw error;
   }
+}
+
+function reportConfigurationDiagnostics(stream: NodeJS.WritableStream, diagnostics: readonly string[]): void {
+  for (const diagnostic of diagnostics) stream.write(`warning: ${diagnostic}\n`);
 }
 
 function placeCaretAtLine(application: VellumApplication, line: number): void {

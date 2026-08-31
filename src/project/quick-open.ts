@@ -1,7 +1,6 @@
 import path from 'node:path';
-import type { FileTreeState } from '../app/types.js';
+import type { ProjectIndexState } from '../app/types.js';
 import { fuzzyScore } from '../commands/palette.js';
-import { indexedFilePaths } from './file-tree.js';
 import { compareText } from '../order.js';
 
 export interface QuickOpenEntry {
@@ -11,15 +10,14 @@ export interface QuickOpenEntry {
 }
 
 export function quickOpenEntries(
-  fileTree: FileTreeState,
+  index: ProjectIndexState,
   query: string,
   recentlyOpenedPaths: readonly string[]
 ): readonly QuickOpenEntry[] {
-  const root = fileTree.rootIds[0];
   const normalized = query.trim().toLowerCase();
   const recent = new Map(recentlyOpenedPaths.map((filePath, index) => [filePath, index]));
-  const entries = indexedFilePaths(fileTree).map((filePath) => {
-    const relativePath = root === undefined ? filePath : path.relative(root, filePath);
+  const entries = index.orderedPaths.map((filePath) => {
+    const relativePath = index.documents[filePath]?.relativePath ?? path.basename(filePath);
     const normalizedPath = relativePath.replaceAll('\\', '/').toLowerCase();
     const basename = path.basename(filePath).toLowerCase();
     let score = normalized.length === 0 ? 0 : fuzzyScore(normalizedPath, normalized);

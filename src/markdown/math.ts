@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { measureTextCells } from '@ismail-elkorchi/terminal-ui/text';
+import { BoundedLruMap } from '../cache/lru.js';
 
 export interface MathRenderResult {
   readonly sourceHash: string;
@@ -9,7 +11,28 @@ export interface MathRenderResult {
 
 export interface MathRenderer {
   render(source: string, signal?: AbortSignal): Promise<MathRenderResult>;
+  stats(): { readonly cacheEntries: number };
   clear(): void;
+}
+
+export interface MathRenderSettings {
+  readonly maximumSourceCodeUnits: number;
+  readonly maximumCacheEntries: number;
+}
+
+export interface MathRenderProvider {
+  readonly id: string;
+  readonly version: string;
+  render(source: string, signal?: AbortSignal): Promise<{ readonly text: string; readonly accessibleLabel?: string } | undefined>;
+}
+
+export interface ExternalMathProviderDefinition {
+  readonly id: string;
+  readonly version: string;
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly timeoutMilliseconds: number;
+  readonly maximumOutputBytes: number;
 }
 
 type MathNode =
@@ -32,31 +55,151 @@ export class MathRenderError extends Error {
   }
 }
 
-const maximumMathSourceCodeUnits = 100_000;
+const defaultMathSettings: MathRenderSettings = Object.freeze({
+  maximumSourceCodeUnits: 100_000,
+  maximumCacheEntries: 256
+});
 
-export function createMathRenderer(): MathRenderer {
-  const cache = new Map<string, MathRenderResult>();
+export function createMathRenderer(
+  settings: Partial<MathRenderSettings> = {},
+  providers: readonly MathRenderProvider[] = Object.freeze([])
+): MathRenderer {
+  const configuration = Object.freeze({ ...defaultMathSettings, ...settings });
+  if (!Number.isSafeInteger(configuration.maximumSourceCodeUnits) || configuration.maximumSourceCodeUnits <= 0) {
+    throw new RangeError('The maximum math source length must be a positive integer.');
+  }
+  const cache = new BoundedLruMap<string, MathRenderResult>(configuration.maximumCacheEntries);
   return Object.freeze({
     async render(source: string, signal?: AbortSignal) {
       signal?.throwIfAborted();
-      if (source.length > maximumMathSourceCodeUnits) {
-        throw new MathRenderError(`Math source exceeds ${String(maximumMathSourceCodeUnits)} UTF-16 code units.`);
+      if (source.length > configuration.maximumSourceCodeUnits) {
+        throw new MathRenderError(`Math source exceeds ${String(configuration.maximumSourceCodeUnits)} UTF-16 code units.`);
       }
       const sourceHash = createHash('sha256').update(source).digest('hex');
-      const cached = cache.get(sourceHash);
+      const providerIdentity = providers.map((provider) => `${provider.id}@${provider.version}`).join(',');
+      const cacheKey = `${providerIdentity}\0${sourceHash}`;
+      const cached = cache.get(cacheKey);
       if (cached !== undefined) return cached;
+      for (const provider of providers) {
+        signal?.throwIfAborted();
+        try {
+          const supplied = await provider.render(source, signal);
+          if (supplied === undefined) continue;
+          const result = Object.freeze({
+            sourceHash,
+            text: supplied.text,
+            accessibleLabel: supplied.accessibleLabel ?? `Math: ${source.trim()}`
+          });
+          cache.set(cacheKey, result);
+          return result;
+        } catch (error) {
+          if (signal?.aborted === true) throw error;
+        }
+      }
       await new Promise<void>((resolve) => setImmediate(resolve));
       signal?.throwIfAborted();
       const tree = await new LocalMathParser(source, signal).parse();
       const canvas = await layoutMath(tree, signal);
       const text = canvas.lines.map((line) => line.trimEnd()).join('\n').trimEnd();
       const result = Object.freeze({ sourceHash, text, accessibleLabel: `Math: ${source.trim()}` });
-      cache.set(sourceHash, result);
+      cache.set(cacheKey, result);
       return result;
+    },
+    stats() {
+      return Object.freeze({ cacheEntries: cache.size });
     },
     clear() {
       cache.clear();
     }
+  });
+}
+
+export function externalMathProvider(definition: ExternalMathProviderDefinition): MathRenderProvider {
+  if (definition.id.trim().length === 0 || definition.version.trim().length === 0 || definition.executable.trim().length === 0) {
+    throw new TypeError('External math provider id, version, and executable are required.');
+  }
+  if (!Number.isSafeInteger(definition.timeoutMilliseconds) || definition.timeoutMilliseconds < 1
+    || !Number.isSafeInteger(definition.maximumOutputBytes) || definition.maximumOutputBytes < 1) {
+    throw new RangeError('External math provider limits must be positive integers.');
+  }
+  return Object.freeze({
+    id: definition.id,
+    version: definition.version,
+    async render(source: string, signal?: AbortSignal) {
+      const text = await executeMathProvider(definition, source, signal);
+      return text.trim().length === 0 ? undefined : Object.freeze({ text, accessibleLabel: `Math: ${source.trim()}` });
+    }
+  });
+}
+
+function executeMathProvider(
+  definition: ExternalMathProviderDefinition,
+  source: string,
+  signal?: AbortSignal
+): Promise<string> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const child = spawn(definition.executable, [...definition.arguments], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+    const output: Buffer[] = [];
+    const errors: Buffer[] = [];
+    let length = 0;
+    let errorLength = 0;
+    let exceeded = false;
+    let timedOut = false;
+    let aborted = false;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    const terminate = (): void => {
+      child.kill();
+      forceKillTimer ??= setTimeout(() => child.kill('SIGKILL'), 500);
+      forceKillTimer.unref();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, definition.timeoutMilliseconds);
+    const onAbort = (): void => {
+      aborted = true;
+      terminate();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted === true) onAbort();
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    child.stdout.on('data', (chunk: Buffer) => {
+      length += chunk.length;
+      if (length > definition.maximumOutputBytes) {
+        exceeded = true;
+        terminate();
+      } else output.push(chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const remaining = Math.max(0, 16_384 - errorLength);
+      if (remaining > 0) {
+        const retained = chunk.subarray(0, remaining);
+        errors.push(retained);
+        errorLength += retained.length;
+      }
+    });
+    child.stdin.on('error', () => undefined);
+    child.once('error', (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once('close', (code) => {
+      cleanup();
+      if (aborted) reject(signal?.reason instanceof Error ? signal.reason : new DOMException('Math rendering cancelled.', 'AbortError'));
+      else if (timedOut) reject(new Error(`Math provider exceeded ${String(definition.timeoutMilliseconds)} ms.`));
+      else if (exceeded) reject(new Error('Math provider output exceeded its configured limit.'));
+      else if (code !== 0) reject(new Error(`Math provider failed with exit status ${String(code)}: ${Buffer.concat(errors).toString('utf8').trim()}`));
+      else resolve(Buffer.concat(output).toString('utf8').trimEnd());
+    });
+    child.stdin.end(source, 'utf8');
   });
 }
 

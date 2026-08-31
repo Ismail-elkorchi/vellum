@@ -16,6 +16,11 @@ import { createBufferParser } from '../markdown/preview.js';
 import { createPreviewLayoutCache, layoutMarkdownPreview } from '../markdown/render/layout.js';
 import { markdownPreview } from '../markdown/render/component.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
+import { createVellumApplication } from '../app/application.js';
+import type { ProjectDocumentIndexEntry, ProjectIndexState } from '../app/types.js';
+import { quickOpenEntries } from '../project/quick-open.js';
+import { searchProjectDirectory } from '../search/project-directory-search.js';
+import { createVellumTui } from '../tui.js';
 
 interface BenchmarkFixture {
   readonly name: string;
@@ -29,9 +34,17 @@ interface BenchmarkRow {
   readonly p95Milliseconds: number;
 }
 
+interface BenchmarkThreshold {
+  readonly fixture: string;
+  readonly operation: string;
+  readonly maximumP95Milliseconds: number;
+}
+
 const samples = 3;
 const fixtures = benchmarkFixtures();
 const rows: BenchmarkRow[] = [];
+const jsonOutput = process.argv.includes('--json');
+const enforceThresholds = process.argv.includes('--check');
 
 for (const fixture of fixtures) {
   const editor = createTextAreaState({ value: fixture.source });
@@ -101,12 +114,6 @@ for (const fixture of fixtures) {
   }
 }
 
-process.stdout.write('| Fixture | Operation | Median (ms) | p95 (ms) |\n');
-process.stdout.write('|---|---|---:|---:|\n');
-for (const row of rows) {
-  process.stdout.write(`| ${row.fixture} | ${row.operation} | ${row.medianMilliseconds.toFixed(3)} | ${row.p95Milliseconds.toFixed(3)} |\n`);
-}
-
 const instrumentationSource = '# Heading\n\nFirst block.\n\nSecond block.\n';
 const instrumented = createBufferParser(instrumentationSource, 0);
 const instrumentationCache = createPreviewLayoutCache();
@@ -130,8 +137,7 @@ const firstLayout = update.kind === 'ready'
       instrumentationCache,
     )
   : undefined;
-process.stdout.write('\nDeterministic instrumentation:\n');
-process.stdout.write(JSON.stringify({
+const instrumentation = Object.freeze({
   parsedCodeUnits: update.kind === 'ready' ? update.update?.instrumentation.parsedCodeUnits ?? instrumentationSource.length : instrumentationSource.length,
   sourceIndexCodeUnits: update.kind === 'ready' ? update.update?.instrumentation.sourceIndexCodeUnits ?? instrumentationSource.length : instrumentationSource.length,
   parsedNodes: update.kind === 'ready' ? update.update?.instrumentation.parsedNodes ?? 0 : 0,
@@ -143,7 +149,57 @@ process.stdout.write(JSON.stringify({
   reusedBlockLayouts: firstLayout?.instrumentation.reusedBlockLayouts ?? 0,
   rebuiltBlockLayouts: firstLayout?.instrumentation.rebuiltBlockLayouts ?? 0,
   fullPreviewLayout: firstLayout?.instrumentation.fullPreviewLayout ?? true
-}, null, 2) + '\n');
+});
+
+const syntheticIndex = benchmarkProjectIndex(10_000);
+rows.push(measure('10,000-file project', 'Quick Open filtering', () => (
+  quickOpenEntries(syntheticIndex, 'file-09999', Object.freeze([]))
+)));
+rows.push(await measureAsync('10,000-file project', 'first warm project-search result', async () => {
+  await searchProjectDirectory(
+    syntheticIndex,
+    'needle-00000',
+    { maximumResults: 1 },
+    new AbortController().signal
+  );
+}));
+rows.push(await measureSearchCancellation(syntheticIndex));
+rows.push(await measureApplicationKeystrokeFrame());
+
+const thresholds: readonly BenchmarkThreshold[] = Object.freeze([
+  Object.freeze({ fixture: '1 MiB application', operation: 'keystroke-to-frame', maximumP95Milliseconds: 1_000 }),
+  Object.freeze({ fixture: '10,000-file project', operation: 'Quick Open filtering', maximumP95Milliseconds: 100 }),
+  Object.freeze({ fixture: '10,000-file project', operation: 'first warm project-search result', maximumP95Milliseconds: 250 }),
+  Object.freeze({ fixture: '10,000-file project', operation: 'project-search cancellation acknowledgement', maximumP95Milliseconds: 100 })
+]);
+const violations = thresholds.flatMap((threshold) => {
+  const row = rows.find((candidate) => candidate.fixture === threshold.fixture && candidate.operation === threshold.operation);
+  return row === undefined || row.p95Milliseconds > threshold.maximumP95Milliseconds
+    ? [Object.freeze({ ...threshold, actualP95Milliseconds: row?.p95Milliseconds })]
+    : [];
+});
+const report = Object.freeze({
+  schemaVersion: 1,
+  environment: Object.freeze({ node: process.version, platform: process.platform, architecture: process.arch }),
+  samples,
+  rows: Object.freeze(rows),
+  instrumentation,
+  thresholds,
+  violations: Object.freeze(violations)
+});
+
+if (jsonOutput) process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+else {
+  process.stdout.write('| Fixture | Operation | Median (ms) | p95 (ms) |\n');
+  process.stdout.write('|---|---|---:|---:|\n');
+  for (const row of rows) {
+    process.stdout.write(`| ${row.fixture} | ${row.operation} | ${row.medianMilliseconds.toFixed(3)} | ${row.p95Milliseconds.toFixed(3)} |\n`);
+  }
+  process.stdout.write('\nDeterministic instrumentation:\n');
+  process.stdout.write(JSON.stringify(instrumentation, null, 2) + '\n');
+  process.stdout.write(`\nRegression gates: ${violations.length === 0 ? 'passed' : `${String(violations.length)} failed`}\n`);
+}
+if (enforceThresholds && violations.length > 0) process.exitCode = 1;
 
 function measure(fixture: string, operation: string, callback: () => unknown): BenchmarkRow {
   const durations: number[] = [];
@@ -223,19 +279,122 @@ async function measureTerminalFrameCommit(
   });
 }
 
+async function measureAsync(
+  fixture: string,
+  operation: string,
+  callback: () => Promise<unknown>
+): Promise<BenchmarkRow> {
+  const durations: number[] = [];
+  await callback();
+  for (let index = 0; index < samples; index += 1) {
+    const start = performance.now();
+    await callback();
+    durations.push(performance.now() - start);
+  }
+  durations.sort((left, right) => left - right);
+  return Object.freeze({
+    fixture,
+    operation,
+    medianMilliseconds: percentile(durations, 0.5),
+    p95Milliseconds: percentile(durations, 0.95)
+  });
+}
+
+async function measureSearchCancellation(index: ProjectIndexState): Promise<BenchmarkRow> {
+  return measureAsync('10,000-file project', 'project-search cancellation acknowledgement', async () => {
+    const controller = new AbortController();
+    const searching = searchProjectDirectory(index, 'term-that-does-not-exist', {}, controller.signal);
+    setImmediate(() => controller.abort());
+    try {
+      await searching;
+      throw new Error('The benchmark search completed before cancellation.');
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    }
+  });
+}
+
+async function measureApplicationKeystrokeFrame(): Promise<BenchmarkRow> {
+  const source = exactSourceLength('A paragraph with stable Markdown text.\n\n', 1_048_576);
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'benchmark-buffer' });
+  const bufferId = application.openSource(source, 'large.md');
+  const runtime = createTuiRuntime({
+    app: createVellumTui(application),
+    host: createMemoryTerminalHost({ terminalSize: { columns: 120, rows: 34 } })
+  });
+  const durations: number[] = [];
+  try {
+    await runtime.start();
+    for (let index = -1; index < samples; index += 1) {
+      const start = performance.now();
+      await runtime.dispatch({
+        kind: 'editor',
+        bufferId,
+        transition: { kind: 'edit', operation: { kind: 'insert', text: 'x' } }
+      });
+      if (index >= 0) durations.push(performance.now() - start);
+    }
+  } finally {
+    await runtime.dispose();
+    await application.dispose();
+  }
+  durations.sort((left, right) => left - right);
+  return Object.freeze({
+    fixture: '1 MiB application',
+    operation: 'keystroke-to-frame',
+    medianMilliseconds: percentile(durations, 0.5),
+    p95Milliseconds: percentile(durations, 0.95)
+  });
+}
+
+function benchmarkProjectIndex(count: number): ProjectIndexState {
+  const documents: Record<string, ProjectDocumentIndexEntry> = {};
+  const orderedPaths: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const padded = String(index).padStart(5, '0');
+    const filePath = `/benchmark/file-${padded}.md`;
+    const source = `# File ${padded}\n\nneedle-${padded}\n`;
+    orderedPaths.push(filePath);
+    documents[filePath] = Object.freeze({
+      path: filePath,
+      relativePath: `file-${padded}.md`,
+      size: source.length,
+      modifiedMilliseconds: 0,
+      contentHash: padded.padEnd(64, '0'),
+      headings: Object.freeze([{ text: `File ${padded}`, depth: 1, sourceOffset: 0 }]),
+      links: Object.freeze([]),
+      properties: Object.freeze({}),
+      taskStates: Object.freeze([]),
+      tags: Object.freeze([]),
+      citationKeys: Object.freeze([]),
+      searchableText: source
+    });
+  }
+  return Object.freeze({
+    documents: Object.freeze(documents),
+    orderedPaths: Object.freeze(orderedPaths),
+    assetPaths: Object.freeze([]),
+    indexing: false,
+    revision: 1
+  });
+}
+
+function exactSourceLength(seed: string, length: number): string {
+  return seed.repeat(Math.ceil(length / seed.length)).slice(0, length);
+}
+
 function percentile(values: readonly number[], fraction: number): number {
   return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)] ?? 0;
 }
 
 function benchmarkFixtures(): readonly BenchmarkFixture[] {
-  const exactLength = (seed: string, length: number): string => seed.repeat(Math.ceil(length / seed.length)).slice(0, length);
   return Object.freeze([
     Object.freeze({ name: 'small prose', source: '# Notes\n\nA small prose document with **strong text** and [a link](./target.md).\n' }),
-    Object.freeze({ name: '100,000 characters', source: exactLength('A paragraph with words and punctuation.\n\n', 100_000) }),
-    Object.freeze({ name: '1,000,000 characters', source: exactLength('A larger paragraph with stable Markdown text.\n\n', 1_000_000) }),
+    Object.freeze({ name: '100,000 characters', source: exactSourceLength('A paragraph with words and punctuation.\n\n', 100_000) }),
+    Object.freeze({ name: '1,000,000 characters', source: exactSourceLength('A larger paragraph with stable Markdown text.\n\n', 1_000_000) }),
     Object.freeze({ name: 'thousands of short paragraphs', source: Array.from({ length: 4_000 }, (_, index) => `Paragraph ${String(index)}.`).join('\n\n') }),
-    Object.freeze({ name: 'one very large paragraph', source: exactLength('one very large paragraph ', 250_000) }),
-    Object.freeze({ name: 'one very large fenced code block', source: `\`\`\`text\n${exactLength('const value = 1;\n', 250_000)}\n\`\`\`\n` }),
+    Object.freeze({ name: 'one very large paragraph', source: exactSourceLength('one very large paragraph ', 250_000) }),
+    Object.freeze({ name: 'one very large fenced code block', source: `\`\`\`text\n${exactSourceLength('const value = 1;\n', 250_000)}\n\`\`\`\n` }),
     Object.freeze({ name: 'large nested lists', source: Array.from({ length: 8_000 }, (_, index) => `${'  '.repeat(index % 12)}- item ${String(index)}`).join('\n') }),
     Object.freeze({ name: 'large tables', source: ['| A | B | C |', '| - | - | - |', ...Array.from({ length: 4_000 }, (_, index) => `| ${String(index)} | value | text |`)].join('\n') }),
     Object.freeze({ name: 'many links and footnotes', source: Array.from({ length: 3_000 }, (_, index) => `[link ${String(index)}][ref-${String(index)}] and note[^${String(index)}].\n\n[ref-${String(index)}]: ./file-${String(index)}.md\n\n[^${String(index)}]: footnote ${String(index)}.`).join('\n\n') })

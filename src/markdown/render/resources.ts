@@ -7,5 +7,6 @@ export interface MarkdownBlockResources {
   readonly mathText?: ReadonlyMap<number, string>;
   readonly diagramText?: ReadonlyMap<number, string>;
   readonly images?: ReadonlyMap<number, MarkdownImageResult>;
+  readonly tableOfContents?: ReadonlyMap<number, string>;
   readonly diagnostics?: readonly MarkdownDiagnostic[];
 }

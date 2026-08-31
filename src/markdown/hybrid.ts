@@ -3,9 +3,11 @@ import {
   type TextAreaDecoration,
   type TextAreaDecorations,
 } from '@ismail-elkorchi/terminal-ui/components';
+import { defaultTextWidthProfile, measureTextCells, textDocumentText, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import { collectMarkdownSyntaxTokens, markdownPathAt, walkMarkdown, type MarkdownNode } from 'markspan';
 import type { BufferState } from '../app/types.js';
 import type { MarkdownTheme } from './theme.js';
+import type { MarkdownBlockResources } from './render/resources.js';
 
 const concealedTokenKinds = new Set([
   'headingMarker',
@@ -14,15 +16,17 @@ const concealedTokenKinds = new Set([
   'strikethroughMarker',
   'codeSpanMarker',
   'mathMarker',
-  'linkDestination',
-  'imageDestination'
+  'linkDestination'
 ]);
 export function createHybridTextDecorations(
   buffer: BufferState,
-  theme: MarkdownTheme
+  theme: MarkdownTheme,
+  focusMode = false,
+  resources: MarkdownBlockResources = {},
+  widthProfile: TextWidthProfile = defaultTextWidthProfile
 ): TextAreaDecorations {
   const decorations = buffer.preview.kind === 'ready'
-    ? hybridDecorationEntries(buffer, theme)
+    ? hybridDecorationEntries(buffer, theme, focusMode, resources, widthProfile)
     : Object.freeze([]);
   return createTextAreaDecorations({ document: buffer.editor.document, decorations });
 }
@@ -30,6 +34,9 @@ export function createHybridTextDecorations(
 function hybridDecorationEntries(
   buffer: BufferState,
   theme: MarkdownTheme,
+  focusMode: boolean,
+  resources: MarkdownBlockResources,
+  widthProfile: TextWidthProfile,
 ): readonly TextAreaDecoration[] {
   if (buffer.preview.kind !== 'ready') return Object.freeze([]);
   const tree = buffer.preview.snapshot.document.tree;
@@ -50,7 +57,17 @@ function hybridDecorationEntries(
     }
   }
   const decorations: TextAreaDecoration[] = [];
+  const source = textDocumentText(buffer.editor.document);
+  const visuallyReplaced = new Set([...walkMarkdown(tree)].flatMap(({ node }) => (
+    !activeIds.has(node.id) && (
+      node.kind === 'codeBlock' && node.language?.trim().toLowerCase() === 'mermaid'
+      || node.kind === 'image' && standaloneNode(source, node.span.start, node.span.end) && resources.images?.get(node.id)?.kind === 'ready'
+    )
+      ? [node.id]
+      : []
+  )));
   for (const token of collectMarkdownSyntaxTokens(tree)) {
+    if (visuallyReplaced.has(token.nodeId)) continue;
     const style = styleForToken(token.kind, theme);
     if (style !== undefined) {
       addStyle(
@@ -70,7 +87,12 @@ function hybridDecorationEntries(
       }));
     }
   }
-  for (const { node } of walkMarkdown(tree)) addNodeDecoration(node, activeIds, decorations, theme);
+  for (const { node } of walkMarkdown(tree)) addNodeDecoration(node, activeIds, decorations, theme, source, resources, tree, widthProfile);
+  if (focusMode) {
+    for (const block of tree.children) {
+      if (!activeIds.has(block.id)) addStyle(decorations, block.span.start, block.span.end, 'focus.dimmed', { dim: true });
+    }
+  }
   return Object.freeze(decorations.sort((left, right) => (
     left.startOffset - right.startOffset || left.endOffsetExclusive - right.endOffsetExclusive
   )));
@@ -80,7 +102,11 @@ function addNodeDecoration(
   node: MarkdownNode,
   activeIds: ReadonlySet<number>,
   decorations: TextAreaDecoration[],
-  theme: MarkdownTheme
+  theme: MarkdownTheme,
+  source: string,
+  resources: MarkdownBlockResources,
+  tree: MarkdownNode,
+  widthProfile: TextWidthProfile
 ): void {
   if (node.kind === 'heading') {
     addStyle(decorations,
@@ -103,9 +129,68 @@ function addNodeDecoration(
       concealOutsideLabel(node.span.start, node.span.end, node.labelSpan.start, node.labelSpan.end, node.id, decorations);
     }
   } else if (node.kind === 'image') {
-    if (!activeIds.has(node.id) && node.labelSpan !== null) {
-      concealOutsideLabel(node.span.start, node.span.end, node.labelSpan.start, node.labelSpan.end, node.id, decorations);
+    const loaded = resources.images?.get(node.id);
+    if (!activeIds.has(node.id) && loaded?.kind === 'ready' && standaloneNode(source, node.span.start, node.span.end)) {
+      const label = (node.labelSpan === null ? node.label : source.slice(node.labelSpan.start, node.labelSpan.end))?.trim() || 'Image';
+      const dimensions = `${String(loaded.image.width)}×${String(loaded.image.height)}`;
+      const caption = ` ${label} · ${dimensions} `;
+      const captionWidth = measureTextCells(caption, { widthProfile }).cells;
+      decorations.push(Object.freeze({
+        kind: 'replace',
+        startOffset: node.span.start,
+        endOffsetExclusive: node.span.end,
+        label: `image.block.${String(node.id)}`,
+        replacementText: `┌${'─'.repeat(captionWidth)}┐\n│${caption}│\n└${'─'.repeat(captionWidth)}┘`,
+        accessibilityText: `${label}, image, ${dimensions}`,
+        style: theme.body
+      }));
+    } else if (!activeIds.has(node.id) && node.labelSpan !== null) {
+      decorations.push(Object.freeze({
+        kind: 'replace',
+        startOffset: node.span.start,
+        endOffsetExclusive: node.labelSpan.start,
+        label: `image.prefix.${String(node.id)}`,
+        replacementText: '🖼 ',
+        accessibilityText: 'image'
+      }));
+      if (node.span.end > node.labelSpan.end) decorations.push(conceal(node.labelSpan.end, node.span.end, node.id));
+      addStyle(decorations, node.labelSpan.start, node.labelSpan.end, `image.label.${String(node.id)}`, theme.link);
     }
+  } else if ((node.kind === 'mathInline' || node.kind === 'mathBlock') && !activeIds.has(node.id)) {
+    const rendered = resources.mathText?.get(node.id);
+    if (rendered !== undefined) {
+      decorations.push(Object.freeze({
+        kind: 'replace',
+        startOffset: node.contentSpan.start,
+        endOffsetExclusive: node.contentSpan.end,
+        label: `math.rendered.${String(node.id)}`,
+        replacementText: rendered,
+        accessibilityText: `Math: ${node.value}`,
+        style: theme.math
+      }));
+    }
+  } else if (node.kind === 'codeBlock' && node.language?.trim().toLowerCase() === 'mermaid' && !activeIds.has(node.id)) {
+    const rendered = resources.diagramText?.get(node.id) ?? 'Mermaid diagram';
+    decorations.push(Object.freeze({
+      kind: 'replace',
+      startOffset: node.span.start,
+      endOffsetExclusive: node.span.end,
+      label: `diagram.rendered.${String(node.id)}`,
+      replacementText: rendered === 'Mermaid diagram' ? '◇ Mermaid diagram' : rendered,
+      accessibilityText: rendered,
+      style: rendered === 'Mermaid diagram' ? theme.body : theme.diagramFailure
+    }));
+  } else if (node.kind === 'callout' && !activeIds.has(node.id)) {
+    for (const marker of node.markerSpans) decorations.push(conceal(marker.start, marker.end, node.id));
+    decorations.push(Object.freeze({
+      kind: 'replace',
+      startOffset: node.labelSpan.start,
+      endOffsetExclusive: node.labelSpan.end,
+      label: `callout.label.${String(node.id)}`,
+      replacementText: `${calloutIcon(node.calloutKind)} ${node.calloutKind.toUpperCase()}`,
+      accessibilityText: `${node.calloutKind} callout`,
+      style: theme.callouts[node.calloutKind]
+    }));
   } else if (node.kind === 'listItem' && node.task !== null && !activeIds.has(node.id)) {
     decorations.push(Object.freeze({
       kind: 'replace',
@@ -116,7 +201,115 @@ function addNodeDecoration(
       accessibilityText: node.task.checked ? 'checked task' : 'unchecked task',
       style: node.task.checked ? theme.checkedTask : theme.uncheckedTask
     }));
+  } else if (node.kind === 'table') {
+    const rows = [node.header, ...node.rows];
+    const activeCell = rows.flatMap((row) => row.cells).find((cell) => activeIds.has(cell.id));
+    for (const row of rows) {
+      for (const cell of row.cells) {
+        if (cell.id === activeCell?.id) continue;
+        const value = source.slice(cell.contentSpan.start, cell.contentSpan.end).trim();
+        decorations.push(Object.freeze({
+          kind: 'replace',
+          startOffset: cell.span.start,
+          endOffsetExclusive: cell.span.end,
+          label: `table.cell.${String(cell.id)}`,
+          replacementText: ` ${value} `,
+          accessibilityText: value.length === 0 ? 'empty table cell' : value,
+          style: row.id === node.header.id ? theme.strong : theme.body
+        }));
+      }
+      const finalCell = row.cells.at(-1);
+      if (finalCell !== undefined && row.span.end > finalCell.span.end && activeCell?.id !== finalCell.id) {
+        decorations.push(conceal(finalCell.span.end, row.span.end, row.id));
+      }
+    }
+    if (activeCell === undefined) {
+      decorations.push(Object.freeze({
+        kind: 'replace',
+        startOffset: node.delimiterSpan.start,
+        endOffsetExclusive: node.delimiterSpan.end,
+        label: `table.alignment.${String(node.id)}`,
+        replacementText: node.align.map((alignment) => alignment === 'center' ? ' ↔ ' : alignment === 'right' ? ' → ' : ' ← ').join(''),
+        accessibilityText: 'table column alignment'
+      }));
+    }
+  } else if (node.kind === 'frontMatter' && !activeIds.has(node.id)) {
+    decorations.push(conceal(node.openingMarkerSpan.start, node.openingMarkerSpan.end, node.id));
+    if (node.closingMarkerSpan !== null) {
+      decorations.push(conceal(node.closingMarkerSpan.start, node.closingMarkerSpan.end, node.id));
+    }
+    if (node.value?.kind === 'mapping') {
+      for (const entry of node.value.entries) {
+        addStyle(decorations, entry.keySpan.start, entry.keySpan.end, `property.key.${entry.key}`, theme.strong);
+        const replacement = frontMatterPropertyText(entry.value);
+        if (replacement === undefined) continue;
+        decorations.push(Object.freeze({
+          kind: 'replace',
+          startOffset: entry.valueSpan.start,
+          endOffsetExclusive: entry.valueSpan.end,
+          label: `property.value.${entry.key}`,
+          replacementText: replacement.text,
+          accessibilityText: `${entry.key}: ${replacement.accessible}`,
+          style: replacement.checked === undefined
+            ? theme.frontMatter
+            : replacement.checked ? theme.checkedTask : theme.uncheckedTask
+        }));
+      }
+    }
+  } else if (node.kind === 'paragraph' && !activeIds.has(node.id)
+    && /^\s*\[(?:toc|_toc_)\]\s*$/iu.test(source.slice(node.span.start, node.span.end))) {
+    const headings = [...walkMarkdown(tree)].flatMap(({ node: candidate }) => candidate.kind === 'heading'
+      ? [`${'  '.repeat(candidate.depth - 1)}• ${source.slice(candidate.contentSpan.start, candidate.contentSpan.end).trim()}`]
+      : []);
+    decorations.push(Object.freeze({
+      kind: 'replace',
+      startOffset: node.span.start,
+      endOffsetExclusive: node.span.end,
+      label: `toc.${String(node.id)}`,
+      replacementText: headings.join('\n') || 'Table of contents is empty.',
+      accessibilityText: 'Table of contents',
+      style: theme.body
+    }));
   }
+}
+
+function frontMatterPropertyText(
+  value: import('markspan').MarkdownFrontMatterValue
+): { readonly text: string; readonly accessible: string; readonly checked?: boolean } | undefined {
+  if (value.kind === 'scalar') {
+    if (typeof value.value === 'boolean') {
+      return Object.freeze({ text: value.value ? '☑' : '☐', accessible: String(value.value), checked: value.value });
+    }
+    if (value.value === null) return Object.freeze({ text: '—', accessible: 'empty' });
+    const text = String(value.value);
+    if (typeof value.value === 'number') return Object.freeze({ text: `# ${text}`, accessible: text });
+    if (/^\d{4}-\d{2}-\d{2}(?:[T ]|$)/u.test(text)) return Object.freeze({ text: `◷ ${text}`, accessible: text });
+    if (/^(?:\.\.?\/|\/|[A-Za-z]:[\\/]|\[\[).*(?:\.md|\]\])$/iu.test(text)) {
+      return Object.freeze({ text: `↗ ${text}`, accessible: text });
+    }
+    return Object.freeze({ text, accessible: text });
+  }
+  if (value.kind === 'sequence') {
+    const items = value.items.flatMap((item) => item.kind === 'scalar' && item.value !== null ? [String(item.value)] : []);
+    return items.length === value.items.length
+      ? Object.freeze({ text: items.map((item) => `• ${item}`).join(', '), accessible: items.join(', ') })
+      : Object.freeze({ text: '…', accessible: 'nested values' });
+  }
+  return Object.freeze({ text: '{…}', accessible: 'nested properties' });
+}
+
+function standaloneNode(source: string, start: number, end: number): boolean {
+  const lineStart = source.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+  const lineEnd = source.indexOf('\n', end);
+  return source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd).trim() === source.slice(start, end).trim();
+}
+
+function calloutIcon(kind: 'note' | 'tip' | 'important' | 'warning' | 'caution'): string {
+  if (kind === 'tip') return '◆';
+  if (kind === 'important') return '●';
+  if (kind === 'warning') return '▲';
+  if (kind === 'caution') return '■';
+  return 'ℹ';
 }
 
 function concealOutsideLabel(

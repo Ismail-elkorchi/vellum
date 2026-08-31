@@ -8,7 +8,7 @@ import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { parseCliArguments, commandHelp } from '../cli-options.js';
 import { commandPaletteEntries } from '../commands/palette.js';
-import { defaultKeymap, keyBindingText, parseKeyBinding, validateKeymap } from '../commands/keymap.js';
+import { classifyKeyBinding, defaultKeymap, keyBindingText, parseKeyBinding, validateKeymap } from '../commands/keymap.js';
 import { commandById, initialAppState } from '../commands/registry.js';
 import { findDocumentMatches, replacementChangeSet } from '../search/document-search.js';
 import { createVellumApplication } from '../app/application.js';
@@ -24,8 +24,11 @@ test('CLI definitions parse POSIX, Windows, stdin, presentation, line, and expor
   assert.equal((parseCliArguments(['\\\\server\\share\\README.md']) as { path?: string }).path, '\\\\server\\share\\README.md');
   assert.equal((parseCliArguments(['-', '--source']) as { path?: string }).path, '-');
   assert.deepEqual(parseCliArguments(['export', 'README.md', '--profile', 'html', '--output', 'site.html']), {
-    kind: 'export', path: 'README.md', profileId: 'html', outputPath: 'site.html', overwrite: false, help: false
+    kind: 'export', path: 'README.md', profileId: 'html', scope: 'document', outputPath: 'site.html', overwrite: false, help: false
   });
+  assert.equal((parseCliArguments(['export', 'docs', '--batch', '--profile', 'html']) as { scope?: string }).scope, 'batchDirectory');
+  assert.equal((parseCliArguments(['export', 'book', '--project-manifest']) as { scope?: string }).scope, 'projectManifest');
+  assert.throws(() => parseCliArguments(['export', 'book', '--project-manifest', '--profile', 'html']), /declares its own/u);
   assert.throws(() => parseCliArguments(['--line', '0']), /positive/u);
   assert.throws(() => parseCliArguments(['--preview', '--hybrid']), /conflict/u);
   assert.throws(() => parseCliArguments(['--unknown']), /Unknown/u);
@@ -45,6 +48,9 @@ test('document search uses UTF-16 spans, validates expressions, and returns orde
 
 test('keymap validation reports malformed, unknown, duplicate, and conflicting entries', () => {
   assert.equal(parseKeyBinding('Ctrl+ArrowUp').key, 'arrowUp');
+  assert.equal(classifyKeyBinding(parseKeyBinding('Ctrl+I')), 'text-editing-conflict');
+  assert.equal(classifyKeyBinding(parseKeyBinding('Ctrl+H')), 'text-editing-conflict');
+  assert.equal(classifyKeyBinding(parseKeyBinding('Ctrl+Alt+E')), 'keyboard-layout-conflict');
   const defaults = defaultKeymap();
   assert.equal(defaults.diagnostics.length, 0);
   assert.equal(defaults.entries.some(({ binding }) => (
@@ -61,14 +67,15 @@ test('keymap validation reports malformed, unknown, duplicate, and conflicting e
       'markdown.duplicateBlock',
     ].includes(command))
     .map(({ command, binding }) => [command, keyBindingText(binding)])), {
-      'application.commandPalette': 'ctrl+alt+p',
-      'file.openDirectory': 'ctrl+alt+d',
-      'file.saveAs': 'ctrl+alt+s',
-      'file.saveAll': 'ctrl+alt+a',
-      'file.reopenClosed': 'ctrl+alt+r',
-      'file.searchProjectDirectory': 'ctrl+alt+f',
-      'markdown.duplicateBlock': 'ctrl+alt+b',
+      'application.commandPalette': 'f1',
+      'file.openDirectory': 'alt+d',
+      'file.saveAs': 'alt+s',
+      'file.saveAll': 'alt+a',
+      'file.reopenClosed': 'alt+r',
+      'file.searchProjectDirectory': 'f3',
+      'markdown.duplicateBlock': 'alt+b',
     });
+  assert.equal(defaults.entries.some(({ binding }) => binding.ctrl === true && binding.alt === true), false);
   const result = validateKeymap([
     { command: 'file.new', key: 'ctrl+n' },
     { command: 'file.open', key: 'ctrl+n' },
@@ -91,7 +98,7 @@ test('the open-directory default is distinguishable in a legacy terminal input s
   });
   try {
     await runtime.start();
-    await runtime.handleInputChunk({ data: '\u001b\u0004' });
+    await runtime.handleInputChunk({ data: '\u001bd' });
     const dialog = application.state().dialogState;
     assert.equal(dialog?.kind, 'filePath');
     assert.equal(dialog?.kind === 'filePath' ? dialog.operation : undefined, 'openProjectDirectory');
@@ -225,7 +232,7 @@ test('project-directory search opens a result and selects its exact UTF-16 sourc
       assert.deepEqual(dialog.results.map((result) => [path.basename(result.path), result.line, result.column]), [
         ['a.md', 1, 7], ['b.md', 1, 11], ['c.md', 1, 8]
       ]);
-      assert.equal(quickOpenEntries(application.state().project.fileTree, 'c.md', []).at(0)?.relativePath, path.join('nested', 'c.md'));
+      assert.equal(quickOpenEntries(application.state().project.index, 'c.md', []).at(0)?.relativePath, path.join('nested', 'c.md'));
       await application.activateProjectDirectorySearchResult(1);
       const buffer = application.state().project.buffers[application.state().project.activeBufferId as string];
       assert.equal(buffer?.editor.selection?.anchor.offset, 10);
@@ -234,6 +241,49 @@ test('project-directory search opens a result and selects its exact UTF-16 sourc
       await application.dispose();
     }
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('project-directory search discards streamed results when live source changes', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-project-search-revision-'));
+  const sourcePath = path.join(directory, 'document.md');
+  const source = Array.from({ length: 96 }, (_, index) => `needle ${String(index)}\n`).join('');
+  await writeFile(sourcePath, source, 'utf8');
+  const application = createVellumApplication({ watchFiles: false });
+  try {
+    await application.openProjectDirectory(directory);
+    const bufferId = await application.openFile(sourcePath);
+    application.dispatchCommand('file.searchProjectDirectory');
+    application.updateProjectDirectorySearch({ kind: 'setValue', value: 'needle' });
+    const search = application.runProjectDirectorySearch({}, new AbortController().signal);
+    const started = performance.now();
+    while (application.state().projectSearch.results.length < 32) {
+      if (performance.now() - started > 3_000) throw new Error('Timed out waiting for a streamed search batch.');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    application.applyTextAreaTransition(bufferId, {
+      kind: 'edit', operation: { kind: 'insert', text: 'changed ' }
+    });
+    await search;
+    assert.equal(application.state().projectSearch.searching, false);
+    assert.deepEqual(application.state().projectSearch.results, []);
+    const dialog = application.state().dialogState;
+    assert.equal(dialog?.kind, 'projectDirectorySearch');
+    assert.deepEqual(dialog?.kind === 'projectDirectorySearch' ? dialog.results : undefined, []);
+
+    const controller = new AbortController();
+    const cancelledSearch = application.runProjectDirectorySearch({}, controller.signal);
+    const cancellationStarted = performance.now();
+    while (application.state().projectSearch.results.length < 32) {
+      if (performance.now() - cancellationStarted > 3_000) throw new Error('Timed out waiting for the cancellable search batch.');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    controller.abort(new DOMException('Test cancellation.', 'AbortError'));
+    await assert.rejects(cancelledSearch, /abort|cancel/iu);
+    assert.equal(application.state().projectSearch.searching, false);
+  } finally {
+    await application.dispose();
     await rm(directory, { recursive: true, force: true });
   }
 });

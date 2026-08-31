@@ -32,11 +32,18 @@ export function renderMarkdownBlock(
   let rows: readonly MarkdownLayoutRow[];
   switch (node.kind) {
     case 'paragraph':
-      rows = wrapMarkdownSpans(
-        renderInline(node.children, theme, theme.body, undefined, resources),
-        maximum,
-        widthProfile,
-      );
+      const tableOfContents = resources.tableOfContents?.get(node.id);
+      rows = tableOfContents === undefined
+        ? wrapMarkdownSpans(
+            renderInline(node.children, theme, theme.body, undefined, resources),
+            maximum,
+            widthProfile,
+          )
+        : wrapMarkdownPreformattedSpans(
+            [synthetic(tableOfContents, node.id, node.span, theme.body)],
+            maximum,
+            widthProfile
+          );
       break;
     case 'heading':
       const headingStyle = theme.headings[node.depth - 1] ?? theme.body;

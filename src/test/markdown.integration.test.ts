@@ -652,6 +652,100 @@ test('hybrid editing preserves exact source through concealed ranges, selection,
   }
 });
 
+test('hybrid block presentations remain source-exact and reveal their Markdown when activated', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-hybrid-blocks-'));
+  const imagePath = path.join(directory, 'pixel.ppm');
+  const documentPath = path.join(directory, 'document.md');
+  await writeFile(imagePath, Buffer.concat([Buffer.from('P6\n2 1\n255\n'), Buffer.from([255, 0, 0, 0, 255, 0])]));
+  const source = [
+    '---',
+    'published: true',
+    'count: 42',
+    'date: 2026-08-31',
+    'tags: [one, two]',
+    'file: ./target.md',
+    '---',
+    '',
+    '# Heading',
+    '',
+    '| Name | Value |',
+    '| :--- | ---: |',
+    '| alpha | 42 |',
+    '',
+    '![pixel](./pixel.ppm)',
+    '',
+    '$x^2$',
+    '',
+    '> [!NOTE]',
+    '> Callout body.',
+    '',
+    '```mermaid',
+    'graph TD; A-->B',
+    '```',
+    '',
+    '[TOC]',
+    '',
+    'Final paragraph.'
+  ].join('\n');
+  await writeFile(documentPath, source, 'utf8');
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'hybrid-blocks' });
+  try {
+    const id = await application.openFile(documentPath);
+    application.dispatchCommand('view.editorHybrid');
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer', transition: { kind: 'placeCaret', offset: source.indexOf('Final paragraph') }
+    });
+    await application.refreshPreviewResources(id);
+    const buffer = application.state().project.buffers[id];
+    assert.ok(buffer);
+    const decorations = application.hybridDecorations(id);
+    const rendered = renderElementSnapshot({
+      element: textArea({
+        id: 'hybrid-block-presentations',
+        state: buffer.editor,
+        decorations,
+        meta: { accessibleName: 'Hybrid block presentations' },
+        onTransition: (transition: TextAreaTransition) => transition
+      }),
+      terminalSize: { columns: 72, rows: 80 }
+    });
+    assert.match(rendered.plainTextFrame, /☑/u);
+    assert.match(rendered.plainTextFrame, /# 42/u);
+    assert.match(rendered.plainTextFrame, /◷ 2026-08-31/u);
+    assert.match(rendered.plainTextFrame, /• one, • two/u);
+    assert.match(rendered.plainTextFrame, /↗ \.\/target\.md/u);
+    assert.match(rendered.plainTextFrame, /alpha/u);
+    assert.match(rendered.plainTextFrame, /pixel · 2×1/u);
+    assert.match(rendered.plainTextFrame, /x²/u);
+    assert.match(rendered.plainTextFrame, /NOTE/u);
+    assert.match(rendered.plainTextFrame, /Mermaid renderer is not configured/u);
+    assert.match(rendered.plainTextFrame, /• Heading/u);
+    assert.equal(textDocumentText(buffer.editor.document), source);
+
+    application.applyTextAreaTransition(id, {
+      kind: 'pointer', transition: { kind: 'placeCaret', offset: source.indexOf('published') }
+    });
+    const activeBuffer = application.state().project.buffers[id];
+    assert.ok(activeBuffer);
+    const activeProperties = renderElementSnapshot({
+      element: textArea({
+        id: 'active-hybrid-properties',
+        state: activeBuffer.editor,
+        decorations: application.hybridDecorations(id),
+        meta: { accessibleName: 'Active hybrid properties' },
+        onTransition: (transition: TextAreaTransition) => transition
+      }),
+      terminalSize: { columns: 72, rows: 16 }
+    });
+    assert.match(activeProperties.plainTextFrame, /published: true/u);
+    assert.match(activeProperties.plainTextFrame, /tags: \[one, two\]/u);
+    assert.equal(textDocumentText(application.state().project.buffers[id]?.editor.document as never), source);
+  } finally {
+    await application.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('preview activation maps terminal cells to exact inline spans and navigates files, headings, and footnotes', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-preview-navigation-'));
   const sourcePath = path.join(directory, 'source.md');

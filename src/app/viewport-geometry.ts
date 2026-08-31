@@ -43,9 +43,10 @@ export function vellumPreviewDocumentGeometry(paneWidth: number): VellumPreviewD
 export function vellumBodyGeometry(state: AppState, terminalSize: TerminalSize): VellumBodyGeometry {
   const columns = Math.max(1, terminalSize.columns);
   const rows = Math.max(1, terminalSize.rows);
-  const fileTreeWidth = state.project.rootDirectory === undefined || columns < 72
+  const navigatorUnavailable = state.navigator.mode === 'files' && state.project.rootDirectory === undefined;
+  const fileTreeWidth = !state.navigator.visible || state.writingMode.distractionFree || navigatorUnavailable || columns < 72
     ? 0
-    : Math.min(28, Math.floor(columns * 0.25));
+    : Math.min(state.navigator.width, Math.max(16, Math.floor(columns * 0.25)));
   const bodyWidth = Math.max(1, columns - fileTreeWidth - (fileTreeWidth > 0 ? 1 : 0));
   const bodyRows = Math.max(1, rows - 2);
   return Object.freeze({

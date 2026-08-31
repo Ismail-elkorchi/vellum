@@ -10,7 +10,8 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TreeNode, TreeView } from '@ismail-elkorchi/terminal-ui/components';
 import type { FileTreeNode, FileTreeState } from '../app/types.js';
-import { compareText, compareTextCaseInsensitive } from '../order.js';
+import { compareTextCaseInsensitive } from '../order.js';
+import { minimatch } from 'minimatch';
 
 export const defaultFileTreeExclusions: readonly string[] = Object.freeze([
   '.git',
@@ -25,9 +26,11 @@ export function createFileTreeState(
     return Object.freeze({
       nodes: Object.freeze({}),
       rootIds: Object.freeze([]),
-      indexedFiles: Object.freeze([]),
       expandedIds: Object.freeze([]),
+      pendingExpansionIds: Object.freeze([]),
       exclusionPatterns: Object.freeze([...exclusionPatterns]),
+      filter: '',
+      sort: 'foldersFirst',
       scroll: createScrollState(),
       revision: 0
     });
@@ -45,10 +48,12 @@ export function createFileTreeState(
   return Object.freeze({
     nodes: Object.freeze({ [root]: node }),
     rootIds: Object.freeze([root]),
-    indexedFiles: Object.freeze([]),
     expandedIds: Object.freeze([root]),
+    pendingExpansionIds: Object.freeze([]),
     activeId: root,
     exclusionPatterns: Object.freeze([...exclusionPatterns]),
+    filter: '',
+    sort: 'foldersFirst',
     scroll: createScrollState(),
     revision: 0
   });
@@ -79,7 +84,7 @@ export async function readDirectoryNodes(
   for (const entry of entries) {
     signal.throwIfAborted();
     const relative = path.relative(state.rootIds[0] ?? directory.path, path.join(directory.path, entry.name));
-    if (entry.name === '.git' || fileTreePathExcluded(relative, entry.name, state.exclusionPatterns)) continue;
+    if (entry.name === '.git' || fileTreePathExcluded(relative, state.exclusionPatterns)) continue;
     const entryPath = path.join(directory.path, entry.name);
     let kind: FileTreeNode['kind'] | undefined;
     if (entry.isDirectory()) kind = 'directory';
@@ -129,7 +134,12 @@ export function commitDirectoryNodes(
     loading: false,
     children: Object.freeze(children.map((child) => child.id))
   });
-  const expandedIds = state.expandedIds.filter((id) => nextNodes[id]?.kind === 'directory');
+  const expandedIds = [...new Set([
+    ...state.expandedIds.filter((id) => nextNodes[id]?.kind === 'directory'),
+    ...children
+      .filter((child) => child.kind === 'directory' && state.pendingExpansionIds.includes(child.id))
+      .map((child) => child.id)
+  ])];
   const activeId = state.activeId !== undefined && nextNodes[state.activeId] !== undefined
     ? state.activeId
     : directoryId;
@@ -140,49 +150,6 @@ export function commitDirectoryNodes(
     activeId,
     revision: state.revision + 1
   });
-}
-
-export function indexedFilePaths(state: FileTreeState): readonly string[] {
-  return state.indexedFiles;
-}
-
-export async function indexProjectFiles(
-  state: FileTreeState,
-  signal: AbortSignal
-): Promise<readonly string[]> {
-  const root = state.rootIds[0];
-  if (root === undefined) return Object.freeze([]);
-  const pending = [root];
-  const files: string[] = [];
-  while (pending.length > 0) {
-    signal.throwIfAborted();
-    const directory = pending.pop();
-    if (directory === undefined) break;
-    const entries = (await readdir(directory, { withFileTypes: true }))
-      .toSorted((left, right) => compareText(left.name, right.name));
-    for (const entry of entries) {
-      signal.throwIfAborted();
-      const entryPath = path.join(directory, entry.name);
-      const relative = path.relative(root, entryPath);
-      if (entry.name === '.git' || fileTreePathExcluded(relative, entry.name, state.exclusionPatterns)) continue;
-      if (entry.isDirectory()) {
-        pending.push(entryPath);
-      } else if (entry.isFile()) {
-        files.push(entryPath);
-      } else if (entry.isSymbolicLink()) {
-        const target = await statIfPresent(entryPath);
-        if (target?.isFile() === true) files.push(entryPath);
-      }
-    }
-  }
-  return Object.freeze(files.toSorted(compareText));
-}
-
-export function commitIndexedFiles(
-  state: FileTreeState,
-  indexedFiles: readonly string[]
-): FileTreeState {
-  return Object.freeze({ ...state, indexedFiles: Object.freeze([...indexedFiles]), revision: state.revision + 1 });
 }
 
 export function terminalFileTreeView(
@@ -201,6 +168,19 @@ export function terminalFileTreeView(
     expandedIds: state.expandedIds,
     scroll: state.scroll
   });
+}
+
+export function setFileTreeFilter(state: FileTreeState, filter: string): FileTreeState {
+  return filter === state.filter ? state : Object.freeze({ ...state, filter, revision: state.revision + 1 });
+}
+
+export function cycleFileTreeSort(state: FileTreeState): FileTreeState {
+  const sort = state.sort === 'foldersFirst'
+    ? 'nameAscending'
+    : state.sort === 'nameAscending'
+      ? 'nameDescending'
+      : 'foldersFirst';
+  return Object.freeze({ ...state, sort, revision: state.revision + 1 });
 }
 
 export function reduceFileTree(
@@ -230,20 +210,34 @@ function terminalNode(
 ): TreeNode<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> | undefined {
   const node = state.nodes[nodeId];
   if (node === undefined) return undefined;
+  const normalizedFilter = state.filter.trim().toLocaleLowerCase();
   const base = {
     id: node.id,
     label: node.label,
     metadata: Object.freeze({ path: node.path, kind: node.kind })
   };
-  if (node.kind === 'file') return Object.freeze({ ...base, kind: 'leaf' });
+  if (node.kind === 'file') {
+    return normalizedFilter.length > 0 && !node.label.toLocaleLowerCase().includes(normalizedFilter)
+      ? undefined
+      : Object.freeze({ ...base, kind: 'leaf' });
+  }
   if (!node.loaded) return Object.freeze({ ...base, kind: 'lazy' });
+  const children = node.children.flatMap((id) => {
+    const child = terminalNode(state, id);
+    return child === undefined ? [] : [child];
+  }).toSorted((left, right) => {
+    const direction = state.sort === 'nameDescending' ? -1 : 1;
+    const byName = direction * compareTextCaseInsensitive(left.label, right.label);
+    return state.sort === 'foldersFirst'
+      ? ((left.kind === right.kind ? 0 : left.kind === 'leaf' ? 1 : -1) || byName)
+      : byName;
+  });
+  if (state.rootIds[0] !== node.id && normalizedFilter.length > 0
+    && children.length === 0 && !node.label.toLocaleLowerCase().includes(normalizedFilter)) return undefined;
   return Object.freeze({
     ...base,
     kind: 'branch',
-    children: Object.freeze(node.children.flatMap((id) => {
-      const child = terminalNode(state, id);
-      return child === undefined ? [] : [child];
-    }))
+    children: Object.freeze(children)
   });
 }
 
@@ -261,16 +255,16 @@ function removeSubtree(nodes: Record<string, FileTreeNode>, nodeId: string): voi
   delete nodes[nodeId];
 }
 
-export function fileTreePathExcluded(relativePath: string, name: string, patterns: readonly string[]): boolean {
+export function fileTreePathExcluded(relativePath: string, patterns: readonly string[]): boolean {
+  const candidate = relativePath.replaceAll('\\', '/');
   return patterns.some((pattern) => {
     const normalized = pattern.replaceAll('\\', '/');
-    if (!normalized.includes('*')) return name === normalized || relativePath.replaceAll('\\', '/') === normalized;
-    const expression = normalized
-      .replace(/[.+?^${}()|[\]\\]/gu, '\\$&')
-      .replaceAll('**', '\u0000')
-      .replaceAll('*', '[^/]*')
-      .replaceAll('\u0000', '.*');
-    return new RegExp(`^(?:${expression})$`, 'u').test(relativePath.replaceAll('\\', '/'));
+    const options = {
+      dot: true,
+      matchBase: !normalized.includes('/'),
+      nocase: process.platform === 'win32'
+    } as const;
+    return minimatch(candidate, normalized, options) || minimatch(`${candidate}/`, normalized, options);
   });
 }
 

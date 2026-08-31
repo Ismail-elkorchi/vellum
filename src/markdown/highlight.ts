@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import type { TerminalStyle } from '@ismail-elkorchi/terminal-ui/renderer';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import type { HighlightedCode, HighlightToken } from './render/code.js';
+import { BoundedLruMap } from '../cache/lru.js';
 
 export interface CodeHighlightSettings {
   readonly rendererVersion: string;
   readonly cooperativeChunkCodeUnits: number;
   readonly maximumSourceCodeUnits: number;
+  readonly maximumCacheEntries: number;
 }
 
 export interface CodeTokenizerContext {
@@ -26,6 +28,7 @@ export interface CodeHighlightLanguage {
 
 export interface CodeHighlighter {
   highlight(language: string, source: string, signal?: AbortSignal): Promise<HighlightedCode | undefined>;
+  stats(): { readonly cacheEntries: number; readonly loadedLanguages: number; readonly pending: number };
   clear(): void;
 }
 
@@ -39,7 +42,8 @@ interface SharedHighlight {
 const defaultSettings: CodeHighlightSettings = Object.freeze({
   rendererVersion: 'vellum-lexer-1',
   cooperativeChunkCodeUnits: 4_096,
-  maximumSourceCodeUnits: 2_000_000
+  maximumSourceCodeUnits: 2_000_000,
+  maximumCacheEntries: 256
 });
 
 export function createCodeHighlighter(
@@ -49,7 +53,7 @@ export function createCodeHighlighter(
   const resolvedSettings = resolveSettings(settings);
   const definitions = languageRegistry(languages);
   const loaded = new Map<string, Promise<CodeTokenizer>>();
-  const cache = new Map<string, HighlightedCode>();
+  const cache = new BoundedLruMap<string, HighlightedCode>(resolvedSettings.maximumCacheEntries);
   const pending = new Map<string, SharedHighlight>();
   const settingsHash = createHash('sha256').update(JSON.stringify(resolvedSettings)).digest('hex');
 
@@ -94,6 +98,9 @@ export function createCodeHighlighter(
         shared.waiters -= 1;
         if (shared.waiters === 0 && !shared.settled) shared.controller.abort();
       }
+    },
+    stats() {
+      return Object.freeze({ cacheEntries: cache.size, loadedLanguages: loaded.size, pending: pending.size });
     },
     clear() {
       for (const request of pending.values()) request.controller.abort();
@@ -191,6 +198,7 @@ function resolveSettings(settings: Partial<CodeHighlightSettings>): CodeHighligh
   const rendererVersion = settings.rendererVersion ?? defaultSettings.rendererVersion;
   const cooperativeChunkCodeUnits = settings.cooperativeChunkCodeUnits ?? defaultSettings.cooperativeChunkCodeUnits;
   const maximumSourceCodeUnits = settings.maximumSourceCodeUnits ?? defaultSettings.maximumSourceCodeUnits;
+  const maximumCacheEntries = settings.maximumCacheEntries ?? defaultSettings.maximumCacheEntries;
   if (rendererVersion.trim().length === 0) throw new TypeError('Code highlighter rendererVersion cannot be empty.');
   if (!Number.isSafeInteger(cooperativeChunkCodeUnits) || cooperativeChunkCodeUnits < 256) {
     throw new RangeError('Code highlighter cooperativeChunkCodeUnits must be an integer of at least 256.');
@@ -198,7 +206,10 @@ function resolveSettings(settings: Partial<CodeHighlightSettings>): CodeHighligh
   if (!Number.isSafeInteger(maximumSourceCodeUnits) || maximumSourceCodeUnits < cooperativeChunkCodeUnits) {
     throw new RangeError('Code highlighter maximumSourceCodeUnits must be an integer no smaller than cooperativeChunkCodeUnits.');
   }
-  return Object.freeze({ rendererVersion, cooperativeChunkCodeUnits, maximumSourceCodeUnits });
+  if (!Number.isSafeInteger(maximumCacheEntries) || maximumCacheEntries < 1) {
+    throw new RangeError('Code highlighter maximumCacheEntries must be a positive integer.');
+  }
+  return Object.freeze({ rendererVersion, cooperativeChunkCodeUnits, maximumSourceCodeUnits, maximumCacheEntries });
 }
 
 async function hashSource(source: string, signal: AbortSignal | undefined, chunkCodeUnits: number): Promise<string> {

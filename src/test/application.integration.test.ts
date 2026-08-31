@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import {
   restoreVellumApplication
 } from '../app/application.js';
 import { createRecoveryStore, type RecoveryStore } from '../recovery/recovery.js';
+import { createSessionStore } from '../session/session.js';
 import type { BufferState } from '../app/types.js';
 import { bufferIsDirty } from '../app/types.js';
 
@@ -20,22 +21,23 @@ test('background recovery failures enter the application update flow', async () 
     async write() {
       if (rejectWrite) throw new Error('Recovery storage is unavailable.');
     },
-    async delete() {}
+    async delete() {},
+    diagnostics() { return []; }
   };
   const application = createVellumApplication({
     recoveryStore: store,
-    recoveryDelayMilliseconds: 0,
+    persistenceDelayMilliseconds: 0,
     watchFiles: false,
     createBufferId: () => 'recovery-failure'
   });
   try {
     const update = new Promise<{ readonly reason: string }>((resolve) => {
       application.subscribe((value) => {
-        if (value.reason === 'recoveryFailure') resolve(value);
+        if (value.reason === 'persistenceFailure') resolve(value);
       });
     });
     application.openSource('unsaved source');
-    assert.equal((await update).reason, 'recoveryFailure');
+    assert.equal((await update).reason, 'persistenceFailure');
     assert.equal(application.state().notice?.status, 'error');
     assert.match(application.state().notice?.message ?? '', /Recovery storage is unavailable/u);
   } finally {
@@ -57,25 +59,45 @@ test('recovery writes are serialized so an older snapshot cannot replace the lat
       writtenSources.push(buffer === undefined ? '' : textDocumentText(buffer.editor.document));
       if (writtenSources.length === 1) await firstWrite;
     },
-    async delete() {}
+    async delete() {},
+    diagnostics() { return []; }
   };
   const application = createVellumApplication({
     recoveryStore: store,
-    recoveryDelayMilliseconds: 60_000,
+    persistenceDelayMilliseconds: 60_000,
     watchFiles: false,
     createBufferId: () => 'serialized-recovery'
   });
   try {
     const bufferId = application.openSource('source');
-    const older = application.persistRecoveryRecord();
+    const older = application.persistState();
     await new Promise<void>((resolve) => setImmediate(resolve));
     application.applyTextAreaTransition(bufferId, { kind: 'edit', operation: { kind: 'insert', text: 'newer ' } });
-    const newer = application.persistRecoveryRecord();
+    const newer = application.persistState();
     releaseFirstWrite?.();
     await Promise.all([older, newer]);
     assert.deepEqual(writtenSources, ['source', 'newer source']);
   } finally {
     await application.dispose();
+  }
+});
+
+test('a failed recovery commit is retried for the same source snapshot', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-recovery-retry-'));
+  const store = createRecoveryStore(directory);
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'recovery-retry' });
+  try {
+    application.openSource('source that must survive');
+    assert.equal(await store.read(), undefined);
+    await mkdir(store.filePath);
+    await assert.rejects(store.write(application.state()), /directory|EISDIR|ENOTDIR|EPERM|EEXIST/iu);
+    await rm(store.filePath, { recursive: true, force: true });
+    await store.write(application.state());
+    const persisted = await createRecoveryStore(directory).read();
+    assert.equal(persisted?.snapshots.at(-1)?.buffers[0]?.source, 'source that must survive');
+  } finally {
+    await application.dispose();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -279,7 +301,8 @@ test('recovery restores project directory, buffer order, active buffer, source, 
   const directory = await fixtureDirectory({ 'a.md': '# A', 'b.md': '# B', 'c.md': '# C' });
   const recoveryDirectory = await mkdtemp(path.join(os.tmpdir(), 'vellum-recovery-'));
   const store = createRecoveryStore(recoveryDirectory);
-  const first = createVellumApplication({ recoveryStore: store, watchFiles: false, createBufferId: sequentialIds() });
+  const sessionStore = createSessionStore(recoveryDirectory);
+  const first = createVellumApplication({ sessionStore, recoveryStore: store, watchFiles: false, createBufferId: sequentialIds() });
   try {
     await first.openProjectDirectory(directory);
     const ids = [];
@@ -301,8 +324,8 @@ test('recovery restores project directory, buffer order, active buffer, source, 
     });
     first.dispatchCommand('view.editorHybrid');
     first.dispatchCommand('view.editorPreview');
-    await first.persistRecoveryRecord();
-    const restored = await restoreVellumApplication(store, { watchFiles: false });
+    await first.persistState();
+    const restored = await restoreVellumApplication(sessionStore, store, { watchFiles: false });
     try {
       const state = restored.state();
       assert.equal(state.project.rootDirectory, directory);
@@ -325,6 +348,126 @@ test('recovery restores project directory, buffer order, active buffer, source, 
     await first.dispose();
     await rm(directory, { recursive: true, force: true });
     await rm(recoveryDirectory, { recursive: true, force: true });
+  }
+});
+
+test('clean session continuity restores tabs and layout without duplicating saved source in recovery', async () => {
+  const directory = await fixtureDirectory({ 'a.md': '# A\n', 'b.md': '# B\n' });
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), 'vellum-clean-session-'));
+  const sessionStore = createSessionStore(stateDirectory);
+  const recoveryStore = createRecoveryStore(stateDirectory);
+  const first = createVellumApplication({
+    sessionStore,
+    recoveryStore,
+    persistenceDelayMilliseconds: 60_000,
+    watchFiles: false,
+    createBufferId: sequentialIds('clean')
+  });
+  try {
+    await first.openProjectDirectory(directory);
+    const firstId = await first.openFile(path.join(directory, 'a.md'));
+    const secondId = await first.openFile(path.join(directory, 'b.md'));
+    first.activateBuffer(firstId);
+    first.dispatchCommand('view.editorHybrid');
+    first.dispatchCommand('view.editorPreview');
+    first.dispatchCommand('view.navigatorOutline');
+    first.resizeSplitPane({ kind: 'beginResize', dividerIndex: 0 });
+    first.resizeSplitPane({ kind: 'resizeFromAnchor', dividerIndex: 0, deltaShare: -0.15 });
+    first.resizeSplitPane({ kind: 'endResize', dividerIndex: 0 });
+    first.dispatchCommand('file.searchProjectDirectory');
+    first.updateProjectDirectorySearch({ kind: 'setValue', value: 'session query' });
+    await first.runProjectDirectorySearch();
+    first.dismissDialog();
+    await first.persistState();
+
+    const serializedSession = JSON.parse(await readFile(sessionStore.filePath, 'utf8')) as { buffers: Array<Record<string, unknown>> };
+    assert.equal(serializedSession.buffers.some((buffer) => Object.hasOwn(buffer, 'source')), false);
+    assert.equal(await recoveryStore.read(), undefined);
+
+    const restored = await restoreVellumApplication(sessionStore, recoveryStore, { watchFiles: false });
+    try {
+      const state = restored.state();
+      assert.deepEqual(state.project.bufferOrder, [firstId, secondId]);
+      assert.equal(state.project.activeBufferId, firstId);
+      assert.equal(textDocumentText(state.project.buffers[firstId]?.editor.document as never), '# A\n');
+      assert.equal(textDocumentText(state.project.buffers[secondId]?.editor.document as never), '# B\n');
+      assert.equal(state.editorMode, 'hybrid');
+      assert.equal(state.paneArrangement, 'editorPreview');
+      assert.equal(state.navigator.mode, 'outline');
+      assert.deepEqual(state.splitPane.shares, [0.35, 0.65]);
+      assert.equal(state.projectSearch.query, 'session query');
+      assert.deepEqual(state.projectSearch.recentQueries, ['session query']);
+    } finally {
+      await restored.dispose();
+    }
+  } finally {
+    await first.dispose();
+    await rm(directory, { recursive: true, force: true });
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('an unavailable clean session project is skipped without preventing editor startup', async () => {
+  const directory = await fixtureDirectory({ 'document.md': '# Document\n' });
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), 'vellum-missing-session-project-'));
+  const sessionStore = createSessionStore(stateDirectory);
+  const recoveryStore = createRecoveryStore(stateDirectory);
+  const first = createVellumApplication({ sessionStore, recoveryStore, watchFiles: false });
+  await first.openProjectDirectory(directory);
+  await first.openFile(path.join(directory, 'document.md'));
+  await first.persistState();
+  await first.dispose();
+  await rm(directory, { recursive: true, force: true });
+  try {
+    const restored = await restoreVellumApplication(sessionStore, recoveryStore, { watchFiles: false });
+    try {
+      assert.equal(restored.state().project.rootDirectory, undefined);
+      assert.deepEqual(restored.state().project.bufferOrder, []);
+      assert.equal(restored.state().configurationDiagnostics.some((diagnostic) => (
+        diagnostic.source === 'session' && /could not be restored/u.test(diagnostic.message)
+      )), true);
+    } finally {
+      await restored.dispose();
+    }
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test('bounded recovery generations remain selectable instead of forcing only the latest source', async () => {
+  const stateDirectory = await mkdtemp(path.join(os.tmpdir(), 'vellum-recovery-generations-'));
+  const sessionStore = createSessionStore(stateDirectory);
+  const recoveryStore = createRecoveryStore(stateDirectory);
+  const first = createVellumApplication({
+    sessionStore,
+    recoveryStore,
+    persistenceDelayMilliseconds: 60_000,
+    watchFiles: false,
+    createBufferId: () => 'journal-buffer'
+  });
+  try {
+    const id = first.openSource('one', 'draft.md');
+    await first.persistState();
+    first.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'two ' } });
+    await first.persistState();
+    first.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'three ' } });
+    await first.persistState();
+    const journal = await recoveryStore.read();
+    assert.deepEqual(journal?.snapshots.map((snapshot) => snapshot.generation), [1, 2, 3]);
+
+    const restored = await restoreVellumApplication(sessionStore, recoveryStore, { watchFiles: false });
+    try {
+      assert.equal(restored.state().dialogState?.kind, 'recoverySelection');
+      assert.equal(textDocumentText(restored.state().project.buffers[id]?.editor.document as never), 'two three one');
+      await restored.restoreRecoveryGeneration(1);
+      assert.equal(textDocumentText(restored.state().project.buffers[id]?.editor.document as never), 'one');
+      assert.match(restored.state().notice?.message ?? '', /generation 1/u);
+    } finally {
+      await restored.dispose();
+    }
+  } finally {
+    await first.dispose();
+    await rm(stateDirectory, { recursive: true, force: true });
   }
 });
 
@@ -404,6 +547,28 @@ test('saving an older source revision never replaces edits made while disk I/O i
   }
 });
 
+test('overlapping save and save-all operations serialize each buffer revision', async () => {
+  const directory = await fixtureDirectory({ 'note.md': 'original source' });
+  const destination = path.join(directory, 'note.md');
+  const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'serialized-save' });
+  try {
+    const id = await application.openFile(destination);
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'first ' } });
+    const firstSave = application.saveBuffer(id);
+    application.applyTextAreaTransition(id, { kind: 'edit', operation: { kind: 'insert', text: 'second ' } });
+    const saveAll = application.saveAll();
+    assert.equal(await firstSave, true);
+    assert.equal(await saveAll, true);
+    assert.equal(await readFile(destination, 'utf8'), 'first second original source');
+    const buffer = application.state().project.buffers[id];
+    assert.equal(buffer === undefined ? undefined : bufferIsDirty(buffer), false);
+    assert.equal(buffer?.savedRevision, buffer?.sourceRevision);
+  } finally {
+    await application.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('external file checks classify the latest buffer revision and never reload over a concurrent edit', async () => {
   const directory = await fixtureDirectory({ 'note.md': 'original source\n' });
   const filePath = path.join(directory, 'note.md');
@@ -464,7 +629,9 @@ test('recovery persists pathless source and external conflict state without allo
   const directory = await fixtureDirectory({ 'tracked.md': 'disk source\n' });
   const recoveryDirectory = await mkdtemp(path.join(os.tmpdir(), 'vellum-recovery-safety-'));
   const store = createRecoveryStore(recoveryDirectory);
+  const sessionStore = createSessionStore(recoveryDirectory);
   const first = createVellumApplication({
+    sessionStore,
     recoveryStore: store,
     watchFiles: false,
     createBufferId: sequentialIds('recovery-safety')
@@ -477,9 +644,9 @@ test('recovery persists pathless source and external conflict state without allo
     await writeFile(path.join(directory, 'tracked.md'), 'disk changed\n', 'utf8');
     await first.checkExternalFile(trackedId);
     assert.equal(first.state().project.buffers[trackedId]?.externalFileState.kind, 'conflict');
-    await first.persistRecoveryRecord();
+    await first.persistState();
 
-    restored = await restoreVellumApplication(store, { watchFiles: false });
+    restored = await restoreVellumApplication(sessionStore, store, { watchFiles: false });
     const pathless = restored.state().project.buffers[pathlessId];
     const tracked = restored.state().project.buffers[trackedId];
     assert.equal(textDocumentText(pathless?.editor.document as never), 'pathless unsaved source');
@@ -611,14 +778,17 @@ test('external rename updates the buffer, file tree, and recent path while delet
   }
 });
 
-test('unknown recovery schemas are rejected with a clear diagnostic', async () => {
+test('unknown recovery schemas are quarantined with a clear diagnostic', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vellum-recovery-schema-'));
-  const store = createRecoveryStore(directory);
   try {
-    await writeFile(store.filePath, JSON.stringify({ schemaVersion: 99, buffers: [], openBufferOrder: [] }), 'utf8');
-    await assert.rejects(() => store.read(), /Unsupported recovery schema version: 99/u);
-    await writeFile(store.filePath, JSON.stringify({ schemaVersion: 1, buffers: [], openBufferOrder: [] }), 'utf8');
-    await assert.rejects(() => store.read(), /Unsupported recovery schema version: 1/u);
+    const first = createRecoveryStore(directory);
+    await writeFile(first.filePath, JSON.stringify({ schemaVersion: 99, snapshots: [] }), 'utf8');
+    assert.equal(await first.read(), undefined);
+    assert.match(first.diagnostics()[0] ?? '', /Unsupported recovery schema version: 99/u);
+    const second = createRecoveryStore(directory);
+    await writeFile(second.filePath, JSON.stringify({ schemaVersion: 2, snapshots: [] }), 'utf8');
+    assert.equal(await second.read(), undefined);
+    assert.match(second.diagnostics()[0] ?? '', /Unsupported recovery schema version: 2/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -634,17 +804,17 @@ test('recovery rejects malformed current-schema state instead of normalizing it 
   });
   try {
     application.openSource('unsaved');
-    await application.persistRecoveryRecord();
+    await application.persistState();
     const record = JSON.parse(await readFile(store.filePath, 'utf8')) as {
-      buffers: Array<Record<string, unknown>>;
-      openBufferOrder: string[];
+      snapshots: Array<{ buffers: Array<Record<string, unknown>> }>;
     };
-    const buffer = record.buffers[0];
+    const buffer = record.snapshots[0]?.buffers[0];
     assert.ok(buffer);
-    buffer['cursor'] = 999;
-    record.openBufferOrder.push('missing-buffer');
+    buffer['checksum'] = '0'.repeat(64);
     await writeFile(store.filePath, JSON.stringify(record), 'utf8');
-    await assert.rejects(() => store.read(), /cursor exceeds|open-buffer order/iu);
+    const reloaded = createRecoveryStore(directory);
+    assert.equal(await reloaded.read(), undefined);
+    assert.match(reloaded.diagnostics()[0] ?? '', /checksum/u);
   } finally {
     await application.dispose().catch(() => undefined);
     await rm(directory, { recursive: true, force: true });

@@ -1,367 +1,249 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import {
-  createScrollState,
-  createTextAreaState,
-  createSplitPaneState
-} from '@ismail-elkorchi/terminal-ui/behavior';
-import { textCaretAt, textDocumentSelectionBetween, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import type {
   AppState,
   BufferId,
-  BufferState,
-  EditorMode,
   ExternalFileFingerprint,
   ExternalFileState,
-  FileFormat,
-  PaneArrangement
+  FileFormat
 } from '../app/types.js';
-import { createBufferParser, type BufferParser } from '../markdown/preview.js';
-import { createFileTreeState } from '../project/file-tree.js';
-import { flushDirectoryMetadata } from '../files/durability.js';
 import { defaultVellumStateDirectory } from '../config/paths.js';
+import { flushDirectoryMetadata } from '../files/durability.js';
 
-const recoverySchemaVersion = 2;
+const recoverySchemaVersion = 1;
+const maximumSnapshots = 5;
 
-interface RecoveryBufferRecord {
+export interface RecoveryBufferRecord {
   readonly id: BufferId;
   readonly path?: string;
   readonly label: string;
   readonly source: string;
+  readonly checksum: string;
   readonly savedSourceRevision: number;
   readonly currentSourceRevision: number;
-  readonly cursor: number;
-  readonly selection?: { readonly anchor: number; readonly focus: number };
-  readonly sourceScroll: { readonly row: number; readonly column: number };
-  readonly previewScroll: { readonly row: number; readonly column: number };
   readonly externalFileState: ExternalFileState;
   readonly format: FileFormat;
 }
 
-export interface RecoveryRecord {
-  readonly schemaVersion: 2;
-  readonly projectDirectory?: string;
+export interface RecoverySnapshot {
+  readonly generation: number;
+  readonly timestamp: string;
   readonly buffers: readonly RecoveryBufferRecord[];
-  readonly openBufferOrder: readonly BufferId[];
-  readonly activeBuffer?: BufferId;
-  readonly editorMode: EditorMode;
-  readonly paneArrangement: PaneArrangement;
-  readonly splitShares: readonly number[];
+}
+
+export interface RecoveryJournal {
+  readonly schemaVersion: 1;
+  readonly snapshots: readonly RecoverySnapshot[];
 }
 
 export interface RecoveryStore {
   readonly filePath: string;
-  read(): Promise<RecoveryRecord | undefined>;
+  read(): Promise<RecoveryJournal | undefined>;
   write(state: AppState): Promise<void>;
   delete(): Promise<void>;
-}
-
-export class UnknownRecoverySchemaError extends Error {
-  public constructor(version: unknown) {
-    super(`Unsupported recovery schema version: ${String(version)}.`);
-    this.name = 'UnknownRecoverySchemaError';
-  }
+  diagnostics(): readonly string[];
 }
 
 export function createRecoveryStore(directory = defaultVellumStateDirectory()): RecoveryStore {
   const filePath = path.join(directory, 'recovery.json');
+  const diagnostics: string[] = [];
+  let loaded = false;
+  let journal: RecoveryJournal | undefined;
+
+  const load = async (): Promise<RecoveryJournal | undefined> => {
+    if (loaded) return journal;
+    let source: string;
+    try {
+      source = await readFile(filePath, 'utf8');
+    } catch (error) {
+      loaded = true;
+      if (!isMissingFile(error)) diagnostics.push(`Recovery data could not be read: ${errorMessage(error)}`);
+      return undefined;
+    }
+    try {
+      journal = decodeRecoveryJournal(JSON.parse(source));
+    } catch (error) {
+      const quarantine = path.join(directory, `recovery.corrupt-${randomUUID()}.json`);
+      try {
+        await rename(filePath, quarantine);
+        diagnostics.push(`Invalid recovery data was quarantined at ${quarantine}: ${errorMessage(error)}`);
+      } catch (quarantineError) {
+        diagnostics.push(`Invalid recovery data could not be quarantined: ${errorMessage(error)}; ${errorMessage(quarantineError)}`);
+      }
+      journal = undefined;
+    }
+    loaded = true;
+    return journal;
+  };
+
+  const remove = async (): Promise<void> => {
+    try {
+      await rm(filePath);
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      return;
+    }
+    await flushDirectoryMetadata(directory);
+  };
+
   return Object.freeze({
     filePath,
-    async read() {
-      let source: string;
-      try {
-        source = await readFile(filePath, 'utf8');
-      } catch (error) {
-        if (isMissingFile(error)) return undefined;
-        throw error;
-      }
-      const parsed: unknown = JSON.parse(source);
-      return decodeRecoveryRecord(parsed);
-    },
+    read: load,
     async write(state: AppState) {
-      const record = recoveryRecordFromState(state);
-      if (record.buffers.every((buffer) => buffer.currentSourceRevision === buffer.savedSourceRevision)) {
-        await this.delete();
+      const buffers = unsafeBufferRecords(state);
+      if (buffers.length === 0) {
+        await remove();
+        journal = undefined;
+        loaded = true;
         return;
       }
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      const temporary = path.join(directory, `.recovery-${randomUUID()}.tmp`);
-      let handle: Awaited<ReturnType<typeof open>> | undefined;
-      try {
-        handle = await open(temporary, 'wx', 0o600);
-        await handle.writeFile(JSON.stringify(record), 'utf8');
-        await handle.sync();
-        await handle.close();
-        handle = undefined;
-        await rename(temporary, filePath);
-        await flushDirectoryMetadata(directory);
-      } finally {
-        await handle?.close().catch(() => undefined);
-        await rm(temporary, { force: true });
-      }
+      const previous = await load();
+      const latest = previous?.snapshots.at(-1);
+      if (latest !== undefined && JSON.stringify(latest.buffers) === JSON.stringify(buffers)) return;
+      const generation = (previous?.snapshots.at(-1)?.generation ?? 0) + 1;
+      const snapshot: RecoverySnapshot = Object.freeze({
+        generation,
+        timestamp: new Date().toISOString(),
+        buffers
+      });
+      const nextJournal: RecoveryJournal = Object.freeze({
+        schemaVersion: recoverySchemaVersion,
+        snapshots: Object.freeze([...(previous?.snapshots ?? []), snapshot].slice(-maximumSnapshots))
+      });
+      await writeAtomicJson(directory, filePath, nextJournal);
+      journal = nextJournal;
+      loaded = true;
     },
     async delete() {
-      try {
-        await rm(filePath);
-      } catch (error) {
-        if (isMissingFile(error)) return;
-        throw error;
-      }
-      await flushDirectoryMetadata(directory);
+      await remove();
+      journal = undefined;
+      loaded = true;
+    },
+    diagnostics() {
+      return Object.freeze([...diagnostics]);
     }
   });
 }
 
-function recoveryRecordFromState(state: AppState): RecoveryRecord {
-  const buffers = state.project.bufferOrder.flatMap((id) => {
+export function latestRecoverySnapshot(journal: RecoveryJournal | undefined): RecoverySnapshot | undefined {
+  return journal?.snapshots.at(-1);
+}
+
+function unsafeBufferRecords(state: AppState): readonly RecoveryBufferRecord[] {
+  return Object.freeze(state.project.bufferOrder.flatMap((id) => {
     const buffer = state.project.buffers[id];
-    if (buffer === undefined) return [];
+    if (buffer === undefined || (buffer.path !== undefined && buffer.sourceRevision === buffer.savedRevision)) return [];
+    const source = textDocumentText(buffer.editor.document);
     return [Object.freeze({
       id,
       ...(buffer.path === undefined ? {} : { path: buffer.path }),
       label: buffer.label,
-      source: textDocumentText(buffer.editor.document),
+      source,
+      checksum: sourceChecksum(source),
       savedSourceRevision: buffer.savedRevision,
       currentSourceRevision: buffer.sourceRevision,
-      cursor: buffer.editor.caret.position.offset,
-      ...(buffer.editor.selection === undefined ? {} : {
-        selection: Object.freeze({
-          anchor: buffer.editor.selection.anchor.offset,
-          focus: buffer.editor.selection.focus.offset
-        })
-      }),
-      sourceScroll: Object.freeze({ row: buffer.editor.scroll.offsetRow, column: buffer.editor.scroll.offsetColumn }),
-      previewScroll: Object.freeze({ row: buffer.previewScroll.offsetRow, column: buffer.previewScroll.offsetColumn }),
       externalFileState: buffer.externalFileState,
       format: buffer.format
     })];
-  });
-  return Object.freeze({
-    schemaVersion: recoverySchemaVersion,
-    ...(state.project.rootDirectory === undefined ? {} : { projectDirectory: state.project.rootDirectory }),
-    buffers: Object.freeze(buffers),
-    openBufferOrder: Object.freeze([...state.project.bufferOrder]),
-    ...(state.project.activeBufferId === undefined ? {} : { activeBuffer: state.project.activeBufferId }),
-    editorMode: state.editorMode,
-    paneArrangement: state.paneArrangement,
-    splitShares: Object.freeze([...state.splitPane.shares])
-  });
+  }));
 }
 
-interface RecoveredApplicationSeed {
-  readonly state: AppState;
-  readonly parsers: ReadonlyMap<BufferId, BufferParser>;
+function decodeRecoveryJournal(value: unknown): RecoveryJournal {
+  const journal = objectValue(value, 'Recovery journal');
+  exactFields(journal, ['schemaVersion', 'snapshots'], 'Recovery journal');
+  if (journal['schemaVersion'] !== recoverySchemaVersion) {
+    throw new TypeError(`Unsupported recovery schema version: ${String(journal['schemaVersion'])}.`);
+  }
+  if (!Array.isArray(journal['snapshots']) || journal['snapshots'].length === 0 || journal['snapshots'].length > maximumSnapshots) {
+    throw new TypeError(`Recovery journal must contain from one through ${String(maximumSnapshots)} snapshots.`);
+  }
+  const snapshots = Object.freeze(journal['snapshots'].map(decodeRecoverySnapshot));
+  for (let index = 1; index < snapshots.length; index += 1) {
+    if ((snapshots[index]?.generation ?? 0) <= (snapshots[index - 1]?.generation ?? 0)) {
+      throw new TypeError('Recovery generations must be strictly increasing.');
+    }
+  }
+  return Object.freeze({ schemaVersion: recoverySchemaVersion, snapshots });
 }
 
-export function recoverApplicationSeed(record: RecoveryRecord): RecoveredApplicationSeed {
-  const buffers: Record<BufferId, BufferState> = {};
-  const parsers = new Map<BufferId, BufferParser>();
-  for (const recovered of record.buffers) {
-    const parser = createBufferParser(recovered.source, recovered.currentSourceRevision);
-    parsers.set(recovered.id, parser);
-    const selection = recovered.selection === undefined
-      ? undefined
-      : textDocumentSelectionBetween(recovered.selection.anchor, recovered.selection.focus);
-    const editor = createTextAreaState({
-      value: recovered.source,
-      caret: textCaretAt(recovered.cursor),
-      ...(selection === undefined ? {} : { selection }),
-      scroll: createScrollState({
-        offsetRow: recovered.sourceScroll.row,
-        offsetColumn: recovered.sourceScroll.column
-      })
-    });
-    buffers[recovered.id] = Object.freeze({
-      id: recovered.id,
-      ...(recovered.path === undefined ? {} : { path: recovered.path }),
-      label: recovered.label,
-      editor,
-      sourceRevision: recovered.currentSourceRevision,
-      savedRevision: recovered.savedSourceRevision,
-      preview: parser.preview(),
-      previewResourceRevision: 0,
-      previewScroll: createScrollState({
-        offsetRow: recovered.previewScroll.row,
-        offsetColumn: recovered.previewScroll.column
-      }),
-      externalFileState: recovered.externalFileState,
-      format: recovered.format
-    });
+function decodeRecoverySnapshot(value: unknown): RecoverySnapshot {
+  const snapshot = objectValue(value, 'Recovery snapshot');
+  exactFields(snapshot, ['generation', 'timestamp', 'buffers'], 'Recovery snapshot');
+  const generation = positiveInteger(snapshot['generation'], 'Recovery generation');
+  if (typeof snapshot['timestamp'] !== 'string' || !Number.isFinite(Date.parse(snapshot['timestamp']))) {
+    throw new TypeError('Recovery timestamp is invalid.');
   }
-  const rootDirectory = record.projectDirectory;
-  const state: AppState = Object.freeze({
-    project: Object.freeze({
-      ...(rootDirectory === undefined ? {} : { rootDirectory }),
-      fileTree: createFileTreeState(rootDirectory),
-      buffers: Object.freeze(buffers),
-      bufferOrder: record.openBufferOrder,
-      ...(record.activeBuffer === undefined ? {} : { activeBufferId: record.activeBuffer }),
-      recentlyClosed: Object.freeze([]),
-      recentlyOpenedPaths: Object.freeze(record.buffers.flatMap((buffer) => buffer.path === undefined ? [] : [buffer.path]))
-    }),
-    editorMode: record.editorMode,
-    paneArrangement: record.paneArrangement,
-    splitPane: createSplitPaneState(2, record.splitShares),
-    commandState: Object.freeze({
-      navigation: Object.freeze({ back: Object.freeze([]), forward: Object.freeze([]) })
-    }),
-    notice: Object.freeze({ status: 'warning', message: 'Unsaved buffers were restored from a recovery record.' })
-  });
-  return Object.freeze({ state, parsers });
-}
-
-function decodeRecoveryRecord(value: unknown): RecoveryRecord {
-  const object = objectValue(value, 'Recovery record');
-  exactFields(object, [
-    'schemaVersion', 'projectDirectory', 'buffers', 'openBufferOrder', 'activeBuffer',
-    'editorMode', 'paneArrangement', 'splitShares'
-  ], 'Recovery record');
-  if (object['schemaVersion'] !== recoverySchemaVersion) throw new UnknownRecoverySchemaError(object['schemaVersion']);
-  const projectDirectory = optionalAbsolutePath(object['projectDirectory'], 'Recovery project directory');
-  if (!Array.isArray(object['buffers'])) throw new TypeError('Recovery record buffers must be an array.');
-  const buffers = Object.freeze(object['buffers'].map(decodeRecoveryBuffer));
-  const bufferIds = new Set<string>();
-  for (const buffer of buffers) {
-    if (bufferIds.has(buffer.id)) throw new TypeError(`Recovery buffer identifier is duplicated: ${buffer.id}`);
-    bufferIds.add(buffer.id);
+  if (!Array.isArray(snapshot['buffers']) || snapshot['buffers'].length === 0) {
+    throw new TypeError('Recovery snapshot buffers must be a nonempty array.');
   }
-  if (!Array.isArray(object['openBufferOrder']) || !object['openBufferOrder'].every((id) => typeof id === 'string')) {
-    throw new TypeError('Recovery open-buffer order must be a string array.');
+  const buffers = Object.freeze(snapshot['buffers'].map(decodeRecoveryBuffer));
+  if (new Set(buffers.map((buffer) => buffer.id)).size !== buffers.length) {
+    throw new TypeError('Recovery buffer identifiers must be unique within a snapshot.');
   }
-  const openBufferOrder = Object.freeze([...object['openBufferOrder']] as string[]);
-  if (new Set(openBufferOrder).size !== openBufferOrder.length) {
-    throw new TypeError('Recovery open-buffer order contains duplicate identifiers.');
-  }
-  if (openBufferOrder.length !== buffers.length || openBufferOrder.some((id) => !bufferIds.has(id))) {
-    throw new TypeError('Recovery open-buffer order must contain every recovery buffer exactly once.');
-  }
-  const activeBuffer = object['activeBuffer'];
-  if (activeBuffer !== undefined && (typeof activeBuffer !== 'string' || !bufferIds.has(activeBuffer))) {
-    throw new TypeError('Recovery active buffer is invalid.');
-  }
-  if ((buffers.length === 0) !== (activeBuffer === undefined)) {
-    throw new TypeError('Recovery active buffer must identify one open buffer whenever buffers are present.');
-  }
-  if (object['editorMode'] !== 'source' && object['editorMode'] !== 'hybrid') {
-    throw new TypeError('Recovery record editor mode is invalid.');
-  }
-  if (object['paneArrangement'] !== 'editor'
-    && object['paneArrangement'] !== 'preview'
-    && object['paneArrangement'] !== 'editorPreview') {
-    throw new TypeError('Recovery record pane arrangement is invalid.');
-  }
-  if (!Array.isArray(object['splitShares'])
-    || object['splitShares'].length !== 2
-    || !object['splitShares'].every((share) => typeof share === 'number' && Number.isFinite(share) && share >= 0)
-    || object['splitShares'].reduce((sum, share) => sum + (share as number), 0) <= 0) {
-    throw new TypeError('Recovery split shares must contain two nonnegative finite values with a positive total.');
-  }
-  return Object.freeze({
-    schemaVersion: recoverySchemaVersion,
-    ...(projectDirectory === undefined ? {} : { projectDirectory }),
-    buffers,
-    openBufferOrder,
-    ...(activeBuffer === undefined ? {} : { activeBuffer }),
-    editorMode: object['editorMode'],
-    paneArrangement: object['paneArrangement'],
-    splitShares: Object.freeze([...(object['splitShares'] as number[])])
-  });
+  return Object.freeze({ generation, timestamp: snapshot['timestamp'], buffers });
 }
 
 function decodeRecoveryBuffer(value: unknown): RecoveryBufferRecord {
   const buffer = objectValue(value, 'Recovery buffer');
   exactFields(buffer, [
-    'id', 'path', 'label', 'source', 'savedSourceRevision', 'currentSourceRevision', 'cursor',
-    'selection', 'sourceScroll', 'previewScroll', 'externalFileState', 'format'
+    'id', 'path', 'label', 'source', 'checksum', 'savedSourceRevision',
+    'currentSourceRevision', 'externalFileState', 'format'
   ], 'Recovery buffer');
   const id = nonemptyString(buffer['id'], 'Recovery buffer id');
-  const filePath = optionalAbsolutePath(buffer['path'], `Recovery buffer ${id} path`);
+  const pathValue = optionalAbsolutePath(buffer['path'], `Recovery buffer ${id} path`);
   if (typeof buffer['label'] !== 'string' || typeof buffer['source'] !== 'string') {
     throw new TypeError(`Recovery buffer ${id} label and source must be strings.`);
   }
-  const savedSourceRevision = nonnegativeInteger(buffer['savedSourceRevision'], `Recovery buffer ${id} saved source revision`);
-  const currentSourceRevision = nonnegativeInteger(buffer['currentSourceRevision'], `Recovery buffer ${id} current source revision`);
-  if (savedSourceRevision > currentSourceRevision) {
-    throw new TypeError(`Recovery buffer ${id} saved source revision exceeds its current source revision.`);
+  if (buffer['checksum'] !== sourceChecksum(buffer['source'])) {
+    throw new TypeError(`Recovery buffer ${id} checksum does not match its source.`);
   }
-  const cursor = sourceOffset(buffer['cursor'], buffer['source'].length, `Recovery buffer ${id} cursor`);
-  const selection = buffer['selection'] === undefined
-    ? undefined
-    : decodeSelection(buffer['selection'], buffer['source'].length, id);
-  const sourceScroll = decodeScroll(buffer['sourceScroll'], `Recovery buffer ${id} source scroll`);
-  const previewScroll = decodeScroll(buffer['previewScroll'], `Recovery buffer ${id} preview scroll`);
+  const savedSourceRevision = nonnegativeInteger(buffer['savedSourceRevision'], `Recovery buffer ${id} saved revision`);
+  const currentSourceRevision = nonnegativeInteger(buffer['currentSourceRevision'], `Recovery buffer ${id} current revision`);
+  if (savedSourceRevision > currentSourceRevision) throw new TypeError(`Recovery buffer ${id} revisions are invalid.`);
   const externalFileState = decodeExternalFileState(buffer['externalFileState'], id);
-  if ((filePath === undefined) !== (externalFileState.kind === 'untracked')) {
-    throw new TypeError(`Recovery buffer ${id} path and external file state are inconsistent.`);
+  if ((pathValue === undefined) !== (externalFileState.kind === 'untracked')) {
+    throw new TypeError(`Recovery buffer ${id} path and external-file state are inconsistent.`);
   }
   return Object.freeze({
     id,
-    ...(filePath === undefined ? {} : { path: filePath }),
+    ...(pathValue === undefined ? {} : { path: pathValue }),
     label: buffer['label'],
     source: buffer['source'],
+    checksum: buffer['checksum'],
     savedSourceRevision,
     currentSourceRevision,
-    cursor,
-    ...(selection === undefined ? {} : { selection }),
-    sourceScroll,
-    previewScroll,
     externalFileState,
     format: decodeFileFormat(buffer['format'], id)
   });
 }
 
-function decodeSelection(
-  value: unknown,
-  sourceLength: number,
-  bufferId: string
-): { readonly anchor: number; readonly focus: number } {
-  const selection = objectValue(value, `Recovery buffer ${bufferId} selection`);
-  exactFields(selection, ['anchor', 'focus'], `Recovery buffer ${bufferId} selection`);
-  return Object.freeze({
-    anchor: sourceOffset(selection['anchor'], sourceLength, `Recovery buffer ${bufferId} selection anchor`),
-    focus: sourceOffset(selection['focus'], sourceLength, `Recovery buffer ${bufferId} selection focus`)
-  });
-}
-
-function decodeScroll(value: unknown, label: string): { readonly row: number; readonly column: number } {
-  const scroll = objectValue(value, label);
-  exactFields(scroll, ['row', 'column'], label);
-  return Object.freeze({
-    row: nonnegativeInteger(scroll['row'], `${label} row`),
-    column: nonnegativeInteger(scroll['column'], `${label} column`)
-  });
-}
-
-function decodeExternalFileState(value: unknown, bufferId: string): ExternalFileState {
-  const state = objectValue(value, `Recovery buffer ${bufferId} external file state`);
+function decodeExternalFileState(value: unknown, id: string): ExternalFileState {
+  const state = objectValue(value, `Recovery buffer ${id} external-file state`);
   if (state['kind'] === 'untracked') {
-    exactFields(state, ['kind'], `Recovery buffer ${bufferId} external file state`);
+    exactFields(state, ['kind'], `Recovery buffer ${id} external-file state`);
     return Object.freeze({ kind: 'untracked' });
   }
   if (state['kind'] === 'current') {
-    exactFields(state, ['kind', 'fingerprint'], `Recovery buffer ${bufferId} external file state`);
-    return Object.freeze({ kind: 'current', fingerprint: decodeFingerprint(state['fingerprint'], bufferId) });
+    exactFields(state, ['kind', 'fingerprint'], `Recovery buffer ${id} external-file state`);
+    return Object.freeze({ kind: 'current', fingerprint: decodeFingerprint(state['fingerprint'], id) });
   }
   if (state['kind'] === 'conflict') {
-    exactFields(state, ['kind', 'disk'], `Recovery buffer ${bufferId} external file state`);
-    return Object.freeze({ kind: 'conflict', disk: decodeFingerprint(state['disk'], bufferId) });
+    exactFields(state, ['kind', 'disk'], `Recovery buffer ${id} external-file state`);
+    return Object.freeze({ kind: 'conflict', disk: decodeFingerprint(state['disk'], id) });
   }
   if (state['kind'] === 'deleted') {
-    exactFields(state, ['kind', 'previous'], `Recovery buffer ${bufferId} external file state`);
-    return Object.freeze({ kind: 'deleted', previous: decodeFingerprint(state['previous'], bufferId) });
+    exactFields(state, ['kind', 'previous'], `Recovery buffer ${id} external-file state`);
+    return Object.freeze({ kind: 'deleted', previous: decodeFingerprint(state['previous'], id) });
   }
-  throw new TypeError(`Recovery buffer ${bufferId} external file state kind is invalid.`);
+  throw new TypeError(`Recovery buffer ${id} external-file state is invalid.`);
 }
 
-function decodeFingerprint(value: unknown, bufferId: string): ExternalFileFingerprint {
-  const fingerprint = objectValue(value, `Recovery buffer ${bufferId} external file fingerprint`);
-  exactFields(
-    fingerprint,
-    ['realPath', 'device', 'inode', 'size', 'modifiedNanoseconds', 'contentHash'],
-    `Recovery buffer ${bufferId} external file fingerprint`
-  );
-  const realPath = optionalAbsolutePath(fingerprint['realPath'], `Recovery buffer ${bufferId} external file real path`);
+function decodeFingerprint(value: unknown, id: string): ExternalFileFingerprint {
+  const fingerprint = objectValue(value, `Recovery buffer ${id} fingerprint`);
+  exactFields(fingerprint, ['realPath', 'device', 'inode', 'size', 'modifiedNanoseconds', 'contentHash'], `Recovery buffer ${id} fingerprint`);
+  const realPath = optionalAbsolutePath(fingerprint['realPath'], `Recovery buffer ${id} real path`);
   if (realPath === undefined
     || typeof fingerprint['device'] !== 'string'
     || typeof fingerprint['inode'] !== 'string'
@@ -371,40 +253,59 @@ function decodeFingerprint(value: unknown, bufferId: string): ExternalFileFinger
     || !/^\d+$/u.test(fingerprint['inode'])
     || !/^-?\d+$/u.test(fingerprint['modifiedNanoseconds'])
     || !/^[a-f0-9]{64}$/u.test(fingerprint['contentHash'])) {
-    throw new TypeError(`Recovery buffer ${bufferId} external file fingerprint is invalid.`);
+    throw new TypeError(`Recovery buffer ${id} fingerprint is invalid.`);
   }
   return Object.freeze({
     realPath,
     device: fingerprint['device'],
     inode: fingerprint['inode'],
-    size: nonnegativeInteger(fingerprint['size'], `Recovery buffer ${bufferId} external file size`),
+    size: nonnegativeInteger(fingerprint['size'], `Recovery buffer ${id} file size`),
     modifiedNanoseconds: fingerprint['modifiedNanoseconds'],
     contentHash: fingerprint['contentHash']
   });
 }
 
-function decodeFileFormat(value: unknown, bufferId: string): FileFormat {
-  const format = objectValue(value, `Recovery buffer ${bufferId} format`);
-  exactFields(format, ['bom', 'lineEnding', 'permissionMode'], `Recovery buffer ${bufferId} format`);
+function decodeFileFormat(value: unknown, id: string): FileFormat {
+  const format = objectValue(value, `Recovery buffer ${id} format`);
+  exactFields(format, ['bom', 'lineEnding', 'permissionMode'], `Recovery buffer ${id} format`);
   if (typeof format['bom'] !== 'boolean' || (format['lineEnding'] !== 'lf' && format['lineEnding'] !== 'crlf')) {
-    throw new TypeError(`Recovery buffer ${bufferId} format is invalid.`);
+    throw new TypeError(`Recovery buffer ${id} format is invalid.`);
   }
   const permissionMode = format['permissionMode'];
-  if (permissionMode !== undefined
-    && (!Number.isSafeInteger(permissionMode) || (permissionMode as number) < 0 || (permissionMode as number) > 0o777)) {
-    throw new TypeError(`Recovery buffer ${bufferId} permission mode is invalid.`);
+  if (permissionMode !== undefined && (!Number.isSafeInteger(permissionMode) || Number(permissionMode) < 0 || Number(permissionMode) > 0o777)) {
+    throw new TypeError(`Recovery buffer ${id} permission mode is invalid.`);
   }
   return Object.freeze({
     bom: format['bom'],
     lineEnding: format['lineEnding'],
-    ...(permissionMode === undefined ? {} : { permissionMode: permissionMode as number })
+    ...(permissionMode === undefined ? {} : { permissionMode: Number(permissionMode) })
   });
 }
 
-function objectValue(value: unknown, label: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError(`${label} must be an object.`);
+async function writeAtomicJson(directory: string, filePath: string, value: unknown): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, `.recovery-${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporary, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(value), 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, filePath);
+    await flushDirectoryMetadata(directory);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await rm(temporary, { force: true });
   }
+}
+
+function sourceChecksum(source: string): string {
+  return createHash('sha256').update(source).digest('hex');
+}
+
+function objectValue(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${label} must be an object.`);
   return value as Record<string, unknown>;
 }
 
@@ -426,18 +327,20 @@ function optionalAbsolutePath(value: unknown, label: string): string | undefined
 }
 
 function nonnegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new TypeError(`${label} must be a nonnegative integer.`);
-  return value as number;
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new TypeError(`${label} must be a nonnegative integer.`);
+  return Number(value);
 }
 
-function sourceOffset(value: unknown, sourceLength: number, label: string): number {
-  const offset = nonnegativeInteger(value, label);
-  if (offset > sourceLength) throw new TypeError(`${label} exceeds the source document length.`);
-  return offset;
+function positiveInteger(value: unknown, label: string): number {
+  const result = nonnegativeInteger(value, label);
+  if (result === 0) throw new TypeError(`${label} must be positive.`);
+  return result;
 }
 
 function isMissingFile(error: unknown): boolean {
-  return error instanceof Error
-    && 'code' in error
-    && (error as NodeJS.ErrnoException).code === 'ENOENT';
+  return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

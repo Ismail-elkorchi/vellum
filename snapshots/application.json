@@ -1,0 +1,3099 @@
+[
+  {
+    "name": "empty-60x18",
+    "size": {
+      "columns": 60,
+      "rows": 18
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n┌ Vellum ──────────────────────────────────────────────────┐\n│                                                          │\n│ Open File       Ctrl+O                                   │\n│ Open Project    Alt+D                                    │\n│ New Document    Ctrl+N                                   │\n│ Command Palette F1                                       │\n│ Keyboard Help   vellum --keyboard-report                 │\n│ Terminal Check  vellum --check-keymap                    │\n│                                                          │\n│                                                          │\n│                                                          │\n│                                                          │\n│                                                          │\n│                                                          │\n│                                                          │\n└──────────────────────────────────────────────────────────┘\n Ctrl+N new file · Ctrl+O open file · Alt+D open project di",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "vellum-empty-surface",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-empty",
+                "role": "text",
+                "value": "Open File       Ctrl+O\nOpen Project    Alt+D\nNew Document    Ctrl+N\nCommand Palette F1\nKeyboard Help   vellum --keyboard-report\nTerminal Check  vellum --check-keymap"
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "Ctrl+N new file · Ctrl+O open file · Alt+D open project directory"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "source-80x24",
+    "size": {
+      "columns": 80,
+      "rows": 24
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n▏document.md ● ×\n│  1 │ ---                                                                     ┃\n│  2 │ title: Snapshot                                                         ┃\n│  3 │ status: draft                                                           ┃\n│  4 │ ---                                                                     ┃\n│  5 │                                                                         ┃\n│  6 │ # Heading                                                               ┃\n│  7 │                                                                         ┃\n│  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עברית,  ┃\n│    │ 日本語, and 😀.                                                         ┃\n│  9 │                                                                         ┃\n│ 10 │ > [!NOTE]                                                               ┃\n│ 11 │ > A source-exact callout.                                               ┃\n│ 12 │                                                                         ┃\n│ 13 │ | Name | Value |                                                        ┃\n│ 14 │ | :--- | ---: |                                                         ┃\n│ 15 │ | alpha | 42 |                                                          │\n│ 16 │                                                                         │\n│ 17 │ - [ ] open task                                                         │\n│ 18 │ - [x] complete task                                                     │\n│ 19 │                                                                         │\n│ 20 │ $$                                                                      │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "focused": true,
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "focused": true,
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-editor-document",
+                    "role": "textbox",
+                    "label": "document.md source document",
+                    "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                    "description": "28 lines. Showing 1-21 of 29 rows. Omitted before: 0. Omitted after: 8. Horizontal offset: 0.",
+                    "required": false,
+                    "invalid": false,
+                    "textPosition": {
+                      "caretOffset": 0
+                    },
+                    "textWindow": {
+                      "startOffset": 0,
+                      "endOffsetExclusive": 314,
+                      "totalLength": 314
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "hybrid-120x34",
+    "size": {
+      "columns": 120,
+      "rows": 34
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  HYBRID · editor\n▏document.md ● ×\n│  1 │ ---\n│  2 │ title: Snapshot\n│  3 │ status: draft\n│  4 │ ---\n│  5 │\n│  6 │  Heading\n│  7 │\n│  8 │ Paragraph with strong text, a link, العربية, עברית, 日本語, and 😀.\n│  9 │\n│ 10 │  ℹ NOTE\n│ 11 │  A source-exact callout.\n│ 12 │\n│ 13 │  Name  Value\n│ 14 │  ←  →\n│ 15 │  alpha  42\n│ 16 │\n│ 17 │ - ☐ open task\n│ 18 │ - ☑ complete task\n│ 19 │\n│ 20 │\n│ 21 │ x²\n│ 22 │ ──\n│ 23 │ 2\n│ 24 │\n│ 25 │ • Heading\n│ 26 │   • Details\n│ 27 │\n│ 28 │  Details\n│ 29 │\n│ 30 │ Final paragraph.\n\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  HYBRID · editor"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "focused": true,
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "focused": true,
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-editor-document",
+                    "role": "textbox",
+                    "label": "document.md source document",
+                    "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n Heading\n\nParagraph with strong text, a link, العربية, עברית, 日本語, and 😀.\n\n note callout\n A source-exact callout.\n\nNameValue\ntable column alignment\nalpha42\n\n- unchecked task open task\n- checked task complete task\n\n\nMath: \\frac{x^2}{2}\n\n\nTable of contents\n\n Details\n\nFinal paragraph.",
+                    "description": "28 lines. Showing 1-30 of 30 rows. Omitted before: 0. Omitted after: 0. Horizontal offset: 0.",
+                    "required": false,
+                    "invalid": false,
+                    "textPosition": {
+                      "caretOffset": 0
+                    },
+                    "textWindow": {
+                      "startOffset": 0,
+                      "endOffsetExclusive": 322,
+                      "totalLength": 322
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "preview-160x40",
+    "size": {
+      "columns": 160,
+      "rows": 40
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · preview\n▏document.md ● ×\n                                    title: Snapshot\n                                    status: draft\n\n                                    Heading\n\n                                    Paragraph with strong text, a link, العربية, עברית, 日本語, and 😀.\n\n                                    NOTE\n                                    │ A source-exact callout.\n\n                                    ┌───────┬───────┐\n                                    │ Name  │ Value │\n                                    ╞═══════╪═══════╡\n                                    │ alpha │    42 │\n                                    └───────┴───────┘\n\n                                    ☐ open task\n                                    ☑ complete task\n\n                                    x²\n                                    ──\n                                    2\n\n                                    • Heading\n                                      • Details\n\n                                    Details\n\n                                    Final paragraph.\n\n\n\n\n\n\n\n\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · preview"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-preview-document",
+                    "role": "group",
+                    "label": "document.md preview",
+                    "description": "Showing rows 1-37 of 37, columns 1-160 of 160.",
+                    "children": [
+                      {
+                        "id": "preview-content-document",
+                        "role": "document",
+                        "label": "document.md rendered preview",
+                        "children": [
+                          {
+                            "id": "preview-content-document:markdown-1",
+                            "role": "group",
+                            "label": "Front matter",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-1-entry-0",
+                                "role": "cell",
+                                "label": "title: Snapshot"
+                              },
+                              {
+                                "id": "preview-content-document:markdown-1-entry-1",
+                                "role": "cell",
+                                "label": "status: draft"
+                              }
+                            ]
+                          },
+                          {
+                            "id": "preview-content-document:markdown-2",
+                            "role": "heading",
+                            "label": "Heading",
+                            "position": {
+                              "level": 1
+                            }
+                          },
+                          {
+                            "id": "preview-content-document:markdown-4",
+                            "role": "text",
+                            "value": "Paragraph with strong text, a link, العربية, עברית, 日本語, and 😀.",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-9",
+                                "role": "link",
+                                "label": "a link: ./target.md",
+                                "focused": true
+                              }
+                            ]
+                          },
+                          {
+                            "id": "preview-content-document:markdown-12",
+                            "role": "group",
+                            "label": "Note callout",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-13",
+                                "role": "text",
+                                "value": "A source-exact callout."
+                              }
+                            ]
+                          },
+                          {
+                            "id": "preview-content-document:markdown-15",
+                            "role": "table",
+                            "label": "Table",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-16",
+                                "role": "row",
+                                "label": "Table row",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-17",
+                                    "role": "cell",
+                                    "label": "Name"
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-19",
+                                    "role": "cell",
+                                    "label": "Value"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-21",
+                                "role": "row",
+                                "label": "Table row",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-22",
+                                    "role": "cell",
+                                    "label": "alpha"
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-24",
+                                    "role": "cell",
+                                    "label": "42"
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "id": "preview-content-document:markdown-26",
+                            "role": "list",
+                            "label": "Unordered list",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-27",
+                                "role": "listitem",
+                                "label": "List item",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-27-task",
+                                    "role": "checkbox",
+                                    "label": "Unchecked task",
+                                    "checked": false
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-28",
+                                    "role": "text",
+                                    "value": "open task"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-30",
+                                "role": "listitem",
+                                "label": "List item",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-30-task",
+                                    "role": "checkbox",
+                                    "label": "Checked task",
+                                    "checked": true
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-31",
+                                    "role": "text",
+                                    "value": "complete task"
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "id": "preview-content-document:markdown-33",
+                            "role": "text",
+                            "value": "Math: \\frac{x^2}{2}\n"
+                          },
+                          {
+                            "id": "preview-content-document:markdown-34",
+                            "role": "text",
+                            "value": "[TOC]"
+                          },
+                          {
+                            "id": "preview-content-document:markdown-36",
+                            "role": "heading",
+                            "label": "Details",
+                            "position": {
+                              "level": 2
+                            }
+                          },
+                          {
+                            "id": "preview-content-document:markdown-38",
+                            "role": "text",
+                            "value": "Final paragraph."
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers",
+        "vellum-buffers:document:panel",
+        "vellum-preview-document",
+        "preview-content-document",
+        "preview-content-document:markdown-4",
+        "preview-content-document:markdown-9"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "split-120x34",
+    "size": {
+      "columns": 120,
+      "rows": 34
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  HYBRID · editorPreview\n▏document.md ● ×\n│  1 │ ---                                                 │ title: Snapshot\n│  2 │ title: Snapshot                                     │ status: draft\n│  3 │ status: draft                                       │\n│  4 │ ---                                                 │ Heading\n│  5 │                                                     │\n│  6 │  Heading                                            │ Paragraph with strong text, a link, العربية, עברית,\n│  7 │                                                     │ 日本語, and 😀.\n│  8 │ Paragraph with strong text, a link, العربية, עברית, │\n│    │ 日本語, and 😀.                                     │ NOTE\n│  9 │                                                     │ │ A source-exact callout.\n│ 10 │  ℹ NOTE                                             │\n│ 11 │  A source-exact callout.                            │ ┌───────┬───────┐\n│ 12 │                                                     │ │ Name  │ Value │\n│ 13 │  Name  Value                                        │ ╞═══════╪═══════╡\n│ 14 │  ←  →                                               │ │ alpha │    42 │\n│ 15 │  alpha  42                                          │ └───────┴───────┘\n│ 16 │                                                     │\n│ 17 │ - ☐ open task                                       │ ☐ open task\n│ 18 │ - ☑ complete task                                   │ ☑ complete task\n│ 19 │                                                     │\n│ 20 │                                                     │ x²\n│ 21 │ x²                                                  │ ──\n│ 22 │ ──                                                  │ 2\n│ 23 │ 2                                                   │\n│ 24 │                                                     │ • Heading\n│ 25 │ • Heading                                           │   • Details\n│ 26 │   • Details                                         │\n│ 27 │                                                     │ Details\n│ 28 │  Details                                            │\n│ 29 │                                                     │ Final paragraph.\n│ 30 │ Final paragraph.                                    │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  HYBRID · editorPreview"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-split-document",
+                    "role": "group",
+                    "label": "Editor and preview panes",
+                    "description": "Resizable split pane. Divider 1 of 1 active.",
+                    "focused": true,
+                    "children": [
+                      {
+                        "id": "vellum-editor-document",
+                        "role": "textbox",
+                        "label": "document.md source document",
+                        "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n Heading\n\nParagraph with strong text, a link, العربية, עברית, 日本語, and 😀.\n\n note callout\n A source-exact callout.\n\nNameValue\ntable column alignment\nalpha42\n\n- unchecked task open task\n- checked task complete task\n\n\nMath: \\frac{x^2}{2}\n\n\nTable of contents\n\n Details\n\nFinal paragraph.",
+                        "description": "28 lines. Showing 1-31 of 31 rows. Omitted before: 0. Omitted after: 0. Horizontal offset: 0.",
+                        "required": false,
+                        "invalid": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "textWindow": {
+                          "startOffset": 0,
+                          "endOffsetExclusive": 322,
+                          "totalLength": 322
+                        }
+                      },
+                      {
+                        "id": "vellum-preview-document",
+                        "role": "group",
+                        "label": "document.md preview",
+                        "description": "Showing rows 1-31 of 31, columns 1-60 of 60.",
+                        "children": [
+                          {
+                            "id": "preview-content-document",
+                            "role": "document",
+                            "label": "document.md rendered preview",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-1",
+                                "role": "group",
+                                "label": "Front matter",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-1-entry-0",
+                                    "role": "cell",
+                                    "label": "title: Snapshot"
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-1-entry-1",
+                                    "role": "cell",
+                                    "label": "status: draft"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-2",
+                                "role": "heading",
+                                "label": "Heading",
+                                "position": {
+                                  "level": 1
+                                }
+                              },
+                              {
+                                "id": "preview-content-document:markdown-4",
+                                "role": "text",
+                                "value": "Paragraph with strong text, a link, العربية, עברית, 日本語, and 😀.",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-9",
+                                    "role": "link",
+                                    "label": "a link: ./target.md"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-12",
+                                "role": "group",
+                                "label": "Note callout",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-13",
+                                    "role": "text",
+                                    "value": "A source-exact callout."
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-15",
+                                "role": "table",
+                                "label": "Table",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-16",
+                                    "role": "row",
+                                    "label": "Table row",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-17",
+                                        "role": "cell",
+                                        "label": "Name"
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-19",
+                                        "role": "cell",
+                                        "label": "Value"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-21",
+                                    "role": "row",
+                                    "label": "Table row",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-22",
+                                        "role": "cell",
+                                        "label": "alpha"
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-24",
+                                        "role": "cell",
+                                        "label": "42"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-26",
+                                "role": "list",
+                                "label": "Unordered list",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-27",
+                                    "role": "listitem",
+                                    "label": "List item",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-27-task",
+                                        "role": "checkbox",
+                                        "label": "Unchecked task",
+                                        "checked": false
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-28",
+                                        "role": "text",
+                                        "value": "open task"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-30",
+                                    "role": "listitem",
+                                    "label": "List item",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-30-task",
+                                        "role": "checkbox",
+                                        "label": "Checked task",
+                                        "checked": true
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-31",
+                                        "role": "text",
+                                        "value": "complete task"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-33",
+                                "role": "text",
+                                "value": "Math: \\frac{x^2}{2}\n"
+                              },
+                              {
+                                "id": "preview-content-document:markdown-34",
+                                "role": "text",
+                                "value": "[TOC]"
+                              },
+                              {
+                                "id": "preview-content-document:markdown-36",
+                                "role": "heading",
+                                "label": "Details",
+                                "position": {
+                                  "level": 2
+                                }
+                              },
+                              {
+                                "id": "preview-content-document:markdown-38",
+                                "role": "text",
+                                "value": "Final paragraph."
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers",
+        "vellum-buffers:document:panel",
+        "vellum-split-document"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "project-tree",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  project  SOURCE · editor\n  ▼ project               ┌ Vellum ────────────────────────────────────────────────────────────────┐\n    ▶ assets              │                                                                        │\n      document.md         │ Open File       Ctrl+O                                                 │\n                          │ Open Project    Alt+D                                                  │\n                          │ New Document    Ctrl+N                                                 │\n                          │ Command Palette F1                                                     │\n                          │ Keyboard Help   vellum --keyboard-report                               │\n                          │ Terminal Check  vellum --check-keymap                                  │\n                          │                                                                        │\n                          │ Recent and pinned projects:                                            │\n                          │   /workspace/project                                                   │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          │                                                                        │\n                          └────────────────────────────────────────────────────────────────────────┘\n Ctrl+N new file · Ctrl+O open file · Alt+D open project directory",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  project  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "anonymous:11:vellum-root5:row:1",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-file-tree",
+                "role": "tree",
+                "label": "File tree",
+                "description": "Showing 1-3 of 3 tree rows.",
+                "focused": true,
+                "window": {
+                  "startIndex": 0,
+                  "endIndexExclusive": 3,
+                  "totalCount": 3,
+                  "omittedBefore": 0,
+                  "omittedAfter": 0
+                },
+                "activeDescendant": "vellum-file-tree:/workspace/project/document.md",
+                "children": [
+                  {
+                    "id": "vellum-file-tree:/workspace/project",
+                    "role": "treeitem",
+                    "label": "project",
+                    "value": "/workspace/project",
+                    "selected": false,
+                    "disabled": false,
+                    "expanded": true,
+                    "position": {
+                      "positionInSet": 1,
+                      "setSize": 3,
+                      "level": 1
+                    }
+                  },
+                  {
+                    "id": "vellum-file-tree:/workspace/project/assets",
+                    "role": "treeitem",
+                    "label": "assets",
+                    "value": "/workspace/project//workspace/project/assets",
+                    "selected": false,
+                    "disabled": false,
+                    "expanded": false,
+                    "position": {
+                      "positionInSet": 2,
+                      "setSize": 3,
+                      "level": 2
+                    }
+                  },
+                  {
+                    "id": "vellum-file-tree:/workspace/project/document.md",
+                    "role": "treeitem",
+                    "label": "document.md",
+                    "value": "/workspace/project//workspace/project/document.md",
+                    "selected": true,
+                    "disabled": false,
+                    "position": {
+                      "positionInSet": 3,
+                      "setSize": 3,
+                      "level": 2
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "vellum-empty-surface",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-empty",
+                    "role": "text",
+                    "value": "Open File       Ctrl+O\nOpen Project    Alt+D\nNew Document    Ctrl+N\nCommand Palette F1\nKeyboard Help   vellum --keyboard-report\nTerminal Check  vellum --check-keymap\n\nRecent and pinned projects:\n  /workspace/project"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "Ctrl+N new file · Ctrl+O open file · Alt+D open project directory"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "anonymous:11:vellum-root5:row:1",
+        "vellum-file-tree"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "dirty-tabs",
+    "size": {
+      "columns": 100,
+      "rows": 26
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n first.md ● ×  ▏second.md ● ×\n│  1 │ # Second\n│  2 │\n│  3 │ Unsaved second.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n second.md · UNSAVED · 3 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "buffer-2",
+            "focused": true,
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:buffer-2",
+                "children": [
+                  {
+                    "id": "vellum-buffers:buffer-1",
+                    "role": "tab",
+                    "label": "first.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "selected": false,
+                    "disabled": false,
+                    "controls": "vellum-buffers:buffer-1:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:buffer-1:close",
+                        "role": "button",
+                        "label": "Close first.md"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers:buffer-2",
+                    "role": "tab",
+                    "label": "second.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "focused": true,
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:buffer-2:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:buffer-2:close",
+                        "role": "button",
+                        "label": "Close second.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:buffer-1:panel",
+                "role": "tabpanel",
+                "label": "first.md",
+                "labelledBy": "vellum-buffers:buffer-1"
+              },
+              {
+                "id": "vellum-buffers:buffer-2:panel",
+                "role": "tabpanel",
+                "label": "second.md",
+                "labelledBy": "vellum-buffers:buffer-2",
+                "children": [
+                  {
+                    "id": "vellum-editor-buffer-2",
+                    "role": "textbox",
+                    "label": "second.md source document",
+                    "value": "# Second\n\nUnsaved second.",
+                    "description": "3 lines. Showing 1-3 of 3 rows. Omitted before: 0. Omitted after: 0. Horizontal offset: 0.",
+                    "required": false,
+                    "invalid": false,
+                    "textPosition": {
+                      "caretOffset": 0
+                    },
+                    "textWindow": {
+                      "startOffset": 0,
+                      "endOffsetExclusive": 25,
+                      "totalLength": 25
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "second.md · UNSAVED · 3 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "quick-open",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  project  SOURCE · editor\n  ▼ project               ▏document.md ● ×\n    ▶ assets              │  1 │ ---                                                               ┃\n      document.md         │  2 │ title: Snapshot                                                   ┃\n                          │  3 │ status: draft                                                     ┃\n                          │  4 │ ---                                                               ┃\n                          │  5 │                                                                   ┃\n                          │  6 │ # Heading                                                         ┃\n                          │  7 │                                                                   ┃\n                          │  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עב┃\n            ┌ Quick Open ─────────────────────────────────────────────────────────────┐            ┃\n            │                                                                         │░           ┃\n            │ File › Search project documents                                         │░           ┃\n            │ › document.md                                                           │░           ┃\n            │ ↑/↓ selects · Enter opens · Esc cancels                                 │░           ┃\n            │                                                                         │░           ┃\n            └─────────────────────────────────────────────────────────────────────────┘░           ┃\n             ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░           ┃\n                          │ 16 │                                                                   ┃\n                          │ 17 │ - [ ] open task                                                   ┃\n                          │ 18 │ - [x] complete task                                               ┃\n                          │ 19 │                                                                   ┃\n                          │ 20 │ $$                                                                ┃\n                          │ 21 │ \\frac{x^2}{2}                                                     │\n                          │ 22 │ $$                                                                │\n                          │ 23 │                                                                   │\n                          │ 24 │ [TOC]                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-overlay",
+        "role": "group",
+        "scope": {
+          "kind": "popover"
+        },
+        "children": [
+          {
+            "id": "vellum-quickOpen-dialog",
+            "role": "dialog",
+            "label": "Quick Open",
+            "scope": {
+              "kind": "modal",
+              "trapsFocus": true,
+              "obscuresBackground": true
+            },
+            "children": [
+              {
+                "id": "vellum-quickOpen-dialog:portal",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-quickOpen-dialog:surface",
+                    "role": "group",
+                    "children": [
+                      {
+                        "id": "vellum-selection",
+                        "role": "combobox",
+                        "label": "Quick Open",
+                        "value": "",
+                        "focused": true,
+                        "disabled": false,
+                        "readOnly": false,
+                        "expanded": true,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "controls": "vellum-selection:popup",
+                        "activeDescendant": "vellum-selection:popup:item:/workspace/project/document.md",
+                        "children": [
+                          {
+                            "id": "vellum-selection:popup",
+                            "role": "listbox",
+                            "label": "Suggestions",
+                            "window": {
+                              "startIndex": 0,
+                              "endIndexExclusive": 1,
+                              "totalCount": 1,
+                              "omittedBefore": 0,
+                              "omittedAfter": 0
+                            },
+                            "children": [
+                              {
+                                "id": "vellum-selection:popup:item:/workspace/project/document.md",
+                                "role": "option",
+                                "label": "document.md",
+                                "value": "/workspace/project/document.md",
+                                "disabled": false,
+                                "current": true,
+                                "position": {
+                                  "positionInSet": 1,
+                                  "setSize": 1
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-root",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-header-text",
+                    "role": "text",
+                    "value": "MARKDOWN VELLUM  project  SOURCE · editor"
+                  }
+                ]
+              },
+              {
+                "id": "anonymous:14:vellum-overlay11:vellum-root5:row:1",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-file-tree",
+                    "role": "tree",
+                    "label": "File tree",
+                    "description": "Showing 1-3 of 3 tree rows.",
+                    "window": {
+                      "startIndex": 0,
+                      "endIndexExclusive": 3,
+                      "totalCount": 3,
+                      "omittedBefore": 0,
+                      "omittedAfter": 0
+                    },
+                    "activeDescendant": "vellum-file-tree:/workspace/project/document.md",
+                    "children": [
+                      {
+                        "id": "vellum-file-tree:/workspace/project",
+                        "role": "treeitem",
+                        "label": "project",
+                        "value": "/workspace/project",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": true,
+                        "position": {
+                          "positionInSet": 1,
+                          "setSize": 3,
+                          "level": 1
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/assets",
+                        "role": "treeitem",
+                        "label": "assets",
+                        "value": "/workspace/project//workspace/project/assets",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": false,
+                        "position": {
+                          "positionInSet": 2,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/document.md",
+                        "role": "treeitem",
+                        "label": "document.md",
+                        "value": "/workspace/project//workspace/project/document.md",
+                        "selected": true,
+                        "disabled": false,
+                        "position": {
+                          "positionInSet": 3,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers",
+                    "role": "group",
+                    "label": "Open buffers",
+                    "value": "document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tablist",
+                        "role": "tablist",
+                        "label": "Open buffers",
+                        "orientation": "horizontal",
+                        "activeDescendant": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:document",
+                            "role": "tab",
+                            "label": "document.md",
+                            "value": "●",
+                            "description": "Unsaved source document",
+                            "selected": true,
+                            "disabled": false,
+                            "controls": "vellum-buffers:document:panel",
+                            "children": [
+                              {
+                                "id": "vellum-buffers:tab:document:close",
+                                "role": "button",
+                                "label": "Close document.md"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "id": "vellum-buffers:document:panel",
+                        "role": "tabpanel",
+                        "label": "document.md",
+                        "labelledBy": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-editor-document",
+                            "role": "textbox",
+                            "label": "document.md source document",
+                            "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                            "description": "28 lines. Showing 1-25 of 29 rows. Omitted before: 0. Omitted after: 4. Horizontal offset: 0.",
+                            "required": false,
+                            "invalid": false,
+                            "textPosition": {
+                              "caretOffset": 0
+                            },
+                            "textWindow": {
+                              "startOffset": 0,
+                              "endOffsetExclusive": 314,
+                              "totalLength": 314
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-status",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-status-text",
+                    "role": "text",
+                    "value": "document.md · UNSAVED · 30 words"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-overlay",
+        "vellum-quickOpen-dialog",
+        "vellum-quickOpen-dialog:portal",
+        "vellum-quickOpen-dialog:surface",
+        "vellum-selection"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "outline",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  project  SOURCE · editor\n  ▼ project               ▏document.md ● ×\n    ▶ assets              │  1 │ ---                                                               ┃\n      document.md         │  2 │ title: Snapshot                                                   ┃\n                          │  3 │ status: draft                                                     ┃\n                          │  4 │ ---                                                               ┃\n                          │  5 │                                                                   ┃\n                          │  6 │ # Heading                                                         ┃\n                          │  7 │                                                                   ┃\n           ┌ Outline ──────────────────────────────────────────────────────────────────┐ لعربية, עב┃\n           │                                                                           │░          ┃\n           │ Heading › Filter headings                                                 │░          ┃\n           │ › Heading · Level 1                                                       │░          ┃\n           │     Details · Level 2                                                     │░          ┃\n           │ 2 headings · Enter navigates                                              │░          ┃\n           │                                                                           │░          ┃\n           └───────────────────────────────────────────────────────────────────────────┘░          ┃\n            ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░          ┃\n                          │ 16 │                                                                   ┃\n                          │ 17 │ - [ ] open task                                                   ┃\n                          │ 18 │ - [x] complete task                                               ┃\n                          │ 19 │                                                                   ┃\n                          │ 20 │ $$                                                                ┃\n                          │ 21 │ \\frac{x^2}{2}                                                     │\n                          │ 22 │ $$                                                                │\n                          │ 23 │                                                                   │\n                          │ 24 │ [TOC]                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-overlay",
+        "role": "group",
+        "scope": {
+          "kind": "popover"
+        },
+        "children": [
+          {
+            "id": "vellum-outline-dialog",
+            "role": "dialog",
+            "label": "Source document outline",
+            "scope": {
+              "kind": "modal",
+              "trapsFocus": true,
+              "obscuresBackground": true
+            },
+            "children": [
+              {
+                "id": "vellum-outline-dialog:portal",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-outline-dialog:surface",
+                    "role": "group",
+                    "children": [
+                      {
+                        "id": "vellum-selection",
+                        "role": "combobox",
+                        "label": "Heading hierarchy",
+                        "value": "",
+                        "focused": true,
+                        "disabled": false,
+                        "readOnly": false,
+                        "expanded": true,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "controls": "vellum-selection:popup",
+                        "activeDescendant": "vellum-selection:popup:item:outline-2",
+                        "children": [
+                          {
+                            "id": "vellum-selection:popup",
+                            "role": "listbox",
+                            "label": "Suggestions",
+                            "window": {
+                              "startIndex": 0,
+                              "endIndexExclusive": 2,
+                              "totalCount": 2,
+                              "omittedBefore": 0,
+                              "omittedAfter": 0
+                            },
+                            "children": [
+                              {
+                                "id": "vellum-selection:popup:item:outline-2",
+                                "role": "option",
+                                "label": "Heading",
+                                "value": "2",
+                                "disabled": false,
+                                "current": true,
+                                "position": {
+                                  "positionInSet": 1,
+                                  "setSize": 2
+                                }
+                              },
+                              {
+                                "id": "vellum-selection:popup:item:outline-36",
+                                "role": "option",
+                                "label": "  Details",
+                                "value": "36",
+                                "disabled": false,
+                                "current": false,
+                                "position": {
+                                  "positionInSet": 2,
+                                  "setSize": 2
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-root",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-header-text",
+                    "role": "text",
+                    "value": "MARKDOWN VELLUM  project  SOURCE · editor"
+                  }
+                ]
+              },
+              {
+                "id": "anonymous:14:vellum-overlay11:vellum-root5:row:1",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-file-tree",
+                    "role": "tree",
+                    "label": "File tree",
+                    "description": "Showing 1-3 of 3 tree rows.",
+                    "window": {
+                      "startIndex": 0,
+                      "endIndexExclusive": 3,
+                      "totalCount": 3,
+                      "omittedBefore": 0,
+                      "omittedAfter": 0
+                    },
+                    "activeDescendant": "vellum-file-tree:/workspace/project/document.md",
+                    "children": [
+                      {
+                        "id": "vellum-file-tree:/workspace/project",
+                        "role": "treeitem",
+                        "label": "project",
+                        "value": "/workspace/project",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": true,
+                        "position": {
+                          "positionInSet": 1,
+                          "setSize": 3,
+                          "level": 1
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/assets",
+                        "role": "treeitem",
+                        "label": "assets",
+                        "value": "/workspace/project//workspace/project/assets",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": false,
+                        "position": {
+                          "positionInSet": 2,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/document.md",
+                        "role": "treeitem",
+                        "label": "document.md",
+                        "value": "/workspace/project//workspace/project/document.md",
+                        "selected": true,
+                        "disabled": false,
+                        "position": {
+                          "positionInSet": 3,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers",
+                    "role": "group",
+                    "label": "Open buffers",
+                    "value": "document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tablist",
+                        "role": "tablist",
+                        "label": "Open buffers",
+                        "orientation": "horizontal",
+                        "activeDescendant": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:document",
+                            "role": "tab",
+                            "label": "document.md",
+                            "value": "●",
+                            "description": "Unsaved source document",
+                            "selected": true,
+                            "disabled": false,
+                            "controls": "vellum-buffers:document:panel",
+                            "children": [
+                              {
+                                "id": "vellum-buffers:tab:document:close",
+                                "role": "button",
+                                "label": "Close document.md"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "id": "vellum-buffers:document:panel",
+                        "role": "tabpanel",
+                        "label": "document.md",
+                        "labelledBy": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-editor-document",
+                            "role": "textbox",
+                            "label": "document.md source document",
+                            "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                            "description": "28 lines. Showing 1-25 of 29 rows. Omitted before: 0. Omitted after: 4. Horizontal offset: 0.",
+                            "required": false,
+                            "invalid": false,
+                            "textPosition": {
+                              "caretOffset": 0
+                            },
+                            "textWindow": {
+                              "startOffset": 0,
+                              "endOffsetExclusive": 314,
+                              "totalLength": 314
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-status",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-status-text",
+                    "role": "text",
+                    "value": "document.md · UNSAVED · 30 words"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-overlay",
+        "vellum-outline-dialog",
+        "vellum-outline-dialog:portal",
+        "vellum-outline-dialog:surface",
+        "vellum-selection"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "project-search",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  project  SOURCE · editor\n  ▼ project               ▏document.md ● ×\n    ▶ assets              │  1 │ ---                                                               ┃\n      document.md         │  2 │ title: Snapshot                                                   ┃\n                          │  3 │ status: draft                                                     ┃\n                          │  4 │ ---                                                               ┃\n                          │  5 │                                                                   ┃\n                          │  6 │ # Heading                                                         ┃\n                          │  7 │                                                                   ┃\n                          │  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עב┃\n     ┌ Search Project Directory ─────────────────────────────────────────────────────────────┐     ┃\n     │                                                                                       │░    ┃\n     │ Project › Search indexed text files                                                   │░    ┃\n     │ 0 matches · Enter searches or opens the selected result                               │░    ┃\n     │                                                                                       │░    ┃\n     └───────────────────────────────────────────────────────────────────────────────────────┘░    ┃\n      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    ┃\n                          │ 15 │ | alpha | 42 |                                                    ┃\n                          │ 16 │                                                                   ┃\n                          │ 17 │ - [ ] open task                                                   ┃\n                          │ 18 │ - [x] complete task                                               ┃\n                          │ 19 │                                                                   ┃\n                          │ 20 │ $$                                                                ┃\n                          │ 21 │ \\frac{x^2}{2}                                                     │\n                          │ 22 │ $$                                                                │\n                          │ 23 │                                                                   │\n                          │ 24 │ [TOC]                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-overlay",
+        "role": "group",
+        "scope": {
+          "kind": "popover"
+        },
+        "children": [
+          {
+            "id": "vellum-project-directory-search-dialog",
+            "role": "dialog",
+            "label": "Search project directory",
+            "scope": {
+              "kind": "modal",
+              "trapsFocus": true,
+              "obscuresBackground": true
+            },
+            "children": [
+              {
+                "id": "vellum-project-directory-search-dialog:portal",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-project-directory-search-dialog:surface",
+                    "role": "group",
+                    "children": [
+                      {
+                        "id": "vellum-search-query",
+                        "role": "combobox",
+                        "label": "Project directory search query and results",
+                        "value": "",
+                        "focused": true,
+                        "disabled": false,
+                        "readOnly": false,
+                        "expanded": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-root",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-header-text",
+                    "role": "text",
+                    "value": "MARKDOWN VELLUM  project  SOURCE · editor"
+                  }
+                ]
+              },
+              {
+                "id": "anonymous:14:vellum-overlay11:vellum-root5:row:1",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-file-tree",
+                    "role": "tree",
+                    "label": "File tree",
+                    "description": "Showing 1-3 of 3 tree rows.",
+                    "window": {
+                      "startIndex": 0,
+                      "endIndexExclusive": 3,
+                      "totalCount": 3,
+                      "omittedBefore": 0,
+                      "omittedAfter": 0
+                    },
+                    "activeDescendant": "vellum-file-tree:/workspace/project/document.md",
+                    "children": [
+                      {
+                        "id": "vellum-file-tree:/workspace/project",
+                        "role": "treeitem",
+                        "label": "project",
+                        "value": "/workspace/project",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": true,
+                        "position": {
+                          "positionInSet": 1,
+                          "setSize": 3,
+                          "level": 1
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/assets",
+                        "role": "treeitem",
+                        "label": "assets",
+                        "value": "/workspace/project//workspace/project/assets",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": false,
+                        "position": {
+                          "positionInSet": 2,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/document.md",
+                        "role": "treeitem",
+                        "label": "document.md",
+                        "value": "/workspace/project//workspace/project/document.md",
+                        "selected": true,
+                        "disabled": false,
+                        "position": {
+                          "positionInSet": 3,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers",
+                    "role": "group",
+                    "label": "Open buffers",
+                    "value": "document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tablist",
+                        "role": "tablist",
+                        "label": "Open buffers",
+                        "orientation": "horizontal",
+                        "activeDescendant": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:document",
+                            "role": "tab",
+                            "label": "document.md",
+                            "value": "●",
+                            "description": "Unsaved source document",
+                            "selected": true,
+                            "disabled": false,
+                            "controls": "vellum-buffers:document:panel",
+                            "children": [
+                              {
+                                "id": "vellum-buffers:tab:document:close",
+                                "role": "button",
+                                "label": "Close document.md"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "id": "vellum-buffers:document:panel",
+                        "role": "tabpanel",
+                        "label": "document.md",
+                        "labelledBy": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-editor-document",
+                            "role": "textbox",
+                            "label": "document.md source document",
+                            "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                            "description": "28 lines. Showing 1-25 of 29 rows. Omitted before: 0. Omitted after: 4. Horizontal offset: 0.",
+                            "required": false,
+                            "invalid": false,
+                            "textPosition": {
+                              "caretOffset": 0
+                            },
+                            "textWindow": {
+                              "startOffset": 0,
+                              "endOffsetExclusive": 314,
+                              "totalLength": 314
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-status",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-status-text",
+                    "role": "text",
+                    "value": "document.md · UNSAVED · 30 words"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-overlay",
+        "vellum-project-directory-search-dialog",
+        "vellum-project-directory-search-dialog:portal",
+        "vellum-project-directory-search-dialog:surface",
+        "vellum-search-query"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "document-replace",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  project  SOURCE · editor\n  ▼ project               ▏document.md ● ×\n    ▶ assets              │  1 │ ---                                                               ┃\n      document.md         │  2 │ title: Snapshot                                                   ┃\n                          │  3 │ status: draft                                                     ┃\n                          │  4 │ ---                                                               ┃\n                          │  5 │                                                                   ┃\n           ┌ Replace in Source Document ───────────────────────────────────────────────┐           ┃\n           │                                                                           │░          ┃\n           │ Find ›                                                                    │░لعربية, עב┃\n           │                                                                           │░          ┃\n           │ Replace ›                                                                 │░          ┃\n           │                                                                           │░          ┃\n           │   ☐ Regex           ☐ Case            ☐ Whole word       ☐ Selection      │░          ┃\n           │                                                                           │░          ┃\n           │ 0 of 0 matches                                                            │░          ┃\n           │ ───────────────────────────────────────────────────────────────────────── │░          ┃\n           │   Cancel        Previous       Next           Replace        Replace All  │░          ┃\n           │                                                                           │░          ┃\n           └───────────────────────────────────────────────────────────────────────────┘░          ┃\n            ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░          ┃\n                          │ 19 │                                                                   ┃\n                          │ 20 │ $$                                                                ┃\n                          │ 21 │ \\frac{x^2}{2}                                                     │\n                          │ 22 │ $$                                                                │\n                          │ 23 │                                                                   │\n                          │ 24 │ [TOC]                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-overlay",
+        "role": "group",
+        "scope": {
+          "kind": "popover"
+        },
+        "children": [
+          {
+            "id": "vellum-document-search-dialog",
+            "role": "dialog",
+            "label": "Replace in source document",
+            "scope": {
+              "kind": "modal",
+              "trapsFocus": true,
+              "obscuresBackground": true
+            },
+            "children": [
+              {
+                "id": "vellum-document-search-dialog:portal",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-document-search-dialog:surface",
+                    "role": "group",
+                    "children": [
+                      {
+                        "id": "vellum-document-search-dialog:content",
+                        "role": "group",
+                        "children": [
+                          {
+                            "id": "anonymous:14:vellum-overlay29:vellum-document-search-dialog36:vellum-document-search-dialog:portal37:vellum-document-search-dialog:surface37:vellum-document-search-dialog:content8:column:0",
+                            "role": "group",
+                            "children": [
+                              {
+                                "id": "vellum-search-query",
+                                "role": "combobox",
+                                "label": "Search query",
+                                "value": "",
+                                "focused": true,
+                                "disabled": false,
+                                "readOnly": false,
+                                "expanded": false,
+                                "textPosition": {
+                                  "caretOffset": 0
+                                }
+                              },
+                              {
+                                "id": "vellum-search-replacement",
+                                "role": "combobox",
+                                "label": "Replacement text",
+                                "value": "",
+                                "disabled": false,
+                                "readOnly": false,
+                                "expanded": false,
+                                "textPosition": {
+                                  "caretOffset": 0
+                                }
+                              },
+                              {
+                                "id": "anonymous:14:vellum-overlay29:vellum-document-search-dialog36:vellum-document-search-dialog:portal37:vellum-document-search-dialog:surface37:vellum-document-search-dialog:content8:column:05:row:2",
+                                "role": "group",
+                                "children": [
+                                  {
+                                    "id": "vellum-search-option-regexp",
+                                    "role": "button",
+                                    "label": "☐ Regex"
+                                  },
+                                  {
+                                    "id": "vellum-search-option-case",
+                                    "role": "button",
+                                    "label": "☐ Case"
+                                  },
+                                  {
+                                    "id": "vellum-search-option-word",
+                                    "role": "button",
+                                    "label": "☐ Whole word"
+                                  },
+                                  {
+                                    "id": "vellum-search-option-selection",
+                                    "role": "button",
+                                    "label": "☐ Selection"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "vellum-search-count",
+                                "role": "text",
+                                "value": "0 of 0 matches"
+                              }
+                            ]
+                          },
+                          {
+                            "id": "anonymous:14:vellum-overlay29:vellum-document-search-dialog36:vellum-document-search-dialog:portal37:vellum-document-search-dialog:surface37:vellum-document-search-dialog:content5:row:2",
+                            "role": "group",
+                            "children": [
+                              {
+                                "id": "vellum-dialog-cancel",
+                                "role": "button",
+                                "label": "Cancel"
+                              },
+                              {
+                                "id": "vellum-search-previous",
+                                "role": "button",
+                                "label": "Previous"
+                              },
+                              {
+                                "id": "vellum-search-next",
+                                "role": "button",
+                                "label": "Next"
+                              },
+                              {
+                                "id": "vellum-replace-current",
+                                "role": "button",
+                                "label": "Replace"
+                              },
+                              {
+                                "id": "vellum-replace-all",
+                                "role": "button",
+                                "label": "Replace All"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-root",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-header-text",
+                    "role": "text",
+                    "value": "MARKDOWN VELLUM  project  SOURCE · editor"
+                  }
+                ]
+              },
+              {
+                "id": "anonymous:14:vellum-overlay11:vellum-root5:row:1",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-file-tree",
+                    "role": "tree",
+                    "label": "File tree",
+                    "description": "Showing 1-3 of 3 tree rows.",
+                    "window": {
+                      "startIndex": 0,
+                      "endIndexExclusive": 3,
+                      "totalCount": 3,
+                      "omittedBefore": 0,
+                      "omittedAfter": 0
+                    },
+                    "activeDescendant": "vellum-file-tree:/workspace/project/document.md",
+                    "children": [
+                      {
+                        "id": "vellum-file-tree:/workspace/project",
+                        "role": "treeitem",
+                        "label": "project",
+                        "value": "/workspace/project",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": true,
+                        "position": {
+                          "positionInSet": 1,
+                          "setSize": 3,
+                          "level": 1
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/assets",
+                        "role": "treeitem",
+                        "label": "assets",
+                        "value": "/workspace/project//workspace/project/assets",
+                        "selected": false,
+                        "disabled": false,
+                        "expanded": false,
+                        "position": {
+                          "positionInSet": 2,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      },
+                      {
+                        "id": "vellum-file-tree:/workspace/project/document.md",
+                        "role": "treeitem",
+                        "label": "document.md",
+                        "value": "/workspace/project//workspace/project/document.md",
+                        "selected": true,
+                        "disabled": false,
+                        "position": {
+                          "positionInSet": 3,
+                          "setSize": 3,
+                          "level": 2
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers",
+                    "role": "group",
+                    "label": "Open buffers",
+                    "value": "document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tablist",
+                        "role": "tablist",
+                        "label": "Open buffers",
+                        "orientation": "horizontal",
+                        "activeDescendant": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:document",
+                            "role": "tab",
+                            "label": "document.md",
+                            "value": "●",
+                            "description": "Unsaved source document",
+                            "selected": true,
+                            "disabled": false,
+                            "controls": "vellum-buffers:document:panel",
+                            "children": [
+                              {
+                                "id": "vellum-buffers:tab:document:close",
+                                "role": "button",
+                                "label": "Close document.md"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "id": "vellum-buffers:document:panel",
+                        "role": "tabpanel",
+                        "label": "document.md",
+                        "labelledBy": "vellum-buffers:document",
+                        "children": [
+                          {
+                            "id": "vellum-editor-document",
+                            "role": "textbox",
+                            "label": "document.md source document",
+                            "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                            "description": "28 lines. Showing 1-25 of 29 rows. Omitted before: 0. Omitted after: 4. Horizontal offset: 0.",
+                            "required": false,
+                            "invalid": false,
+                            "textPosition": {
+                              "caretOffset": 0
+                            },
+                            "textWindow": {
+                              "startOffset": 0,
+                              "endOffsetExclusive": 314,
+                              "totalLength": 314
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-status",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-status-text",
+                    "role": "text",
+                    "value": "document.md · UNSAVED · 30 words"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-overlay",
+        "vellum-document-search-dialog",
+        "vellum-document-search-dialog:portal",
+        "vellum-document-search-dialog:surface",
+        "vellum-document-search-dialog:content",
+        "anonymous:14:vellum-overlay29:vellum-document-search-dialog36:vellum-document-search-dialog:portal37:vellum-document-search-dialog:surface37:vellum-document-search-dialog:content8:column:0",
+        "vellum-search-query"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "diagnostics",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n┌ Diagnostics ──────────┐ ▏document.md ● ×\n│                       │ │  1 │ ---                                                               ┃\n│ Filter: all · info+   │ │  2 │ title: Snapshot                                                   ┃\n│ INFO export: callout  │ │  3 │ status: draft                                                     ┃\n│                       │ │  4 │ ---                                                               ┃\n│                       │ │  5 │                                                                   ┃\n│                       │ │  6 │ # Heading                                                         ┃\n│                       │ │  7 │                                                                   ┃\n│                       │ │  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עב┃\n│                       │ │    │ רית, 日本語, and 😀.                                              ┃\n│                       │ │  9 │                                                                   ┃\n│                       │ │ 10 │ > [!NOTE]                                                         ┃\n│                       │ │ 11 │ > A source-exact callout.                                         ┃\n│                       │ │ 12 │                                                                   ┃\n│                       │ │ 13 │ | Name | Value |                                                  ┃\n│                       │ │ 14 │ | :--- | ---: |                                                   ┃\n│                       │ │ 15 │ | alpha | 42 |                                                    ┃\n│                       │ │ 16 │                                                                   ┃\n│                       │ │ 17 │ - [ ] open task                                                   ┃\n│                       │ │ 18 │ - [x] complete task                                               ┃\n│                       │ │ 19 │                                                                   ┃\n│                       │ │ 20 │ $$                                                                ┃\n│                       │ │ 21 │ \\frac{x^2}{2}                                                     │\n│                       │ │ 22 │ $$                                                                │\n│                       │ │ 23 │                                                                   │\n└───────────────────────┘ │ 24 │ [TOC]                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "anonymous:11:vellum-root5:row:1",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-navigator",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-navigator-diagnostics",
+                    "role": "text",
+                    "value": "Filter: all · info+\nINFO export: callout export requires a profile filter for presentation equivalent to preview."
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers",
+                "role": "group",
+                "label": "Open buffers",
+                "value": "document",
+                "focused": true,
+                "children": [
+                  {
+                    "id": "vellum-buffers:tablist",
+                    "role": "tablist",
+                    "label": "Open buffers",
+                    "orientation": "horizontal",
+                    "activeDescendant": "vellum-buffers:document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:document",
+                        "role": "tab",
+                        "label": "document.md",
+                        "value": "●",
+                        "description": "Unsaved source document",
+                        "focused": true,
+                        "selected": true,
+                        "disabled": false,
+                        "controls": "vellum-buffers:document:panel",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:tab:document:close",
+                            "role": "button",
+                            "label": "Close document.md"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers:document:panel",
+                    "role": "tabpanel",
+                    "label": "document.md",
+                    "labelledBy": "vellum-buffers:document",
+                    "children": [
+                      {
+                        "id": "vellum-editor-document",
+                        "role": "textbox",
+                        "label": "document.md source document",
+                        "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                        "description": "28 lines. Showing 1-25 of 29 rows. Omitted before: 0. Omitted after: 4. Horizontal offset: 0.",
+                        "required": false,
+                        "invalid": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "textWindow": {
+                          "startOffset": 0,
+                          "endOffsetExclusive": 314,
+                          "totalLength": 314
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "anonymous:11:vellum-root5:row:1",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "external-conflict",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n▏document.md ! ×\n│  1 │ ---                                                                                         ┃\n│  2 │ title: Snapshot                                                                             ┃\n│  3 │ status: draft                                                                               ┃\n│  4 │ ---                                                                                         ┃\n│  5 │                                                                                             ┃\n│  6 │ # Heading                                                                                   ┃\n│  7 │                                                                                             ┃\n│  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.      ┃\n│  9 │                                                                                             ┃\n│ 10 │ > [!NOTE]                                                                                   ┃\n│ 11 │ > A source-exact callout.                                                                   ┃\n│ 12 │                                                                                             ┃\n│ 13 │ | Name | Value |                                                                            ┃\n│ 14 │ | :--- | ---: |                                                                             ┃\n│ 15 │ | alpha | 42 |                                                                              ┃\n│ 16 │                                                                                             ┃\n│ 17 │ - [ ] open task                                                                             ┃\n│ 18 │ - [x] complete task                                                                         ┃\n│ 19 │                                                                                             ┃\n│ 20 │ $$                                                                                          ┃\n│ 21 │ \\frac{x^2}{2}                                                                               ┃\n│ 22 │ $$                                                                                          ┃\n│ 23 │                                                                                             │\n│ 24 │ [TOC]                                                                                       │\n│ 25 │                                                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "focused": true,
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "!",
+                    "description": "External file conflict",
+                    "focused": true,
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-editor-document",
+                    "role": "textbox",
+                    "label": "document.md source document",
+                    "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                    "description": "28 lines. Showing 1-25 of 28 rows. Omitted before: 0. Omitted after: 3. Horizontal offset: 0.",
+                    "required": false,
+                    "invalid": false,
+                    "textPosition": {
+                      "caretOffset": 0
+                    },
+                    "textWindow": {
+                      "startOffset": 0,
+                      "endOffsetExclusive": 314,
+                      "totalLength": 314
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "deleted-file",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n▏document.md ! ×\n│  1 │ ---                                                                                         ┃\n│  2 │ title: Snapshot                                                                             ┃\n│  3 │ status: draft                                                                               ┃\n│  4 │ ---                                                                                         ┃\n│  5 │                                                                                             ┃\n│  6 │ # Heading                                                                                   ┃\n│  7 │                                                                                             ┃\n│  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.      ┃\n│  9 │                                                                                             ┃\n│ 10 │ > [!NOTE]                                                                                   ┃\n│ 11 │ > A source-exact callout.                                                                   ┃\n│ 12 │                                                                                             ┃\n│ 13 │ | Name | Value |                                                                            ┃\n│ 14 │ | :--- | ---: |                                                                             ┃\n│ 15 │ | alpha | 42 |                                                                              ┃\n│ 16 │                                                                                             ┃\n│ 17 │ - [ ] open task                                                                             ┃\n│ 18 │ - [x] complete task                                                                         ┃\n│ 19 │                                                                                             ┃\n│ 20 │ $$                                                                                          ┃\n│ 21 │ \\frac{x^2}{2}                                                                               ┃\n│ 22 │ $$                                                                                          ┃\n│ 23 │                                                                                             │\n│ 24 │ [TOC]                                                                                       │\n│ 25 │                                                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "focused": true,
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "!",
+                    "description": "External file conflict",
+                    "focused": true,
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-editor-document",
+                    "role": "textbox",
+                    "label": "document.md source document",
+                    "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                    "description": "28 lines. Showing 1-25 of 28 rows. Omitted before: 0. Omitted after: 3. Horizontal offset: 0.",
+                    "required": false,
+                    "invalid": false,
+                    "textPosition": {
+                      "caretOffset": 0
+                    },
+                    "textWindow": {
+                      "startOffset": 0,
+                      "endOffsetExclusive": 314,
+                      "totalLength": 314
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "dirty-close",
+    "size": {
+      "columns": 80,
+      "rows": 24
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n▏document.md ● ×\n│  1 │ ---                                                                     ┃\n│  2 │ title: Snapshot                                                         ┃\n│  3 │ status: draft                                                           ┃\n│  4 │ ---                                                                     ┃\n│  5 │                                                                         ┃\n│  6 │ # Heading                                                               ┃\n│  7 │  ┌ Unsaved buffers ────────────────────────────────────────────┐        ┃\n│  8 │ P│                                                             │░ברית,  ┃\n│    │  │ Save this buffer before closing?                            │░       ┃\n│  9 │  │ ─────────────────────────────────────────────────────────── │░       ┃\n│ 10 │ >│ › Cancel            × Discard             Save              │░       ┃\n│ 11 │ >│                                                             │░       ┃\n│ 12 │  └─────────────────────────────────────────────────────────────┘░       ┃\n│ 13 │ | ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       ┃\n│ 14 │ | :--- | ---: |                                                         ┃\n│ 15 │ | alpha | 42 |                                                          │\n│ 16 │                                                                         │\n│ 17 │ - [ ] open task                                                         │\n│ 18 │ - [x] complete task                                                     │\n│ 19 │                                                                         │\n│ 20 │ $$                                                                      │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-overlay",
+        "role": "group",
+        "scope": {
+          "kind": "popover"
+        },
+        "children": [
+          {
+            "id": "vellum-dirty-dialog",
+            "role": "dialog",
+            "label": "Unsaved buffers",
+            "scope": {
+              "kind": "modal",
+              "trapsFocus": true,
+              "obscuresBackground": true
+            },
+            "children": [
+              {
+                "id": "vellum-dirty-dialog:portal",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-dirty-dialog:surface",
+                    "role": "group",
+                    "children": [
+                      {
+                        "id": "vellum-dirty-dialog:content",
+                        "role": "group",
+                        "children": [
+                          {
+                            "id": "vellum-dirty-message",
+                            "role": "text",
+                            "value": "Save this buffer before closing?"
+                          },
+                          {
+                            "id": "anonymous:14:vellum-overlay19:vellum-dirty-dialog26:vellum-dirty-dialog:portal27:vellum-dirty-dialog:surface27:vellum-dirty-dialog:content5:row:2",
+                            "role": "group",
+                            "children": [
+                              {
+                                "id": "vellum-dialog-cancel",
+                                "role": "button",
+                                "label": "Cancel",
+                                "focused": true
+                              },
+                              {
+                                "id": "vellum-discard",
+                                "role": "button",
+                                "label": "Discard"
+                              },
+                              {
+                                "id": "vellum-dialog-primary",
+                                "role": "button",
+                                "label": "Save"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-root",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-header-text",
+                    "role": "text",
+                    "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers",
+                "role": "group",
+                "label": "Open buffers",
+                "value": "document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:tablist",
+                    "role": "tablist",
+                    "label": "Open buffers",
+                    "orientation": "horizontal",
+                    "activeDescendant": "vellum-buffers:document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:document",
+                        "role": "tab",
+                        "label": "document.md",
+                        "value": "●",
+                        "description": "Unsaved source document",
+                        "selected": true,
+                        "disabled": false,
+                        "controls": "vellum-buffers:document:panel",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:tab:document:close",
+                            "role": "button",
+                            "label": "Close document.md"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers:document:panel",
+                    "role": "tabpanel",
+                    "label": "document.md",
+                    "labelledBy": "vellum-buffers:document",
+                    "children": [
+                      {
+                        "id": "vellum-editor-document",
+                        "role": "textbox",
+                        "label": "document.md source document",
+                        "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                        "description": "28 lines. Showing 1-21 of 29 rows. Omitted before: 0. Omitted after: 8. Horizontal offset: 0.",
+                        "required": false,
+                        "invalid": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "textWindow": {
+                          "startOffset": 0,
+                          "endOffsetExclusive": 314,
+                          "totalLength": 314
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-status",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-status-text",
+                    "role": "text",
+                    "value": "document.md · UNSAVED · 30 words"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-overlay",
+        "vellum-dirty-dialog",
+        "vellum-dirty-dialog:portal",
+        "vellum-dirty-dialog:surface",
+        "vellum-dirty-dialog:content",
+        "anonymous:14:vellum-overlay19:vellum-dirty-dialog26:vellum-dirty-dialog:portal27:vellum-dirty-dialog:surface27:vellum-dirty-dialog:content5:row:2",
+        "vellum-dialog-cancel"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "recovery-selection",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n┌ Vellum ──────────────────────────────────────────────────────────────────────────────────────────┐\n│                                                                                                  │\n│ Open File       Ctrl+O                                                                           │\n│ Open Project    Alt+D                                                                            │\n│ New Document    Ctrl+N                                                                           │\n│ Command Palette F1                                                                               │\n│ Keyboard Help   vellum --keyboard-report                                                         │\n│ Terminal Check  vellum --check-keymap                                                            │\n│                                                                                                  │\n│           ┌ Select Recovery Snapshot ───────────────────────────────────────────────┐            │\n│           │                                                                         │░           │\n│           │ Snapshot › Compare timestamps, buffers, and source sizes                │░           │\n│           │ ↑/↓ selects · Enter opens · Esc cancels                                 │░           │\n│           │                                                                         │░           │\n│           └─────────────────────────────────────────────────────────────────────────┘░           │\n│            ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░           │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n│                                                                                                  │\n└──────────────────────────────────────────────────────────────────────────────────────────────────┘\n Ctrl+N new file · Ctrl+O open file · Alt+D open project directory",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-overlay",
+        "role": "group",
+        "scope": {
+          "kind": "popover"
+        },
+        "children": [
+          {
+            "id": "vellum-recoverySelection-dialog",
+            "role": "dialog",
+            "label": "Select Recovery Snapshot",
+            "scope": {
+              "kind": "modal",
+              "trapsFocus": true,
+              "obscuresBackground": true
+            },
+            "children": [
+              {
+                "id": "vellum-recoverySelection-dialog:portal",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-recoverySelection-dialog:surface",
+                    "role": "group",
+                    "children": [
+                      {
+                        "id": "vellum-selection",
+                        "role": "combobox",
+                        "label": "Select Recovery Snapshot",
+                        "value": "",
+                        "focused": true,
+                        "disabled": false,
+                        "readOnly": false,
+                        "expanded": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-root",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-header-text",
+                    "role": "text",
+                    "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+                  }
+                ]
+              },
+              {
+                "id": "vellum-empty-surface",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-empty",
+                    "role": "text",
+                    "value": "Open File       Ctrl+O\nOpen Project    Alt+D\nNew Document    Ctrl+N\nCommand Palette F1\nKeyboard Help   vellum --keyboard-report\nTerminal Check  vellum --check-keymap"
+                  }
+                ]
+              },
+              {
+                "id": "vellum-status",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-status-text",
+                    "role": "text",
+                    "value": "Ctrl+N new file · Ctrl+O open file · Alt+D open project directory"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-overlay",
+        "vellum-recoverySelection-dialog",
+        "vellum-recoverySelection-dialog:portal",
+        "vellum-recoverySelection-dialog:surface",
+        "vellum-selection"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "export-progress",
+    "size": {
+      "columns": 100,
+      "rows": 28
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  SOURCE · editor\n┌ Export ───────────────┐ ▏document.md ● ×\n│                       │ │  1 │ ---                                                               ┃\n│ RUNNING activeBuffer/ │ │  2 │ title: Snapshot                                                   ┃\n│                       │ │  3 │ status: draft                                                     ┃\n│                       │ │  4 │ ---                                                               ┃\n│                       │ │  5 │                                                                   ┃\n│                       │ │  6 │ # Heading                                                         ┃\n│                       │ │  7 │                                                                   ┃\n│                       │ │  8 │ Paragraph with **strong text**, [a link](./target.md), العربية, עב┃\n│                       │ │    │ רית, 日本語, and 😀.                                              ┃\n│                       │ │  9 │                                                                   ┃\n│                       │ │ 10 │ > [!NOTE]                                                         ┃\n│                       │ │ 11 │ > A source-exact callout.                                         ┃\n│                       │ │ 12 │                                                                   ┃\n│                       │ │ 13 │ | Name | Value |                                                  ┃\n│                       │ │ 14 │ | :--- | ---: |                                                   ┃\n│                       │ │ 15 │ | alpha | 42 |                                                    ┃\n│                       │ │ 16 │                                                                   ┃\n│                       │ │ 17 │ - [ ] open task                                                   ┃\n│                       │ │ 18 │ - [x] complete task                                               ┃\n│                       │ │ 19 │                                                                   ┃\n│                       │ │ 20 │ $$                                                                ┃\n│                       │ │ 21 │ \\frac{x^2}{2}                                                     │\n│                       │ │ 22 │ $$                                                                │\n│                       │ │ 23 │                                                                   │\n└───────────────────────┘ │ 24 │ [TOC]                                                             │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  SOURCE · editor"
+              }
+            ]
+          },
+          {
+            "id": "anonymous:11:vellum-root5:row:1",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-navigator",
+                "role": "group",
+                "children": [
+                  {
+                    "id": "vellum-navigator-export",
+                    "role": "text",
+                    "value": "RUNNING activeBuffer/html"
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers",
+                "role": "group",
+                "label": "Open buffers",
+                "value": "document",
+                "focused": true,
+                "children": [
+                  {
+                    "id": "vellum-buffers:tablist",
+                    "role": "tablist",
+                    "label": "Open buffers",
+                    "orientation": "horizontal",
+                    "activeDescendant": "vellum-buffers:document",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:document",
+                        "role": "tab",
+                        "label": "document.md",
+                        "value": "●",
+                        "description": "Unsaved source document",
+                        "focused": true,
+                        "selected": true,
+                        "disabled": false,
+                        "controls": "vellum-buffers:document:panel",
+                        "children": [
+                          {
+                            "id": "vellum-buffers:tab:document:close",
+                            "role": "button",
+                            "label": "Close document.md"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "vellum-buffers:document:panel",
+                    "role": "tabpanel",
+                    "label": "document.md",
+                    "labelledBy": "vellum-buffers:document",
+                    "children": [
+                      {
+                        "id": "vellum-editor-document",
+                        "role": "textbox",
+                        "label": "document.md source document",
+                        "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n# Heading\n\nParagraph with **strong text**, [a link](./target.md), العربية, עברית, 日本語, and 😀.\n\n> [!NOTE]\n> A source-exact callout.\n\n| Name | Value |\n| :--- | ---: |\n| alpha | 42 |\n\n- [ ] open task\n- [x] complete task\n\n$$\n\\frac{x^2}{2}\n$$\n\n[TOC]\n\n## Details\n\nFinal paragraph.",
+                        "description": "28 lines. Showing 1-25 of 29 rows. Omitted before: 0. Omitted after: 4. Horizontal offset: 0.",
+                        "required": false,
+                        "invalid": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "textWindow": {
+                          "startOffset": 0,
+                          "endOffsetExclusive": 314,
+                          "totalLength": 314
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "anonymous:11:vellum-root5:row:1",
+        "vellum-buffers"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "name": "narrow-fallback",
+    "size": {
+      "columns": 42,
+      "rows": 14
+    },
+    "frame": " MARKDOWN VELLUM  No project directory  H\n▏document.md ● ×\n│  1 │ ---                               ┃\n│  2 │ title: Snapshot                   │\n│  3 │ status: draft                     │\n│  4 │ ---                               │\n│  5 │                                   │\n──────────────────────────────────────────\n title: Snapshot                         ┃\n status: draft                           │\n                                         │\n Heading                                 │\n                                         │\n document.md · UNSAVED · 30 words",
+    "accessibility": {
+      "source": "tui",
+      "root": {
+        "id": "vellum-root",
+        "role": "group",
+        "children": [
+          {
+            "id": "vellum-header",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-header-text",
+                "role": "text",
+                "value": "MARKDOWN VELLUM  No project directory  HYBRID · editorPreview"
+              }
+            ]
+          },
+          {
+            "id": "vellum-buffers",
+            "role": "group",
+            "label": "Open buffers",
+            "value": "document",
+            "children": [
+              {
+                "id": "vellum-buffers:tablist",
+                "role": "tablist",
+                "label": "Open buffers",
+                "orientation": "horizontal",
+                "activeDescendant": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-buffers:document",
+                    "role": "tab",
+                    "label": "document.md",
+                    "value": "●",
+                    "description": "Unsaved source document",
+                    "selected": true,
+                    "disabled": false,
+                    "controls": "vellum-buffers:document:panel",
+                    "children": [
+                      {
+                        "id": "vellum-buffers:tab:document:close",
+                        "role": "button",
+                        "label": "Close document.md"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "vellum-buffers:document:panel",
+                "role": "tabpanel",
+                "label": "document.md",
+                "labelledBy": "vellum-buffers:document",
+                "children": [
+                  {
+                    "id": "vellum-split-document",
+                    "role": "group",
+                    "label": "Editor and preview panes",
+                    "description": "Resizable split pane. Divider 1 of 1 active.",
+                    "focused": true,
+                    "children": [
+                      {
+                        "id": "vellum-editor-document",
+                        "role": "textbox",
+                        "label": "document.md source document",
+                        "value": "---\ntitle: Snapshot\nstatus: draft\n---\n\n Heading\n\nParagraph with strong text, a link, العربية, עברית, 日本語, and 😀.\n\n note callout\n A source-exact callout.\n\nNameValue\ntable column alignment\nalpha42\n\n- unchecked task open task\n- checked task complete task\n\n\nMath: \\frac{x^2}{2}\n\n\nTable of contents\n\n Details\n\nFinal paragraph.",
+                        "description": "28 lines. Showing 1-5 of 31 rows. Omitted before: 0. Omitted after: 26. Horizontal offset: 0.",
+                        "required": false,
+                        "invalid": false,
+                        "textPosition": {
+                          "caretOffset": 0
+                        },
+                        "textWindow": {
+                          "startOffset": 0,
+                          "endOffsetExclusive": 322,
+                          "totalLength": 322
+                        }
+                      },
+                      {
+                        "id": "vellum-preview-document",
+                        "role": "group",
+                        "label": "document.md preview",
+                        "description": "Showing rows 1-5 of 30, columns 1-41 of 41.",
+                        "children": [
+                          {
+                            "id": "preview-content-document",
+                            "role": "document",
+                            "label": "document.md rendered preview",
+                            "children": [
+                              {
+                                "id": "preview-content-document:markdown-1",
+                                "role": "group",
+                                "label": "Front matter",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-1-entry-0",
+                                    "role": "cell",
+                                    "label": "title: Snapshot"
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-1-entry-1",
+                                    "role": "cell",
+                                    "label": "status: draft"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-2",
+                                "role": "heading",
+                                "label": "Heading",
+                                "position": {
+                                  "level": 1
+                                }
+                              },
+                              {
+                                "id": "preview-content-document:markdown-4",
+                                "role": "text",
+                                "value": "Paragraph with strong text, a link, العربية, עברית, 日本語, and 😀.",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-9",
+                                    "role": "link",
+                                    "label": "a link: ./target.md"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-12",
+                                "role": "group",
+                                "label": "Note callout",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-13",
+                                    "role": "text",
+                                    "value": "A source-exact callout."
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-15",
+                                "role": "table",
+                                "label": "Table",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-16",
+                                    "role": "row",
+                                    "label": "Table row",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-17",
+                                        "role": "cell",
+                                        "label": "Name"
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-19",
+                                        "role": "cell",
+                                        "label": "Value"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-21",
+                                    "role": "row",
+                                    "label": "Table row",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-22",
+                                        "role": "cell",
+                                        "label": "alpha"
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-24",
+                                        "role": "cell",
+                                        "label": "42"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-26",
+                                "role": "list",
+                                "label": "Unordered list",
+                                "children": [
+                                  {
+                                    "id": "preview-content-document:markdown-27",
+                                    "role": "listitem",
+                                    "label": "List item",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-27-task",
+                                        "role": "checkbox",
+                                        "label": "Unchecked task",
+                                        "checked": false
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-28",
+                                        "role": "text",
+                                        "value": "open task"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "id": "preview-content-document:markdown-30",
+                                    "role": "listitem",
+                                    "label": "List item",
+                                    "children": [
+                                      {
+                                        "id": "preview-content-document:markdown-30-task",
+                                        "role": "checkbox",
+                                        "label": "Checked task",
+                                        "checked": true
+                                      },
+                                      {
+                                        "id": "preview-content-document:markdown-31",
+                                        "role": "text",
+                                        "value": "complete task"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "preview-content-document:markdown-33",
+                                "role": "text",
+                                "value": "Math: \\frac{x^2}{2}\n"
+                              },
+                              {
+                                "id": "preview-content-document:markdown-34",
+                                "role": "text",
+                                "value": "[TOC]"
+                              },
+                              {
+                                "id": "preview-content-document:markdown-36",
+                                "role": "heading",
+                                "label": "Details",
+                                "position": {
+                                  "level": 2
+                                }
+                              },
+                              {
+                                "id": "preview-content-document:markdown-38",
+                                "role": "text",
+                                "value": "Final paragraph."
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "vellum-status",
+            "role": "group",
+            "children": [
+              {
+                "id": "vellum-status-text",
+                "role": "text",
+                "value": "document.md · UNSAVED · 30 words"
+              }
+            ]
+          }
+        ]
+      },
+      "focusPath": [
+        "vellum-root",
+        "vellum-buffers",
+        "vellum-buffers:document:panel",
+        "vellum-split-document"
+      ],
+      "diagnostics": []
+    }
+  }
+]
