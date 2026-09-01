@@ -670,7 +670,7 @@ test('hybrid block presentations remain source-exact and reveal their Markdown w
     '',
     '| Name | Value |',
     '| :--- | ---: |',
-    '| alpha | 42 |',
+    '| `alpha` | **$x^2$** |',
     '',
     '![pixel](./pixel.ppm)',
     '',
@@ -715,6 +715,7 @@ test('hybrid block presentations remain source-exact and reveal their Markdown w
     assert.match(rendered.plainTextFrame, /• one, • two/u);
     assert.match(rendered.plainTextFrame, /↗ \.\/target\.md/u);
     assert.match(rendered.plainTextFrame, /alpha/u);
+    assert.doesNotMatch(rendered.plainTextFrame, /`alpha`|\*\*\$x\^2\$\*\*/u);
     assert.match(rendered.plainTextFrame, /pixel · 2×1/u);
     assert.match(rendered.plainTextFrame, /x²/u);
     assert.match(rendered.plainTextFrame, /NOTE/u);

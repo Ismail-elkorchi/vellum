@@ -4,7 +4,7 @@ import {
   type TextAreaDecorations,
 } from '@ismail-elkorchi/terminal-ui/components';
 import { defaultTextWidthProfile, measureTextCells, textDocumentText, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import { collectMarkdownSyntaxTokens, markdownPathAt, walkMarkdown, type MarkdownNode } from 'markspan';
+import { collectMarkdownSyntaxTokens, extractMarkdownText, markdownPathAt, walkMarkdown, type MarkdownNode } from 'markspan';
 import type { BufferState } from '../app/types.js';
 import type { MarkdownTheme } from './theme.js';
 import type { MarkdownBlockResources } from './render/resources.js';
@@ -58,16 +58,7 @@ function hybridDecorationEntries(
   }
   const decorations: TextAreaDecoration[] = [];
   const source = textDocumentText(buffer.editor.document);
-  const visuallyReplaced = new Set([...walkMarkdown(tree)].flatMap(({ node }) => (
-    !activeIds.has(node.id) && (
-      node.kind === 'codeBlock' && node.language?.trim().toLowerCase() === 'mermaid'
-      || node.kind === 'image' && standaloneNode(source, node.span.start, node.span.end) && resources.images?.get(node.id)?.kind === 'ready'
-    )
-      ? [node.id]
-      : []
-  )));
   for (const token of collectMarkdownSyntaxTokens(tree)) {
-    if (visuallyReplaced.has(token.nodeId)) continue;
     const style = styleForToken(token.kind, theme);
     if (style !== undefined) {
       addStyle(
@@ -93,7 +84,7 @@ function hybridDecorationEntries(
       if (!activeIds.has(block.id)) addStyle(decorations, block.span.start, block.span.end, 'focus.dimmed', { dim: true });
     }
   }
-  return Object.freeze(decorations.sort((left, right) => (
+  return Object.freeze(composeHybridDecorations(decorations).sort((left, right) => (
     left.startOffset - right.startOffset || left.endOffsetExclusive - right.endOffsetExclusive
   )));
 }
@@ -207,7 +198,7 @@ function addNodeDecoration(
     for (const row of rows) {
       for (const cell of row.cells) {
         if (cell.id === activeCell?.id) continue;
-        const value = source.slice(cell.contentSpan.start, cell.contentSpan.end).trim();
+        const value = cell.children.map((child) => extractMarkdownText(child)).join('').trim();
         decorations.push(Object.freeze({
           kind: 'replace',
           startOffset: cell.span.start,
@@ -271,6 +262,115 @@ function addNodeDecoration(
       style: theme.body
     }));
   }
+}
+
+function composeHybridDecorations(entries: readonly TextAreaDecoration[]): TextAreaDecoration[] {
+  const replacements = entries
+    .filter((entry): entry is Extract<TextAreaDecoration, { readonly kind: 'replace' }> => entry.kind === 'replace')
+    .toSorted((left, right) => (
+      left.startOffset - right.startOffset || right.endOffsetExclusive - left.endOffsetExclusive
+    ));
+  const owners: typeof replacements[number][] = [];
+  for (const replacement of replacements) {
+    const previous = owners.at(-1);
+    if (previous === undefined || replacement.startOffset >= previous.endOffsetExclusive) {
+      owners.push(replacement);
+      continue;
+    }
+    if (replacement.endOffsetExclusive <= previous.endOffsetExclusive) continue;
+    throw new RangeError(
+      `Hybrid replacement decorations partially overlap: ${previous.label ?? 'replacement'} and ${replacement.label ?? 'replacement'}.`
+    );
+  }
+  const owned = new Set<TextAreaDecoration>(owners);
+  const result: TextAreaDecoration[] = [];
+  for (const entry of entries) {
+    if (entry.kind === 'replace') {
+      if (owned.has(entry)) result.push(entry);
+      continue;
+    }
+    if (entry.kind === 'conceal') {
+      result.push(...concealmentOutsideReplacements(entry, owners));
+      continue;
+    }
+    const startOwner = replacementContainingInteriorOffset(owners, entry.startOffset);
+    const endOwner = replacementContainingInteriorOffset(owners, entry.endOffsetExclusive);
+    const startOffset = startOwner?.endOffsetExclusive ?? entry.startOffset;
+    const endOffsetExclusive = endOwner?.startOffset ?? entry.endOffsetExclusive;
+    if (startOffset < endOffsetExclusive) {
+      result.push(startOffset === entry.startOffset && endOffsetExclusive === entry.endOffsetExclusive
+        ? entry
+        : Object.freeze({ ...entry, startOffset, endOffsetExclusive }));
+    }
+  }
+  return result;
+}
+
+function concealmentOutsideReplacements(
+  concealment: Extract<TextAreaDecoration, { readonly kind: 'conceal' }>,
+  replacements: readonly Extract<TextAreaDecoration, { readonly kind: 'replace' }>[]
+): readonly TextAreaDecoration[] {
+  const fragments: TextAreaDecoration[] = [];
+  let cursor = concealment.startOffset;
+  let fragment = 0;
+  const firstReplacement = firstReplacementEndingAfter(replacements, cursor);
+  if ((replacements[firstReplacement]?.startOffset ?? Number.POSITIVE_INFINITY) >= concealment.endOffsetExclusive) {
+    return Object.freeze([concealment]);
+  }
+  for (let index = firstReplacement; index < replacements.length; index += 1) {
+    const replacement = replacements[index];
+    if (replacement === undefined || replacement.startOffset >= concealment.endOffsetExclusive) break;
+    if (cursor < replacement.startOffset) {
+      fragments.push(Object.freeze({
+        ...concealment,
+        startOffset: cursor,
+        endOffsetExclusive: Math.min(replacement.startOffset, concealment.endOffsetExclusive),
+        label: `${concealment.label ?? 'concealed'}.${String(fragment)}`
+      }));
+      fragment += 1;
+    }
+    cursor = Math.max(cursor, replacement.endOffsetExclusive);
+    if (cursor >= concealment.endOffsetExclusive) break;
+  }
+  if (cursor < concealment.endOffsetExclusive) {
+    fragments.push(Object.freeze({
+      ...concealment,
+      startOffset: cursor,
+      label: `${concealment.label ?? 'concealed'}.${String(fragment)}`
+    }));
+  }
+  return Object.freeze(fragments);
+}
+
+function firstReplacementEndingAfter(
+  replacements: readonly Extract<TextAreaDecoration, { readonly kind: 'replace' }>[],
+  offset: number
+): number {
+  let low = 0;
+  let high = replacements.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((replacements[middle]?.endOffsetExclusive ?? Number.POSITIVE_INFINITY) <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function replacementContainingInteriorOffset(
+  replacements: readonly Extract<TextAreaDecoration, { readonly kind: 'replace' }>[],
+  offset: number
+): Extract<TextAreaDecoration, { readonly kind: 'replace' }> | undefined {
+  let low = 0;
+  let high = replacements.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((replacements[middle]?.startOffset ?? Number.POSITIVE_INFINITY) < offset) low = middle + 1;
+    else high = middle;
+  }
+  const candidate = replacements[low - 1];
+  return candidate !== undefined && candidate.startOffset < offset && offset < candidate.endOffsetExclusive
+    ? candidate
+    : undefined;
 }
 
 function frontMatterPropertyText(
