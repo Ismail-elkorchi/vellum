@@ -1,3 +1,4 @@
+import type { AppMessage } from './app/messages.js';
 import type { TuiContext } from '@ismail-elkorchi/terminal-ui/tui';
 import {
   button,
@@ -23,21 +24,16 @@ import {
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import { column, grid, overlay, row, splitPane, surface, viewport } from '@ismail-elkorchi/terminal-ui/layout';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
-import type { TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import type { TerminalSize } from '@ismail-elkorchi/terminal-ui/host';
-import type { AppState, BufferId, BufferState, CommandId } from './app/types.js';
+import type { AppState, BufferId, BufferState } from './app/types.js';
 import { bufferIsDirty } from './app/types.js';
 import type {
-  SynchronizedPaneGeometry,
-  VellumApplication,
-  VellumApplicationUpdate
+  VellumApplication
 } from './app/application.js';
-import { markdownPreview, type MarkdownPreviewAction } from './markdown/render/component.js';
-import { terminalFileTreeView } from './project/file-tree.js';
+import { markdownPreview } from './markdown/render/component.js';
+import { terminalFileTreeSource } from './project/file-tree.js';
 import { documentOutline } from './navigation/outline.js';
 import {
   vellumBodyGeometry,
-  vellumPaneGeometry,
   vellumPreviewDocumentGeometry,
 } from './app/viewport-geometry.js';
 
@@ -54,40 +50,6 @@ export const VELLUM_IDS = Object.freeze({
   dialogPrimary: 'vellum-dialog-primary'
 });
 
-export type AppMessage =
-  | { readonly kind: 'editor'; readonly bufferId: BufferId; readonly transition: TextAreaTransition; readonly synchronization?: SynchronizedPaneGeometry }
-  | { readonly kind: 'previewScroll'; readonly bufferId: BufferId; readonly request: ScrollRequest; readonly synchronization?: SynchronizedPaneGeometry }
-  | { readonly kind: 'tabs'; readonly transition: TabsTransition<BufferId> }
-  | { readonly kind: 'closeTab'; readonly bufferId: BufferId }
-  | { readonly kind: 'fileTree'; readonly transition: TreeTransition }
-  | { readonly kind: 'activateFileTree'; readonly nodeId: string }
-  | { readonly kind: 'split'; readonly transition: SplitPaneTransition }
-  | { readonly kind: 'command'; readonly commandId: CommandId }
-  | { readonly kind: 'filePath'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'submitFilePath'; readonly value?: string }
-  | { readonly kind: 'selection'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'submitSelection'; readonly value?: string }
-  | { readonly kind: 'documentSearch'; readonly field: 'query' | 'replacement'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'configureDocumentSearch'; readonly option: 'regularExpression' | 'caseSensitive' | 'wholeWord' | 'selectionOnly' }
-  | { readonly kind: 'navigateDocumentSearch'; readonly direction: 'next' | 'previous' }
-  | { readonly kind: 'replaceDocumentSearch'; readonly scope: 'current' | 'all' }
-  | { readonly kind: 'projectDirectorySearch'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'submitProjectDirectorySearch'; readonly value?: string }
-  | { readonly kind: 'outline'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'submitOutline'; readonly value?: string }
-  | { readonly kind: 'goToLine'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'submitGoToLine'; readonly value?: string }
-  | { readonly kind: 'previewActivate'; readonly bufferId: BufferId; readonly target: MarkdownPreviewAction['target'] }
-  | { readonly kind: 'exportProfile'; readonly transition: CommandInputTransition }
-  | { readonly kind: 'submitExportProfile'; readonly value?: string }
-  | { readonly kind: 'dismissDialog' }
-  | { readonly kind: 'resolveDirty'; readonly action: 'save' | 'discard' | 'cancel' }
-  | { readonly kind: 'externalFile'; readonly action: 'compare' | 'reloadDisk' | 'keepBuffer' | 'saveAs' | 'overwriteDisk' | 'recreate' | 'closeBuffer' }
-  | { readonly kind: 'checkExternalFiles' }
-  | { readonly kind: 'applicationUpdate'; readonly update: VellumApplicationUpdate }
-  | { readonly kind: 'terminalResize'; readonly previousTerminalSize: TerminalSize; readonly terminalSize: TerminalSize; readonly widthProfile: TextWidthProfile }
-  | { readonly kind: 'exit' }
-  | { readonly kind: 'refresh' };
 
 export function viewVellum(
   application: VellumApplication,
@@ -96,13 +58,12 @@ export function viewVellum(
 ) {
   const columns = Math.max(1, context.terminalSize.columns);
   const geometry = vellumBodyGeometry(state, context.terminalSize);
-  const widthProfile = context.capabilities.unicode.widthProfile;
   if (state.writingMode.distractionFree) {
     const activeId = state.project.activeBufferId;
     const buffer = activeId === undefined ? undefined : state.project.buffers[activeId];
     const root = buffer === undefined
       ? text({ id: 'vellum-empty', content: 'Open a Markdown file or create a new source document.', textRole: 'body' })
-      : applicationContent(application, state, buffer, columns, context.terminalSize.rows, widthProfile);
+      : applicationContent(application, state, buffer, columns);
     const modal = activeDialog(state, columns);
     return modal === undefined ? root : overlay([root, modal], { id: 'vellum-overlay' });
   }
@@ -114,10 +75,10 @@ export function viewVellum(
     children: {
       header: header(state),
       body: geometry.fileTreeWidth === 0
-        ? bufferTabs(application, state, geometry.bodyWidth, geometry.bodyRows, widthProfile)
+        ? bufferTabs(application, state, geometry.bodyWidth)
         : row([
           navigator(state),
-          bufferTabs(application, state, geometry.bodyWidth, geometry.bodyRows, widthProfile)
+          bufferTabs(application, state, geometry.bodyWidth)
         ], { sizes: [{ kind: 'fixed', cells: geometry.fileTreeWidth }, { kind: 'fill' }], gap: 1 }),
       status: status(state)
     }
@@ -156,8 +117,6 @@ function bufferTabs(
   application: VellumApplication,
   state: AppState,
   width: number,
-  rows: number,
-  widthProfile: TextWidthProfile,
 ) {
   const items = state.project.bufferOrder.flatMap((id) => {
     const buffer = state.project.buffers[id];
@@ -174,8 +133,6 @@ function bufferTabs(
         state,
         buffer,
         width,
-        Math.max(1, rows - 1),
-        widthProfile,
       )
     }];
   });
@@ -216,41 +173,18 @@ function applicationContent(
   state: AppState,
   buffer: BufferState,
   width: number,
-  rows: number,
-  widthProfile: TextWidthProfile,
 ) {
   if (state.paneArrangement === 'editor') {
     return editorPane(application, state, buffer);
   }
   if (state.paneArrangement === 'preview') {
-    return previewPane(application, buffer, width, rows, widthProfile);
+    return previewPane(application, state, buffer);
   }
-  const geometry = vellumPaneGeometry(state, width, rows);
-  const editorSize = geometry.editor;
-  const previewSize = geometry.preview;
-  if (editorSize === undefined || previewSize === undefined) throw new Error('Editor and preview geometry is incomplete.');
-  const synchronization: SynchronizedPaneGeometry = Object.freeze({
-    editor: editorSize,
-    preview: previewSize,
-    widthProfile,
-  });
-  const editor = editorPane(
-    application,
-    state,
-    buffer,
-    synchronization,
-  );
-  const preview = previewPane(
-    application,
-    buffer,
-    previewSize.width,
-    previewSize.rows,
-    widthProfile,
-    synchronization,
-  );
+  const editor = editorPane(application, state, buffer);
+  const preview = previewPane(application, state, buffer);
   return splitPane([editor, preview], {
     id: `vellum-split-${buffer.id}`,
-    direction: geometry.direction,
+    direction: width >= 96 ? 'horizontal' : 'vertical',
     ...splitPaneLayout(state.splitPane),
     gap: 1,
     resizeStep: 0.04,
@@ -262,11 +196,10 @@ function applicationContent(
 function editorPane(
   application: VellumApplication,
   state: AppState,
-  buffer: BufferState,
-  synchronization?: SynchronizedPaneGeometry
+  buffer: BufferState
 ) {
   const decorations = state.editorMode === 'hybrid'
-    ? application.hybridDecorations(buffer.id)
+    ? application.hybridDecorations(buffer.id, state)
     : undefined;
   return textArea({
     id: `${VELLUM_IDS.editor}-${buffer.id}`,
@@ -284,48 +217,36 @@ function editorPane(
     scrollbar: { visible: 'auto' },
     scrollPolicy: { wheel: { rows: 5, columns: 8 } },
     meta: { accessibleName: `${buffer.label} source document`, focus: { order: 3 } },
+    onLayout: (snapshot): AppMessage => ({ kind: 'editorLayout', bufferId: buffer.id, snapshot }),
     onTransition: (transition: TextAreaTransition): AppMessage => ({
       kind: 'editor',
       bufferId: buffer.id,
       transition,
-      ...(synchronization === undefined ? {} : { synchronization })
     })
   });
 }
 
-function previewPane(
-  application: VellumApplication,
-  buffer: BufferState,
-  width: number,
-  rows: number,
-  widthProfile: TextWidthProfile,
-  synchronization?: SynchronizedPaneGeometry
-) {
+function previewPane(application: VellumApplication, state: AppState, buffer: BufferState) {
   if (buffer.preview.kind === 'failed') {
     return surface(text({ id: `preview-failed-${buffer.id}`, content: `Preview failed: ${buffer.preview.message}`, textRole: 'body' }), {
       id: `preview-failed-surface-${buffer.id}`,
       title: 'Preview', border: { kind: 'rounded' }, padding: 1
     });
   }
-  const layout = application.previewViewportLayout(
-    buffer.id,
-    width,
-    rows,
-    application.markdownTheme(),
-    widthProfile,
-  );
-  if (layout === undefined) return text({ id: `preview-empty-${buffer.id}`, content: '', textRole: 'body' });
-  const viewportWidth = Math.max(1, width - (layout.rows.length > rows ? 1 : 0));
-  const geometry = vellumPreviewDocumentGeometry(viewportWidth);
   return viewport(markdownPreview({
     id: `preview-content-${buffer.id}`,
     label: `${buffer.label} rendered preview`,
-    layout,
-    viewportWidth,
-    contentColumn: geometry.contentColumn,
-    onAction: (action): AppMessage => ({
-      kind: 'previewActivate', bufferId: buffer.id, target: action.target
-    })
+    version: `${String(buffer.sourceRevision)}:${String(buffer.previewResourceRevision)}`,
+    media: application.previewMedia(buffer.id, state),
+    layoutAt: (width, widthProfile) => {
+      const geometry = vellumPreviewDocumentGeometry(width);
+      const layout = application.previewLayout(buffer.id, geometry.contentWidth, application.markdownTheme(), widthProfile, state);
+      if (layout === undefined) throw new Error('Preview document is no longer available.');
+      return { layout, contentColumn: geometry.contentColumn };
+    },
+    onAction: (action): AppMessage => action.kind === 'layout'
+      ? { kind: 'previewLayout', bufferId: buffer.id, document: buffer.editor.document, resourceRevision: buffer.previewResourceRevision, snapshot: action.snapshot }
+      : { kind: 'previewActivate', bufferId: buffer.id, target: action.target }
   }), {
     id: `${VELLUM_IDS.preview}-${buffer.id}`,
     offset: { row: buffer.previewScroll.offsetRow, column: buffer.previewScroll.offsetColumn },
@@ -336,25 +257,17 @@ function previewPane(
       kind: 'previewScroll',
       bufferId: buffer.id,
       request,
-      ...(synchronization === undefined ? {} : { synchronization })
     })
   });
 }
 
 function navigator(state: AppState) {
   if (state.navigator.mode !== 'files') return navigatorSummary(state);
-  const view = terminalFileTreeView(state.project.fileTree);
+  const source = terminalFileTreeSource(state.project.fileTree);
   return tree({
     id: VELLUM_IDS.fileTree,
-    view,
-    state: {
-      ...(state.project.fileTree.activeId === undefined ? {} : { activeId: state.project.fileTree.activeId }),
-      selection: state.project.fileTree.activeId === undefined
-        ? { mode: 'single' }
-        : { mode: 'single', selectedId: state.project.fileTree.activeId },
-      expandedIds: state.project.fileTree.expandedIds,
-      scroll: state.project.fileTree.scroll
-    },
+    source,
+    state: state.project.fileTree.interaction,
     emptyText: 'Project directory is empty',
     meta: { accessibleName: 'File tree', focus: { order: 1 } },
     onTransition: (transition: TreeTransition): AppMessage => ({ kind: 'fileTree', transition }),

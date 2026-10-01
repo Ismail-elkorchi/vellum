@@ -135,7 +135,7 @@ export function sessionRecordFromState(state: AppState): SessionRecord {
     recentlyOpenedPaths: Object.freeze([...state.project.recentlyOpenedPaths]),
     recentProjects: Object.freeze([...state.project.recentProjects]),
     pinnedProjects: Object.freeze([...state.project.pinnedProjects]),
-    expandedDirectories: Object.freeze(state.project.fileTree.expandedIds.filter((id) => (
+    expandedDirectories: Object.freeze(state.project.fileTree.interaction.expandedIds.filter((id) => (
       state.project.fileTree.nodes[id]?.kind === 'directory'
     ))),
     fileTreeFilter: state.project.fileTree.filter,

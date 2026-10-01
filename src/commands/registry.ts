@@ -80,19 +80,20 @@ const filePathDialog = (
   dialogState: Object.freeze({
     kind: 'filePath',
     operation,
+    ...(operation === 'saveAs' && state.project.activeBufferId !== undefined ? { saveBufferId: state.project.activeBufferId } : {}),
     ...(projectSourcePath === undefined ? {} : { projectSourcePath }),
     command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
   })
 }));
 const selectedProjectPath = (state: AppState): string | undefined => {
-  const id = state.project.fileTree.activeId;
+  const id = state.project.fileTree.interaction.activeId;
   const node = id === undefined ? undefined : state.project.fileTree.nodes[id];
   return node === undefined || node.path === state.project.rootDirectory ? undefined : node.path;
 };
 const hasProject = (state: AppState): boolean => state.project.rootDirectory !== undefined;
 const hasSelectedProjectEntry = (state: AppState): boolean => selectedProjectPath(state) !== undefined;
 const activeProjectPath = (state: AppState): string | undefined => {
-  const activeId = state.project.fileTree.activeId;
+  const activeId = state.project.fileTree.interaction.activeId;
   return activeId === undefined ? state.project.rootDirectory : state.project.fileTree.nodes[activeId]?.path;
 };
 const searchInput = (value = '') => createCommandInputState({ value, suggestions: createCommandSuggestions([]) });
@@ -496,6 +497,7 @@ function commandMap(values: readonly VellumCommand[]): ReadonlyMap<CommandId, Ve
 
 export function initialAppState(): AppState {
   return Object.freeze({
+    revision: 0,
     project: Object.freeze({
       fileTree: createFileTreeState(),
       index: Object.freeze({ documents: Object.freeze({}), orderedPaths: Object.freeze([]), assetPaths: Object.freeze([]), indexing: false, revision: 0 }),

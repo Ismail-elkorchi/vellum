@@ -71,21 +71,13 @@ export function previewImageSize(
 export function localImageComponent(
   image: RasterImage,
   altText: string,
-  size: MarkdownPreviewImageSize,
 ): Element<never> {
   const label = altText.trim().length === 0 ? 'Markdown image' : altText;
   return terminalImage({
     image,
     label,
     fallback: `[Image: ${label}]`,
-    measurement: Object.freeze({
-      minWidth: 1,
-      preferredWidth: size.width,
-      maxWidth: size.width,
-      minHeight: 1,
-      preferredHeight: size.height,
-      maxHeight: size.height,
-    }),
+    measurement: { minWidth: 0, minHeight: 0, preferredWidth: image.width, preferredHeight: image.height },
     fit: 'contain'
   });
 }

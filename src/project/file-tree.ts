@@ -4,11 +4,10 @@ import path from 'node:path';
 import {
   createScrollState,
   createTreeSource,
-  createTreeView,
   treeReducer,
   type TreeTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { TreeNode, TreeView } from '@ismail-elkorchi/terminal-ui/components';
+import type { TreeNode, TreeSource } from '@ismail-elkorchi/terminal-ui/components';
 import type { FileTreeNode, FileTreeState } from '../app/types.js';
 import { compareTextCaseInsensitive } from '../order.js';
 import { minimatch } from 'minimatch';
@@ -26,12 +25,11 @@ export function createFileTreeState(
     return Object.freeze({
       nodes: Object.freeze({}),
       rootIds: Object.freeze([]),
-      expandedIds: Object.freeze([]),
+      interaction: Object.freeze({ expandedIds: Object.freeze([]), selection: Object.freeze({ mode: 'single' }), scroll: createScrollState() }),
       pendingExpansionIds: Object.freeze([]),
       exclusionPatterns: Object.freeze([...exclusionPatterns]),
       filter: '',
       sort: 'foldersFirst',
-      scroll: createScrollState(),
       revision: 0
     });
   }
@@ -48,13 +46,11 @@ export function createFileTreeState(
   return Object.freeze({
     nodes: Object.freeze({ [root]: node }),
     rootIds: Object.freeze([root]),
-    expandedIds: Object.freeze([root]),
+    interaction: Object.freeze({ expandedIds: Object.freeze([root]), activeId: root, selection: Object.freeze({ mode: 'single', selectedId: root }), scroll: createScrollState() }),
     pendingExpansionIds: Object.freeze([]),
-    activeId: root,
     exclusionPatterns: Object.freeze([...exclusionPatterns]),
     filter: '',
     sort: 'foldersFirst',
-    scroll: createScrollState(),
     revision: 0
   });
 }
@@ -135,39 +131,30 @@ export function commitDirectoryNodes(
     children: Object.freeze(children.map((child) => child.id))
   });
   const expandedIds = [...new Set([
-    ...state.expandedIds.filter((id) => nextNodes[id]?.kind === 'directory'),
+    ...state.interaction.expandedIds.filter((id) => nextNodes[id]?.kind === 'directory'),
     ...children
       .filter((child) => child.kind === 'directory' && state.pendingExpansionIds.includes(child.id))
       .map((child) => child.id)
   ])];
-  const activeId = state.activeId !== undefined && nextNodes[state.activeId] !== undefined
-    ? state.activeId
+  const activeId = state.interaction.activeId !== undefined && nextNodes[state.interaction.activeId] !== undefined
+    ? state.interaction.activeId
     : directoryId;
   return Object.freeze({
     ...state,
     nodes: Object.freeze(nextNodes),
-    expandedIds: Object.freeze(expandedIds),
-    activeId,
+    interaction: Object.freeze({ ...state.interaction, expandedIds: Object.freeze(expandedIds), activeId, selection: Object.freeze({ mode: 'single', selectedId: activeId }) }),
     revision: state.revision + 1
   });
 }
 
-export function terminalFileTreeView(
+export function terminalFileTreeSource(
   state: FileTreeState
-): TreeView<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> {
+): TreeSource<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> {
   const roots = state.rootIds.flatMap((id) => {
     const node = terminalNode(state, id);
     return node === undefined ? [] : [node];
   });
-  const source = createTreeSource(roots);
-  return createTreeView(source, {
-    ...(state.activeId === undefined ? {} : { activeId: state.activeId }),
-    selection: state.activeId === undefined
-      ? Object.freeze({ mode: 'single' })
-      : Object.freeze({ mode: 'single', selectedId: state.activeId }),
-    expandedIds: state.expandedIds,
-    scroll: state.scroll
-  });
+  return createTreeSource(roots);
 }
 
 export function setFileTreeFilter(state: FileTreeState, filter: string): FileTreeState {
@@ -187,21 +174,9 @@ export function reduceFileTree(
   state: FileTreeState,
   transition: TreeTransition
 ): FileTreeState {
-  const view = terminalFileTreeView(state);
-  const next = treeReducer({
-    ...(state.activeId === undefined ? {} : { activeId: state.activeId }),
-    selection: state.activeId === undefined
-      ? Object.freeze({ mode: 'single' })
-      : Object.freeze({ mode: 'single', selectedId: state.activeId }),
-    expandedIds: state.expandedIds,
-    scroll: state.scroll
-  }, transition, { view });
-  return Object.freeze({
-    ...state,
-    ...(next.activeId === undefined ? {} : { activeId: next.activeId }),
-    expandedIds: Object.freeze(next.expandedIds),
-    scroll: next.scroll
-  });
+  const source = terminalFileTreeSource(state);
+  const interaction = treeReducer(state.interaction, transition, { source });
+  return interaction === state.interaction ? state : Object.freeze({ ...state, interaction });
 }
 
 function terminalNode(

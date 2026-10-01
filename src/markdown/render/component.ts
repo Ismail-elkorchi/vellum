@@ -2,7 +2,6 @@ import type { AccessibleNode, AccessibleRole } from '@ismail-elkorchi/terminal-u
 import {
   defineComponent,
   ignoreMessage,
-  type SemanticCompositeComponentFactory,
 } from '@ismail-elkorchi/terminal-ui/component';
 import type { RoutedPointerEvent } from '@ismail-elkorchi/terminal-ui/input';
 import {
@@ -12,7 +11,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/text';
 import { mergeTerminalStyles } from '@ismail-elkorchi/terminal-ui/renderer';
 import type { MarkdownAccessibleNode, MarkdownAccessibleRole } from './accessibility.js';
-import { localImageComponent } from './image.js';
+import { localImageComponent, type MarkdownRenderMedia } from './image.js';
 import type { MarkdownRenderSpan } from './inline.js';
 import type {
   MarkdownPreviewActionFragment,
@@ -22,14 +21,43 @@ import type {
 
 export interface MarkdownPreviewOptions {
   readonly label: string;
+  readonly version: string;
+  readonly media: readonly MarkdownRenderMedia[];
+  readonly layoutAt: (width: number, widthProfile: TextWidthProfile) => {
+    readonly layout: MarkdownPreviewLayout;
+    readonly contentColumn: number;
+  };
+}
+
+interface ResolvedMarkdownPreview {
+  readonly label: string;
   readonly layout: MarkdownPreviewLayout;
   readonly viewportWidth: number;
   readonly contentColumn: number;
 }
 
-export interface MarkdownPreviewAction {
-  readonly kind: 'activate';
-  readonly target: MarkdownPreviewActivation;
+export interface MarkdownPreviewLayoutSnapshot {
+  readonly layoutRevision: string;
+  readonly layout: MarkdownPreviewLayout;
+  readonly width: number;
+  readonly rows: number;
+}
+
+export type MarkdownPreviewAction =
+  | { readonly kind: 'activate'; readonly target: MarkdownPreviewActivation }
+  | { readonly kind: 'layout'; readonly snapshot: MarkdownPreviewLayoutSnapshot };
+
+const resolvedPreviewCache = new WeakMap<MarkdownPreviewOptions, Map<string, ResolvedMarkdownPreview>>();
+function resolvedPreview(model: MarkdownPreviewOptions, width: number, widthProfile: TextWidthProfile): ResolvedMarkdownPreview {
+  let cache = resolvedPreviewCache.get(model);
+  if (cache === undefined) { cache = new Map(); resolvedPreviewCache.set(model, cache); }
+  const key = `${String(width)}:${textWidthProfileKey(widthProfile)}`;
+  let resolved = cache.get(key);
+  if (resolved === undefined) {
+    resolved = { label: model.label, viewportWidth: width, ...model.layoutAt(width, widthProfile) };
+    cache.set(key, resolved);
+  }
+  return resolved;
 }
 
 interface PreviewTargetFragment {
@@ -72,24 +100,7 @@ export function markdownPreviewActivationAt(
     : previewActivation(layout, normalizedRow, line.sourceOffset, span);
 }
 
-export const markdownPreview: SemanticCompositeComponentFactory<
-  MarkdownPreviewOptions,
-  MarkdownPreviewAction,
-  never,
-  readonly [],
-  'required',
-  readonly [],
-  typeof markdownPreviewSlots
-> = defineComponent<
-  MarkdownPreviewOptions,
-  MarkdownPreviewOptions,
-  MarkdownPreviewAction,
-  never,
-  readonly [],
-  'required',
-  readonly [],
-  typeof markdownPreviewSlots
->({
+export const markdownPreview = defineComponent<MarkdownPreviewOptions, MarkdownPreviewAction>()({
   name: 'vellum/components/markdown-preview',
   identity: 'required',
   structure: 'composite',
@@ -97,30 +108,34 @@ export const markdownPreview: SemanticCompositeComponentFactory<
   accessibleRole: 'document',
   slots: markdownPreviewSlots,
   implementationSlots: ({ model }) => ({
-    media: model.layout.media.map((entry) => localImageComponent(
-      entry.media.image,
-      entry.media.label,
-      { width: entry.width, height: entry.height },
-    )),
+    media: model.media.map((media) => localImageComponent(media.image, media.label)),
   }),
-  measure: ({ model, widthProfile }) => {
-    assertPreviewGeometry(model, widthProfile);
-    return {
-      minWidth: 0,
-      minHeight: 0,
-      preferredWidth: model.viewportWidth,
-      preferredHeight: model.layout.rows.length,
-    };
+  measure: ({ model, constraints, widthProfile }) => {
+    const resolved = resolvedPreview(model, constraints.width, widthProfile);
+    return { minWidth: 0, minHeight: 0, preferredWidth: constraints.width, preferredHeight: resolved.layout.rows.length };
   },
-  layout: ({ model }) => ({
-    media: model.layout.media.map((entry) => Object.freeze({
-      row: entry.row,
-      column: model.contentColumn + entry.column,
-      width: entry.width,
-      height: entry.height,
-    })),
-  }),
-  renderBeforeChildren: ({ model, target, viewport, focusedTargetId, widthProfile }) => {
+  layout: ({ model, bounds, widthProfile }) => {
+    const resolved = resolvedPreview(model, bounds.width, widthProfile);
+    return { media: model.media.map((media) => {
+      const entry = resolved.layout.media.find((candidate) => candidate.media.sourceSpan.start === media.sourceSpan.start);
+      return entry === undefined
+        ? { row: 0, column: 0, width: 0, height: 0 }
+        : { row: entry.row, column: resolved.contentColumn + entry.column, width: entry.width, height: entry.height };
+    }) };
+  },
+  onLayout(input) {
+    const previous = input.previous;
+    if (previous !== undefined && previous.model.version === input.model.version
+      && previous.widthProfile === input.widthProfile && previous.bounds.width === input.bounds.width
+      && previous.viewport.height === input.viewport.height) return ignoreMessage();
+    const resolved = resolvedPreview(input.model, input.bounds.width, input.widthProfile);
+    return { kind: 'layout', snapshot: {
+      layoutRevision: input.commitId, layout: resolved.layout,
+      width: input.bounds.width, rows: input.viewport.height,
+    } };
+  },
+  renderBeforeChildren: ({ model: options, bounds, target, viewport, focusedTargetId, widthProfile }) => {
+    const model = resolvedPreview(options, bounds.width, widthProfile);
     assertPreviewGeometry(model, widthProfile);
     const end = Math.min(model.layout.rows.length, viewport.row + viewport.height);
     for (let row = viewport.row; row < end; row += 1) {
@@ -146,19 +161,23 @@ export const markdownPreview: SemanticCompositeComponentFactory<
       }
     }
   },
-  keys: ({ model, focusedTargetId }) => {
+  keys: ({ model: options, bounds, widthProfile, focusedTargetId }) => {
+    const model = resolvedPreview(options, bounds.width, widthProfile);
     const focused = focusedTargetId === undefined
       ? undefined
       : previewTargetGeometry(model.layout).find((target) => target.id === focusedTargetId);
     return focused === undefined
       ? {}
-      : { enter: () => ({ kind: 'activate', target: focused.target }) };
+      : { enter: (): MarkdownPreviewAction => ({ kind: 'activate', target: focused.target }) };
   },
-  focusTargets: ({ model }) => previewTargetGeometry(model.layout).map((target) => ({
-    id: target.id,
-    bounds: translatedBounds(target.bounds, model.contentColumn),
-  })),
+  focusTargets: ({ model: options, bounds, widthProfile }) => {
+    const model = resolvedPreview(options, bounds.width, widthProfile);
+    return previewTargetGeometry(model.layout).map((target) => ({
+      id: target.id, bounds: translatedBounds(target.bounds, model.contentColumn),
+    }));
+  },
   hitTargets(input) {
+    const model = resolvedPreview(input.model, input.bounds.width, input.widthProfile);
     if (input.viewport.width === 0 || input.viewport.height === 0) return [];
     const contentTarget = {
       id: `${input.id ?? 'markdown-preview'}:content`,
@@ -166,21 +185,21 @@ export const markdownPreview: SemanticCompositeComponentFactory<
       accepts: ['click'],
       message(event: RoutedPointerEvent) {
         if (event.button !== 'left') return ignoreMessage();
-        const column = input.viewport.column + (event.localColumn ?? 0) - input.model.contentColumn;
-        const target = column < 0 || column >= input.model.layout.width
+        const column = input.viewport.column + (event.localColumn ?? 0) - model.contentColumn;
+        const target = column < 0 || column >= model.layout.width
           ? undefined
           : markdownPreviewActivationAt(
-              input.model.layout,
+              model.layout,
               input.viewport.row + (event.localRow ?? 0),
               column,
             );
         return target === undefined ? ignoreMessage() : { kind: 'activate' as const, target };
       },
     } as const;
-    const actionTargets = previewTargetGeometry(input.model.layout).flatMap((target) => (
+    const actionTargets = previewTargetGeometry(model.layout).flatMap((target) => (
       target.fragments.map((fragment, index) => ({
         id: `${input.id ?? 'markdown-preview'}:${target.id}:${String(index)}`,
-        bounds: translatedBounds(fragment.bounds, input.model.contentColumn),
+        bounds: translatedBounds(fragment.bounds, model.contentColumn),
         accepts: ['click', 'pointerDown'] as const,
         cursor: 'pointer' as const,
         focus: { kind: 'target' as const, targetId: target.id },
@@ -194,13 +213,10 @@ export const markdownPreview: SemanticCompositeComponentFactory<
     ));
     return [contentTarget, ...actionTargets];
   },
-  accessibility: ({ id, model, focusedTargetId }) => accessiblePreviewNode(
-    model.layout.accessibility,
-    id,
-    model.label,
-    true,
-    focusedTargetId,
-  ),
+  accessibility: ({ id, model: options, bounds, widthProfile, focusedTargetId }) => {
+    const model = resolvedPreview(options, bounds.width, widthProfile);
+    return accessiblePreviewNode(model.layout.accessibility, id, model.label, true, focusedTargetId);
+  },
 });
 
 function previewTargetGeometry(layout: MarkdownPreviewLayout): readonly PreviewTargetGeometry[] {
@@ -266,7 +282,7 @@ function assertActiveWidthProfile(
 }
 
 function assertPreviewGeometry(
-  model: MarkdownPreviewOptions,
+  model: ResolvedMarkdownPreview,
   widthProfile: TextWidthProfile,
 ): void {
   assertActiveWidthProfile(model.layout, widthProfile);

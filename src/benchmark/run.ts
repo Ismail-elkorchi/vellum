@@ -84,9 +84,9 @@ for (const fixture of fixtures) {
     const component = markdownPreview({
       id: 'benchmark-preview',
       label: 'Benchmark preview',
-      layout,
-      viewportWidth: layout.width,
-      contentColumn: 0,
+      version: 'static',
+      media: layout.media.map((entry) => entry.media),
+      layoutAt: () => ({ layout, contentColumn: 0 }),
       onAction: ignoreMessage,
     });
     rows.push(measure(fixture.name, 'preview component render', () => (

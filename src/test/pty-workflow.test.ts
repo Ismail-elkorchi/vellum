@@ -38,6 +38,15 @@ test('a legacy PTY preserves Unicode editing, mouse scrolling, resizing, focus c
 
     await harness.input(keyInput('f8'));
     await waitUntil(() => application.state().paneArrangement === 'editorPreview');
+    // Paste commits its actual caret-revealing scroll. Refocus the source pane
+    // after changing the split structure, then explicitly start the scroll exercise.
+    const sourceTarget = harness.frames().at(-1)?.hitTargets?.find((target) => target.id === `vellum-editor-${bufferId}:text`);
+    assert.ok(sourceTarget);
+    await harness.input(sgrMouse(0, sourceTarget.bounds.row, sourceTarget.bounds.column, 'M'));
+    await harness.input(sgrMouse(0, sourceTarget.bounds.row, sourceTarget.bounds.column, 'm'));
+    await harness.input('\u001b[1;5H');
+    await waitUntil(() => application.state().project.buffers[bufferId]?.editor.caret.position.offset === 0
+      && application.state().project.buffers[bufferId]?.editor.scroll.offsetRow === 0);
     const splitFrame = harness.frames().at(-1);
     const previewTarget = splitFrame?.hitTargets?.find((target) => (
       target.id.startsWith(`vellum-preview-${bufferId}:`) && target.accepts?.includes('scroll') === true
@@ -86,7 +95,7 @@ async function waitUntil(predicate: () => boolean, timeoutMilliseconds = 3_000):
 }
 
 function sgrMouse(code: number, row: number, column: number, terminator: 'M' | 'm'): string {
-  return `\u001b[<${String(code)};${String(column + 1)};${String(row + 1)}${terminator}`;
+  return `\u001b[<${String(code)};${String(column)};${String(row)}${terminator}`;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMilliseconds: number): Promise<T> {

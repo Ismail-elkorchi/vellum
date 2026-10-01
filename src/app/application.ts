@@ -1,3 +1,6 @@
+import type { TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
+import type { AppMessage, VellumMessage } from './messages.js';
+import { updateVellumApplication } from './update.js';
 import { randomUUID } from 'node:crypto';
 import { watch, type FSWatcher } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
@@ -29,8 +32,7 @@ import {
   textDocumentText
 } from '@ismail-elkorchi/terminal-ui/text';
 import type { RowOffsetMap, TextChangeSet, TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import { createTextAreaRowOffsetMap, type TextAreaDecorations } from '@ismail-elkorchi/terminal-ui/components';
-import type { TerminalSize } from '@ismail-elkorchi/terminal-ui/host';
+import { type TextAreaLayoutSnapshot, type TextAreaDecorations } from '@ismail-elkorchi/terminal-ui/components';
 import { walkMarkdown, type MarkdownParseOptions } from 'markspan';
 import type {
   AppState,
@@ -49,7 +51,7 @@ import {
   executeCommand as reduceCommand,
   initialAppState,
   commandById,
-  type AppUpdate
+  type VellumEffect
 } from '../commands/registry.js';
 import { commandPaletteEntries } from '../commands/palette.js';
 import { quickOpenEntries } from '../project/quick-open.js';
@@ -133,11 +135,9 @@ import {
 import type { MarkdownBlockLayoutCache } from '../markdown/render/cache.js';
 import type { MarkdownRenderedBlock } from '../markdown/render/block.js';
 import type { MarkdownBlockResources } from '../markdown/render/resources.js';
-import {
-  vellumBodyGeometry,
-  vellumPaneGeometry,
-  vellumPreviewDocumentGeometry,
-} from './viewport-geometry.js';
+import { imagePreviewSpan, type MarkdownRenderMedia } from '../markdown/render/image.js';
+import { inlinePlainText } from '../markdown/render/inline.js';
+import type { MarkdownPreviewLayoutSnapshot } from '../markdown/render/component.js';
 import { darkTerminalMarkdownTheme, type MarkdownTheme } from '../markdown/theme.js';
 import {
   createHybridTextDecorations,
@@ -187,7 +187,6 @@ interface BufferRuntime {
   resourceRevision: number | undefined;
   readonly activeResourceRevisions: Set<number>;
   readonly resourceRefreshWaiters: Array<{ revision: number; resolve(): void; reject(error: unknown): void }>;
-  lastPreviewLayout: MarkdownPreviewLayout | undefined;
   hybridDecorations: HybridDecorationCache | undefined;
   diagnosticController: AbortController | undefined;
 }
@@ -278,6 +277,7 @@ export interface VellumApplicationOptions {
 }
 
 export type VellumApplicationUpdateReason =
+  | 'state'
   | 'previewResource'
   | 'externalFileRevision'
   | 'projectIndex'
@@ -287,6 +287,7 @@ export type VellumApplicationUpdateReason =
   | 'backgroundFailure';
 
 export interface VellumApplicationUpdate {
+  readonly state: AppState;
   readonly revision: number;
   readonly reason: VellumApplicationUpdateReason;
   readonly bufferId?: BufferId;
@@ -298,18 +299,32 @@ export interface RuntimeBufferInfo {
   readonly watched: boolean;
 }
 
+export interface VellumOperation {
+  readonly id: string;
+  readonly concurrency: 'replace' | 'keep-first' | 'enqueue';
+  run(signal: AbortSignal): Promise<void>;
+}
+
+export interface VellumCommandUpdate {
+  readonly state: AppState;
+  readonly operations: readonly VellumOperation[];
+  readonly quit: boolean;
+}
+
 export interface VellumApplication {
   state(): AppState;
+  snapshot(): VellumApplicationUpdate;
+  update(message: VellumMessage): TuiUpdateResult<AppState, AppMessage>;
   subscribe(listener: (update: VellumApplicationUpdate) => void): () => void;
   newBuffer(label?: string, source?: string): BufferId;
   openSource(source: string, label?: string): BufferId;
   openFile(filePath: string, signal?: AbortSignal): Promise<BufferId>;
   openProjectDirectory(directoryPath: string, signal?: AbortSignal): Promise<void>;
-  loadFileTreeDirectory(directoryId: string): Promise<void>;
+  loadFileTreeDirectory(directoryId: string, signal?: AbortSignal): Promise<void>;
   refreshFileTree(): Promise<void>;
   activateBuffer(bufferId: BufferId): void;
-  applyFileTreeTransition(transition: TreeTransition): Promise<void>;
-  activateFileTreeNode(nodeId: string): Promise<void>;
+  applyFileTreeTransition(transition: TreeTransition, signal?: AbortSignal): Promise<void>;
+  activateFileTreeNode(nodeId: string, signal?: AbortSignal): Promise<void>;
   createProjectFile(requestedPath: string, source?: string): Promise<BufferId>;
   createProjectDirectory(requestedPath: string): Promise<string>;
   moveProjectEntry(sourcePath: string, destinationPath: string, updateLinks?: boolean): Promise<void>;
@@ -319,16 +334,16 @@ export interface VellumApplication {
   importProjectAsset(sourcePath: string, assetDirectory?: string): Promise<string>;
   importClipboardAsset(assetDirectory?: string): Promise<string>;
   refreshUnusedAssets(): Promise<readonly string[]>;
-  refreshProjectEntry(requestedPath: string): Promise<void>;
+  refreshProjectEntry(requestedPath: string, signal?: AbortSignal): Promise<void>;
   revealProjectEntry(requestedPath: string): Promise<void>;
   setProjectTreeFilter(filter: string): void;
   cycleProjectTreeSort(): void;
   toggleProjectPin(): void;
-  dispatchCommand(commandId: import('./types.js').CommandId): AppUpdate;
+  dispatchCommand(commandId: import('./types.js').CommandId): VellumCommandUpdate;
   updateFilePathDialog(transition: CommandInputTransition): void;
   submitFilePathDialog(value?: string, signal?: AbortSignal): Promise<boolean>;
   updateSelectionDialog(transition: CommandInputTransition): void;
-  submitSelectionDialog(value?: string, signal?: AbortSignal): Promise<void>;
+  submitSelectionDialog(value?: string, signal?: AbortSignal): Promise<VellumCommandUpdate | void>;
   restoreRecoveryGeneration(generation: number, signal?: AbortSignal): Promise<void>;
   updateDocumentSearch(field: 'query' | 'replacement', transition: CommandInputTransition): void;
   configureDocumentSearch(option: 'regularExpression' | 'caseSensitive' | 'wholeWord' | 'selectionOnly'): void;
@@ -350,9 +365,12 @@ export interface VellumApplication {
   cancelExport(): void;
   dismissDialog(): void;
   resizeSplitPane(transition: SplitPaneTransition): void;
-  resizeTerminal(previous: TerminalSize, next: TerminalSize, widthProfile: TextWidthProfile): void;
-  updatePreviewScroll(bufferId: BufferId, request: ScrollRequest, synchronization?: SynchronizedPaneGeometry): void;
-  applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition, synchronization?: SynchronizedPaneGeometry): void;
+  updateTextWidthProfile(widthProfile: TextWidthProfile): void;
+  updatePreviewScroll(bufferId: BufferId, request: ScrollRequest): void;
+  commitEditorLayout(bufferId: BufferId, snapshot: TextAreaLayoutSnapshot): void;
+  commitPreviewLayout(bufferId: BufferId, document: BufferState['editor']['document'], resourceRevision: number, snapshot: MarkdownPreviewLayoutSnapshot): void;
+  previewMedia(bufferId: BufferId, snapshot?: AppState): readonly MarkdownRenderMedia[];
+  applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition): void;
   executeMarkdownCommand(bufferId: BufferId, commandId: import('./types.js').CommandId, options?: MarkdownCommandOptions): void;
   indentList(bufferId: BufferId, outdent: boolean): void;
   saveBuffer(bufferId: BufferId, destination?: string, overwriteConflict?: boolean, signal?: AbortSignal): Promise<boolean>;
@@ -374,19 +392,13 @@ export interface VellumApplication {
   runtimeBufferInfo(bufferId: BufferId): RuntimeBufferInfo | undefined;
   previewResourceStats(): PreviewResourcePoolStats;
   markdownTheme(): MarkdownTheme;
-  hybridDecorations(bufferId: BufferId): TextAreaDecorations;
+  hybridDecorations(bufferId: BufferId, snapshot?: AppState): TextAreaDecorations;
   previewLayout(
     bufferId: BufferId,
     width: number,
     theme?: MarkdownTheme,
     widthProfile?: TextWidthProfile,
-  ): MarkdownPreviewLayout | undefined;
-  previewViewportLayout(
-    bufferId: BufferId,
-    width: number,
-    rows: number,
-    theme?: MarkdownTheme,
-    widthProfile?: TextWidthProfile,
+    snapshot?: AppState,
   ): MarkdownPreviewLayout | undefined;
   refreshPreviewResources(bufferId: BufferId): Promise<void>;
   refreshDiagnostics(bufferId: BufferId): Promise<void>;
@@ -402,10 +414,10 @@ export interface VellumApplication {
   dispose(): Promise<void>;
 }
 
-export interface SynchronizedPaneGeometry {
-  readonly editor: { readonly width: number; readonly rows: number };
-  readonly preview: { readonly width: number; readonly rows: number };
-  readonly widthProfile: TextWidthProfile;
+interface CommittedPaneLayouts {
+  editor?: TextAreaLayoutSnapshot;
+  preview?: MarkdownPreviewLayoutSnapshot & { readonly document: BufferState['editor']['document'] };
+  origin: 'editor' | 'preview';
 }
 
 const defaultFormat: FileFormat = Object.freeze({ bom: false, lineEnding: 'lf' });
@@ -471,7 +483,9 @@ function instantiateVellumApplication(
     throw new Error(exportDiagnostics.map((diagnostic) => `${diagnostic.profileId}: ${diagnostic.message}`).join('\n'));
   }
   const runtimes = new Map<BufferId, BufferRuntime>();
-  const directoryReads = new Map<string, AbortController>();
+  const paneLayouts = new Map<BufferId, CommittedPaneLayouts>();
+  const directoryReads = new Map<string, object>();
+  let directoryReadScope = new AbortController();
   const saveQueues = new Map<BufferId, Promise<void>>();
   const projectWatchers = new Map<string, FSWatcher>();
   let projectIndexRead: AbortController | undefined;
@@ -484,23 +498,30 @@ function instantiateVellumApplication(
   let disposed = false;
   let persistenceTimer: NodeJS.Timeout | undefined;
   let persistenceWriteQueue = Promise.resolve();
-  let applicationRevision = 0;
-  let currentTerminalSize: TerminalSize = Object.freeze({ columns: 80, rows: 24 });
   let currentWidthProfile: TextWidthProfile = defaultTextWidthProfile;
   let exportController: AbortController | undefined;
   const listeners = new Set<(update: VellumApplicationUpdate) => void>();
 
-  const publishApplicationUpdate = (
-    reason: VellumApplicationUpdateReason,
+  // The application is the sole state owner. Headless calls, TUI messages and
+  // asynchronous completions all commit here; subscribers receive exact snapshots.
+  const commit = (
+    next: AppState,
+    reason: VellumApplicationUpdateReason = 'state',
     bufferId?: BufferId
   ): void => {
-    applicationRevision += 1;
+    if (next === state && reason === 'state') return;
+    state = Object.freeze({ ...next, revision: state.revision + 1 });
     const update = Object.freeze({
-      revision: applicationRevision,
+      state,
+      revision: state.revision,
       reason,
       ...(bufferId === undefined ? {} : { bufferId })
     });
     for (const listener of listeners) listener(update);
+  };
+
+  const publishApplicationUpdate = (reason: VellumApplicationUpdateReason, bufferId?: BufferId): void => {
+    commit(state, reason, bufferId);
   };
 
   const publishFailure = (
@@ -508,10 +529,10 @@ function instantiateVellumApplication(
     error: unknown,
     bufferId?: BufferId
   ): void => {
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       notice: Object.freeze({ status: 'error', message: error instanceof Error ? error.message : String(error) })
-    });
+    }));
     publishApplicationUpdate(reason, bufferId);
   };
 
@@ -559,7 +580,7 @@ function instantiateVellumApplication(
 
   const stopProjectSearch = (): void => {
     const dialog = state.dialogState;
-    state = dialog?.kind === 'projectDirectorySearch'
+    commit(dialog?.kind === 'projectDirectorySearch'
       ? Object.freeze({
           ...state,
           projectSearch: Object.freeze({ ...state.projectSearch, searching: false }),
@@ -568,7 +589,7 @@ function instantiateVellumApplication(
       : Object.freeze({
           ...state,
           projectSearch: Object.freeze({ ...state.projectSearch, searching: false })
-        });
+        }));
   };
 
   const invalidateProjectSearchResults = (): void => {
@@ -576,7 +597,7 @@ function instantiateVellumApplication(
     const nextSearch = { ...state.projectSearch, searching: false, results: Object.freeze([]) };
     delete nextSearch.error;
     const dialog = state.dialogState;
-    state = dialog?.kind === 'projectDirectorySearch'
+    commit(dialog?.kind === 'projectDirectorySearch'
       ? Object.freeze({
           ...state,
           projectSearch: Object.freeze(nextSearch),
@@ -590,7 +611,7 @@ function instantiateVellumApplication(
             })
           })
         })
-      : Object.freeze({ ...state, projectSearch: Object.freeze(nextSearch) });
+      : Object.freeze({ ...state, projectSearch: Object.freeze(nextSearch) }));
   };
 
   const refreshProjectIndex = async (): Promise<void> => {
@@ -600,23 +621,23 @@ function instantiateVellumApplication(
     const controller = new AbortController();
     projectIndexRead = controller;
     const previous = state.project.index;
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       project: Object.freeze({
         ...state.project,
         index: Object.freeze({ ...previous, indexing: true })
       })
-    });
+    }));
     try {
       const built = await buildProjectIndex(root, previous, options.projectIndexSettings, controller.signal);
       if (projectIndexRead !== controller || state.project.rootDirectory !== root) return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
           index: built.state
         })
-      });
+      }));
       invalidateProjectSearchResults();
       if (options.watchFiles !== false) replaceProjectWatchers(built.directories);
       for (const bufferId of state.project.bufferOrder) scheduleDiagnostics(bufferId);
@@ -624,7 +645,7 @@ function instantiateVellumApplication(
       publishApplicationUpdate('projectIndex');
     } catch (error) {
       if (controller.signal.aborted) return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
@@ -634,7 +655,7 @@ function instantiateVellumApplication(
             lastError: error instanceof Error ? error.message : String(error)
           })
         })
-      });
+      }));
       throw error;
     } finally {
       if (projectIndexRead === controller) projectIndexRead = undefined;
@@ -648,13 +669,13 @@ function instantiateVellumApplication(
     const controller = new AbortController();
     projectIndexRead = controller;
     const previous = state.project.index;
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       project: Object.freeze({
         ...state.project,
         index: Object.freeze({ ...previous, indexing: true })
       })
-    });
+    }));
     let requiresFullRefresh = false;
     try {
       const next = await updateProjectIndexPaths(
@@ -668,10 +689,10 @@ function instantiateVellumApplication(
       if (next === undefined) {
         requiresFullRefresh = true;
       } else {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           project: Object.freeze({ ...state.project, index: next })
-        });
+        }));
         invalidateProjectSearchResults();
         for (const changedPath of changedPaths) {
           let missing = false;
@@ -694,7 +715,7 @@ function instantiateVellumApplication(
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
@@ -704,7 +725,7 @@ function instantiateVellumApplication(
             lastError: error instanceof Error ? error.message : String(error)
           })
         })
-      });
+      }));
       throw error;
     } finally {
       if (projectIndexRead === controller) projectIndexRead = undefined;
@@ -807,7 +828,6 @@ function instantiateVellumApplication(
     resourceRevision: undefined,
     activeResourceRevisions: new Set(),
     resourceRefreshWaiters: [],
-    lastPreviewLayout: undefined,
     hybridDecorations: undefined,
     diagnosticController: undefined,
   });
@@ -863,10 +883,10 @@ function instantiateVellumApplication(
   const refreshSelectionDialog = (): void => {
     const dialog = state.dialogState;
     if (dialog?.kind !== 'commandPalette' && dialog?.kind !== 'quickOpen' && dialog?.kind !== 'completion' && dialog?.kind !== 'recentProject' && dialog?.kind !== 'recoverySelection') return;
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       dialogState: Object.freeze({ ...dialog, command: selectionSuggestions(dialog) })
-    });
+    }));
   };
 
   const refreshDocumentSearch = (): void => {
@@ -894,14 +914,14 @@ function instantiateVellumApplication(
     const next = { ...dialog, matches };
     delete next.selectedIndex;
     delete next.error;
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       dialogState: Object.freeze({
         ...next,
         ...(selectedIndex === undefined ? {} : { selectedIndex }),
         ...(result.error === undefined ? {} : { error: result.error })
       })
-    });
+    }));
   };
 
   const refreshOutline = (): void => {
@@ -920,13 +940,13 @@ function instantiateVellumApplication(
       description: entry.active ? `Level ${String(entry.depth)} · active heading` : `Level ${String(entry.depth)}`,
       completion: { range: { startOffset: 0, endOffsetExclusive: queryText.length }, text: String(entry.nodeId) }
     })));
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       dialogState: Object.freeze({
         ...dialog, entries,
         query: commandInputReducer(dialog.query, { kind: 'setSuggestions', suggestions })
       })
-    });
+    }));
   };
 
   const refreshExportDialog = (): void => {
@@ -942,13 +962,13 @@ function instantiateVellumApplication(
         description: `${profile.reader.name} → ${profile.writer.name}`,
         completion: { range: { startOffset: 0, endOffsetExclusive: query.length }, text: profile.id }
       })));
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       dialogState: Object.freeze({
         ...dialog,
         command: commandInputReducer(dialog.command, { kind: 'setSuggestions', suggestions })
       })
-    });
+    }));
   };
 
   const addBuffer = (input: {
@@ -985,7 +1005,7 @@ function instantiateVellumApplication(
       format: input.format
     });
     runtimes.set(id, createRuntime(parser));
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       project: Object.freeze({
         ...state.project,
@@ -999,7 +1019,7 @@ function instantiateVellumApplication(
           ].slice(0, 100))
         })
       })
-    });
+    }));
     if (input.path !== undefined && options.watchFiles !== false) attachWatcher(id, input.path);
     schedulePreviewResources(id);
     scheduleDiagnostics(id);
@@ -1010,13 +1030,13 @@ function instantiateVellumApplication(
   const replaceBuffer = (buffer: BufferState): void => {
     const previous = state.project.buffers[buffer.id];
     if (previous === undefined) return;
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       project: Object.freeze({
         ...state.project,
         buffers: Object.freeze({ ...state.project.buffers, [buffer.id]: Object.freeze(buffer) })
       })
-    });
+    }));
     if (previous.editor.document !== buffer.editor.document || previous.path !== buffer.path) {
       invalidateProjectSearchResults();
     }
@@ -1094,6 +1114,7 @@ function instantiateVellumApplication(
     runtime.diagramText.clear();
     runtime.images.clear();
     runtimes.delete(bufferId);
+    paneLayouts.delete(bufferId);
   };
 
   const resetSessionScopedPreviewCaches = (runtime: BufferRuntime): void => {
@@ -1105,7 +1126,6 @@ function instantiateVellumApplication(
     runtime.diagramText.clear();
     runtime.images.clear();
     runtime.resourceRevision = undefined;
-    runtime.lastPreviewLayout = undefined;
     runtime.hybridDecorations = undefined;
   };
 
@@ -1140,7 +1160,7 @@ function instantiateVellumApplication(
     const navigation = state.commandState.navigation;
     const diagnostics = { ...state.diagnostics };
     delete diagnostics[bufferId];
-    state = clearDialog(Object.freeze({
+    commit(clearDialog(Object.freeze({
       ...state,
       diagnostics: Object.freeze(diagnostics),
       project: Object.freeze(project),
@@ -1151,7 +1171,7 @@ function instantiateVellumApplication(
           forward: Object.freeze(navigation.forward.filter((entry) => entry.bufferId !== bufferId))
         })
       })
-    }));
+    })));
     invalidateProjectSearchResults();
     releaseBuffer(bufferId);
     schedulePersistence();
@@ -1162,6 +1182,8 @@ function instantiateVellumApplication(
     transition: TextAreaTransition,
     caretOffset?: number
   ): void => {
+    const panes = paneLayouts.get(bufferId);
+    if (panes !== undefined) panes.origin = 'editor';
     const buffer = state.project.buffers[bufferId];
     const runtime = runtimes.get(bufferId);
     if (buffer === undefined || runtime === undefined) return;
@@ -1189,8 +1211,6 @@ function instantiateVellumApplication(
       || preview.kind !== 'ready'
       || preview.identity !== buffer.preview.identity) {
       resetSessionScopedPreviewCaches(runtime);
-    } else {
-      runtime.lastPreviewLayout = undefined;
     }
     const nextBuffer = Object.freeze({
       ...buffer,
@@ -1201,13 +1221,13 @@ function instantiateVellumApplication(
     replaceBuffer(nextBuffer);
     const dialog = state.dialogState;
     if (dialog?.kind === 'documentSearch' && dialog.selectionOnly && dialog.selectionSpan !== undefined) {
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         dialogState: Object.freeze({
           ...dialog,
           selectionSpan: mapSearchSelection(dialog.selectionSpan, reduction.changeSet)
         })
-      });
+      }));
     }
     runtime.hybridDecorations = undefined;
     schedulePreviewResources(bufferId);
@@ -1215,108 +1235,33 @@ function instantiateVellumApplication(
     schedulePersistence();
   };
 
-  const synchronizedEditorMap = (
-    bufferId: BufferId,
-    synchronization: SynchronizedPaneGeometry,
-  ): RowOffsetMap | undefined => {
+  const synchronizeCommittedPanes = (bufferId: BufferId): void => {
     const buffer = state.project.buffers[bufferId];
-    if (buffer === undefined) return undefined;
-    const decorations = state.editorMode === 'hybrid' ? api.hybridDecorations(bufferId) : undefined;
-    return createTextAreaRowOffsetMap({
-      document: buffer.editor.document,
-      terminalWidth: synchronization.editor.width,
-      terminalRows: synchronization.editor.rows,
-      widthProfile: synchronization.widthProfile,
-      ...(decorations === undefined ? {} : { decorations }),
-      lineNumbers: { minWidth: 3 },
-      wrap: { mode: 'soft' },
-      scrollbar: { visible: 'auto' },
-    });
-  };
-
-  const synchronizeEditorViewport = (
-    bufferId: BufferId,
-    synchronization: SynchronizedPaneGeometry,
-  ): void => {
-    let buffer = state.project.buffers[bufferId];
-    const editorMap = synchronizedEditorMap(bufferId, synchronization);
-    if (buffer === undefined || editorMap === undefined) return;
-    let editor = buffer.editor;
-    if (editor.revealCaret) {
-      const nextState = scrollReducer(editor.scroll, {
-        kind: 'itemIntoView',
-        itemIndex: editorMap.rowAtSourceOffset(editor.caret.position.offset),
-        alignment: 'nearest',
-      }, rowMapScrollGeometry(editorMap, synchronization.editor.rows));
-      editor = textAreaReducer(editor, {
-        kind: 'scroll',
-        request: { nextState, source: 'focus', target: 'content' },
-      }).state;
+    const panes = paneLayouts.get(bufferId);
+    if (buffer === undefined || panes === undefined || state.paneArrangement !== 'editorPreview') return;
+    const editor = panes.editor;
+    const preview = panes.preview;
+    if (editor?.document !== buffer.editor.document || preview?.document !== buffer.editor.document) return;
+    const editorMap = { map: editor.rowOffsetMap, viewportRows: editor.contentBounds.height };
+    const previewMap = { map: preview.layout.rowOffsetMap, viewportRows: preview.rows };
+    if (panes.origin === 'preview') {
+      const scroll = synchronizePaneScroll(buffer.previewScroll, previewMap, buffer.editor.scroll, editorMap);
+      if (!sameScroll(scroll, buffer.editor.scroll)) replaceBuffer({ ...buffer, editor: { ...buffer.editor, scroll, revealCaret: false } });
     } else {
-      const nextState = scrollReducer(
-        editor.scroll,
-        { kind: 'setOffset' },
-        rowMapScrollGeometry(editorMap, synchronization.editor.rows),
-      );
-      if (nextState !== editor.scroll) {
-        editor = textAreaReducer(editor, {
-          kind: 'scroll',
-          request: { nextState, source: 'focus', target: 'content' },
-        }).state;
-      }
-    }
-    const previewMap = api.previewViewportLayout(
-      bufferId,
-      synchronization.preview.width,
-      synchronization.preview.rows,
-      markdownTheme,
-      synchronization.widthProfile,
-    )?.rowOffsetMap;
-    buffer = state.project.buffers[bufferId];
-    if (buffer === undefined) return;
-    const previewScroll = previewMap === undefined
-      ? buffer.previewScroll
-      : synchronizePaneScroll(
-          editor.scroll,
-          { map: editorMap, viewportRows: synchronization.editor.rows },
-          buffer.previewScroll,
-          { map: previewMap, viewportRows: synchronization.preview.rows },
-        );
-    if (editor !== buffer.editor || previewScroll !== buffer.previewScroll) {
-      replaceBuffer({ ...buffer, editor, previewScroll });
+      const previewScroll = synchronizePaneScroll(buffer.editor.scroll, editorMap, buffer.previewScroll, previewMap);
+      if (!sameScroll(previewScroll, buffer.previewScroll)) replaceBuffer({ ...buffer, previewScroll });
     }
   };
 
   const anchorTypewriterViewport = (bufferId: BufferId): void => {
     if (!state.writingMode.typewriter) return;
     const buffer = state.project.buffers[bufferId];
-    if (buffer === undefined) return;
-    const body = vellumBodyGeometry(state, currentTerminalSize);
-    const panes = vellumPaneGeometry(state, body.bodyWidth, body.contentRows);
-    const editorPane = panes.editor;
-    if (editorPane === undefined) return;
-    const decorations = state.editorMode === 'hybrid' ? api.hybridDecorations(bufferId) : undefined;
-    const map = createTextAreaRowOffsetMap({
-      document: buffer.editor.document,
-      terminalWidth: editorPane.width,
-      terminalRows: editorPane.rows,
-      widthProfile: currentWidthProfile,
-      ...(decorations === undefined ? {} : { decorations }),
-      lineNumbers: { minWidth: 3 },
-      wrap: { mode: 'soft' },
-      scrollbar: { visible: 'auto' }
-    });
-    const caretRow = map.rowAtSourceOffset(buffer.editor.caret.position.offset);
-    const offsetRow = Math.max(0, caretRow - Math.floor((editorPane.rows - 1) * state.writingMode.typewriterAnchor));
-    const editor = textAreaReducer(buffer.editor, {
-      kind: 'scroll',
-      request: {
-        nextState: Object.freeze({ ...buffer.editor.scroll, offsetRow, followTail: false }),
-        source: 'focus',
-        target: 'content'
-      }
-    }).state;
-    replaceBuffer({ ...buffer, editor });
+    const geometry = paneLayouts.get(bufferId)?.editor;
+    if (buffer === undefined || geometry?.document !== buffer.editor.document) return;
+    const caretRow = geometry.rowOffsetMap.rowAtSourceOffset(buffer.editor.caret.position.offset);
+    const offsetRow = Math.max(0, caretRow - Math.floor((geometry.contentBounds.height - 1) * state.writingMode.typewriterAnchor));
+    const scroll = { ...buffer.editor.scroll, offsetRow, followTail: false };
+    if (!sameScroll(scroll, buffer.editor.scroll)) replaceBuffer({ ...buffer, editor: { ...buffer.editor, scroll, revealCaret: false } });
   };
 
   const insertTextAtSelection = (bufferId: BufferId, insertedText: string): void => {
@@ -1340,10 +1285,12 @@ function instantiateVellumApplication(
     anchorTypewriterViewport(bufferId);
   };
 
-  const blockResources = (buffer: BufferState, runtime: BufferRuntime): MarkdownBlockResources => {
+  const blockResources = (buffer: BufferState, runtime: BufferRuntime | undefined): MarkdownBlockResources => {
+    // A queued immutable view must never borrow resources from a newer document.
+    const current = runtime !== undefined && state.project.buffers[buffer.id]?.editor.document === buffer.editor.document;
     const tableOfContents = new Map<number, string>();
     if (buffer.preview.kind === 'ready') {
-      const source = runtime.parser.source();
+      const source = current && runtime !== undefined ? runtime.parser.source() : textDocumentText(buffer.editor.document);
       const headings = [...walkMarkdown(buffer.preview.snapshot.document.tree)].flatMap(({ node }) => node.kind === 'heading'
         ? [`${'  '.repeat(node.depth - 1)}• ${source.slice(node.contentSpan.start, node.contentSpan.end).trim()}`]
         : []);
@@ -1354,10 +1301,12 @@ function instantiateVellumApplication(
       }
     }
     return Object.freeze({
-      highlightedCode: runtime.highlightedCode,
-      mathText: runtime.mathText,
-      diagramText: runtime.diagramText,
-      images: runtime.images,
+      ...(current && runtime !== undefined ? {
+        highlightedCode: runtime.highlightedCode,
+        mathText: runtime.mathText,
+        diagramText: runtime.diagramText,
+        images: runtime.images,
+      } : {}),
       tableOfContents,
       diagnostics: buffer.preview.kind === 'ready' ? buffer.preview.snapshot.document.diagnostics : Object.freeze([])
     });
@@ -1390,7 +1339,7 @@ function instantiateVellumApplication(
   );
 
   const replaceExportHistoryEntry = (entry: ExportHistoryEntry, active: boolean): void => {
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       exports: Object.freeze({
         ...state.exports,
@@ -1400,11 +1349,11 @@ function instantiateVellumApplication(
           ...state.exports.history.filter((candidate) => candidate.id !== entry.id)
         ].slice(0, 50))
       })
-    });
+    }));
     if (!active) {
       const exports = { ...state.exports };
       delete exports.activeId;
-      state = Object.freeze({ ...state, exports: Object.freeze(exports) });
+      commit(Object.freeze({ ...state, exports: Object.freeze(exports) }));
     }
     publishApplicationUpdate('export');
   };
@@ -1436,7 +1385,7 @@ function instantiateVellumApplication(
       standardError: '',
       usedUnsavedSource: false
     });
-    state = Object.freeze({
+    commit(Object.freeze({
       ...state,
       navigator: Object.freeze({ ...state.navigator, mode: 'export', visible: true }),
       exports: Object.freeze({
@@ -1445,7 +1394,7 @@ function instantiateVellumApplication(
         lastRequest: Object.freeze({ scope, profileId }),
         history: Object.freeze([running, ...state.exports.history].slice(0, 50))
       })
-    });
+    }));
     publishApplicationUpdate('export');
     try {
       let results: readonly ExportResult[];
@@ -1478,13 +1427,13 @@ function instantiateVellumApplication(
           liveExportSources(),
           { signal: controller.signal, overwrite },
           (progress) => {
-            state = Object.freeze({
+            commit(Object.freeze({
               ...state,
               notice: Object.freeze({
                 status: 'warning',
                 message: `Exporting ${progress.profileId}: ${String(progress.completed)}/${String(progress.total)} profiles.`
               })
-            });
+            }));
             publishApplicationUpdate('export');
           }
         );
@@ -1497,13 +1446,13 @@ function instantiateVellumApplication(
         standardError: results.map((result) => result.standardError).filter((value) => value.length > 0).join('\n'),
         usedUnsavedSource: results.some((result) => result.usedUnsavedSource)
       }), false);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         notice: Object.freeze({
           status: 'success',
           message: `Export completed${results.some((result) => result.usedUnsavedSource) ? ' from current unsaved source' : ''}: ${String(results.length)} output${results.length === 1 ? '' : 's'}.`
         })
-      });
+      }));
       return results;
     } catch (error) {
       const cancelled = controller.signal.aborted;
@@ -1523,8 +1472,52 @@ function instantiateVellumApplication(
     }
   };
 
+  // Interpret command effects once, including stable identities captured before
+  // yielding. The terminal scheduler and headless palette execute the same work.
+  const executeCommandEffect = (effect: VellumEffect): VellumOperation | 'quit' | undefined => {
+    const bufferId = state.project.activeBufferId;
+    const operation = (id: string, run: VellumOperation['run'], concurrency: VellumOperation['concurrency'] = 'keep-first'): VellumOperation => ({ id, concurrency, run });
+    switch (effect.kind) {
+      case 'newFile': api.newBuffer(); return;
+      case 'reopenClosed': api.reopenRecentlyClosed(); return;
+      case 'closeBuffer': if (bufferId !== undefined) api.requestCloseBuffer(bufferId); return;
+      case 'textEdit': if (bufferId !== undefined) api.executeMarkdownCommand(bufferId, effect.commandId); return;
+      case 'navigate': executeNavigationEffect(api, effect.commandId); return;
+      case 'cancelExport': api.cancelExport(); return;
+      case 'cycleFileTreeSort': api.cycleProjectTreeSort(); return;
+      case 'pinProject': api.toggleProjectPin(); return;
+      case 'diagnosticAction':
+        if (effect.action === 'applyFix') api.applyCurrentDiagnosticFix();
+        else if (effect.action === 'ignoreRule') api.ignoreCurrentDiagnosticRule();
+        else if (effect.action === 'cycleSeverity') api.cycleDiagnosticSeverity();
+        else api.cycleDiagnosticSource();
+        return;
+      case 'quit': return 'quit';
+      case 'save': return operation(`save:${bufferId ?? 'none'}`, async (signal) => {
+        if (bufferId !== undefined) await api.saveBuffer(bufferId, undefined, false, signal);
+      }, 'enqueue');
+      case 'saveAll': return operation('save-all', async (signal) => { await api.saveAll(signal); });
+      case 'trashProjectEntry': return operation(`trash:${effect.path}`, async (signal) => { signal.throwIfAborted(); await api.trashProjectEntry(effect.path); });
+      case 'copyProjectPath': return operation(`clipboard:${effect.path}`, async (signal) => { signal.throwIfAborted(); await api.copyProjectPath(effect.path, effect.relative); });
+      case 'importClipboardAsset': return operation('asset:clipboard', async (signal) => { signal.throwIfAborted(); await api.importClipboardAsset(); });
+      case 'findUnusedAssets': return operation('asset:unused-scan', async (signal) => { signal.throwIfAborted(); await api.refreshUnusedAssets(); });
+      case 'exportProjectManifest': return operation('export:active', (signal) => api.runProjectManifestExport(signal));
+      case 'repeatLastExport': return operation('export:active', (signal) => api.repeatLastExport(signal));
+      case 'refreshProjectEntry': return operation(`tree:${effect.path}`, async (signal) => { signal.throwIfAborted(); await api.refreshProjectEntry(effect.path, signal); });
+      case 'revealProjectEntry': return operation(`reveal:${effect.path}`, async (signal) => { signal.throwIfAborted(); await api.revealProjectEntry(effect.path); });
+      case 'refreshDiagnostics': return operation(`diagnostics:${effect.scope}`, async (signal) => {
+        signal.throwIfAborted();
+        if (effect.scope === 'project') await api.refreshProjectDiagnostics();
+        else if (bufferId !== undefined) await api.refreshDiagnostics(bufferId);
+      });
+      case 'addDiagnosticWord': return operation('diagnostics:dictionary', async (signal) => { signal.throwIfAborted(); await api.addCurrentWordToDictionary(); });
+    }
+  };
+
   const api: VellumApplication = {
     state: () => state,
+    snapshot: () => Object.freeze({ state, revision: state.revision, reason: 'state' }),
+    update: (message) => updateVellumApplication(api, message),
     subscribe(listener) {
       assertActive();
       listeners.add(listener);
@@ -1583,7 +1576,8 @@ function instantiateVellumApplication(
       const realDirectory = await realpath(exact);
       assertActive();
       if (!(await stat(realDirectory)).isDirectory()) throw new Error(`The project directory is not a directory: ${exact}`);
-      for (const controller of directoryReads.values()) controller.abort();
+      directoryReadScope.abort();
+      directoryReadScope = new AbortController();
       directoryReads.clear();
       projectIndexRead?.abort();
       if (projectWatchTimer !== undefined) {
@@ -1594,7 +1588,7 @@ function instantiateVellumApplication(
       forceFullProjectIndexRefresh = false;
       for (const watcher of projectWatchers.values()) watcher.close();
       projectWatchers.clear();
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
@@ -1603,45 +1597,47 @@ function instantiateVellumApplication(
           index: emptyProjectIndex(),
           recentProjects: Object.freeze([exact, ...state.project.recentProjects.filter((candidate) => candidate !== exact)].slice(0, 20))
         })
-      });
+      }));
       invalidateProjectSearchResults();
-      await api.loadFileTreeDirectory(exact);
+      await api.loadFileTreeDirectory(exact, signal);
       void startProjectIndexRefresh().catch((error) => publishFailure('backgroundFailure', error));
       schedulePersistence();
     },
-    async loadFileTreeDirectory(directoryId) {
+    async loadFileTreeDirectory(directoryId, signal) {
       assertActive();
-      directoryReads.get(directoryId)?.abort();
-      const controller = new AbortController();
-      directoryReads.set(directoryId, controller);
+      const read = {};
+      const readSignal = signal === undefined ? directoryReadScope.signal : AbortSignal.any([signal, directoryReadScope.signal]);
+      readSignal.throwIfAborted();
+      directoryReads.set(directoryId, read);
       const snapshot = state.project.fileTree;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, fileTree: markDirectoryLoading(snapshot, directoryId) })
-      });
+      }));
       try {
-        const children = await readDirectoryNodes(snapshot, directoryId, controller.signal);
-        if (directoryReads.get(directoryId) !== controller) return;
-        state = Object.freeze({
+        const children = await readDirectoryNodes(snapshot, directoryId, readSignal);
+        readSignal.throwIfAborted();
+        if (directoryReads.get(directoryId) !== read) return;
+        commit(Object.freeze({
           ...state,
           project: Object.freeze({
             ...state.project,
             fileTree: commitDirectoryNodes(state.project.fileTree, directoryId, children)
           })
-        });
+        }));
       } catch (error) {
-        if (directoryReads.get(directoryId) === controller) {
-          state = Object.freeze({
+        if (directoryReads.get(directoryId) === read) {
+          commit(Object.freeze({
             ...state,
             project: Object.freeze({
               ...state.project,
               fileTree: clearDirectoryLoading(state.project.fileTree, directoryId)
             })
-          });
+          }));
         }
         throw error;
       } finally {
-        if (directoryReads.get(directoryId) === controller) directoryReads.delete(directoryId);
+        if (directoryReads.get(directoryId) === read) directoryReads.delete(directoryId);
       }
     },
     async refreshFileTree() {
@@ -1652,33 +1648,35 @@ function instantiateVellumApplication(
     activateBuffer(bufferId) {
       assertActive();
       if (state.project.buffers[bufferId] === undefined || state.project.activeBufferId === bufferId) return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, activeBufferId: bufferId })
-      });
+      }));
       schedulePersistence();
     },
-    async applyFileTreeTransition(transition) {
+    async applyFileTreeTransition(transition, signal) {
+      signal?.throwIfAborted();
       assertActive();
       const next = reduceFileTree(state.project.fileTree, transition);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, fileTree: next })
-      });
-      const activeId = next.activeId;
-      if (activeId !== undefined && next.expandedIds.includes(activeId)) {
+      }));
+      const activeId = next.interaction.activeId;
+      if (activeId !== undefined && next.interaction.expandedIds.includes(activeId)) {
         const node = next.nodes[activeId];
-        if (node?.kind === 'directory' && !node.loaded && !node.loading) await api.loadFileTreeDirectory(activeId);
+        if (node?.kind === 'directory' && !node.loaded) await api.loadFileTreeDirectory(activeId, signal);
       }
       schedulePersistence();
     },
-    async activateFileTreeNode(nodeId) {
+    async activateFileTreeNode(nodeId, signal) {
+      signal?.throwIfAborted();
       const node = state.project.fileTree.nodes[nodeId];
       if (node === undefined) return;
       if (node.kind === 'file') {
-        await api.openFile(node.path);
+        await api.openFile(node.path, signal);
       } else {
-        await api.applyFileTreeTransition({ kind: 'toggle', id: nodeId });
+        await api.applyFileTreeTransition({ kind: 'toggle', id: nodeId }, signal);
       }
     },
     async createProjectFile(requestedPath, source = '') {
@@ -1687,7 +1685,7 @@ function instantiateVellumApplication(
       const created = await createProjectFileOnDisk(root, requestedPath, source);
       await refreshChangedProjectPaths([created]);
       const id = await api.openFile(created);
-      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Created ${path.relative(root, created)}.` }) });
+      commit(Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Created ${path.relative(root, created)}.` }) }));
       schedulePersistence();
       return id;
     },
@@ -1696,7 +1694,7 @@ function instantiateVellumApplication(
       if (root === undefined) throw new Error('Open a project before creating a directory.');
       const created = await createProjectDirectoryOnDisk(root, requestedPath);
       await refreshChangedProjectPaths([created]);
-      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Created ${path.relative(root, created)}.` }) });
+      commit(Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Created ${path.relative(root, created)}.` }) }));
       schedulePersistence();
       return created;
     },
@@ -1832,7 +1830,7 @@ function instantiateVellumApplication(
         }
         if (watchedBufferIds.has(original.id) && options.watchFiles !== false) attachWatcher(original.id, futurePath);
       }
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({
           ...state.project,
@@ -1849,7 +1847,7 @@ function instantiateVellumApplication(
           status: 'success',
           message: `Moved ${path.relative(root, source)} to ${path.relative(root, destination)}${changes.length === 0 ? '.' : ` and updated ${String(changes.length)} link${changes.length === 1 ? '' : 's'}.`}`
         })
-      });
+      }));
       await refreshChangedProjectPaths([source, destination]);
       schedulePersistence();
     },
@@ -1858,7 +1856,7 @@ function instantiateVellumApplication(
       if (root === undefined) throw new Error('Open a project before duplicating a project entry.');
       const duplicated = await duplicateProjectPathOnDisk(root, sourcePath, destinationPath);
       await refreshChangedProjectPaths([duplicated]);
-      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Duplicated ${path.relative(root, duplicated)}.` }) });
+      commit(Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Duplicated ${path.relative(root, duplicated)}.` }) }));
     },
     async trashProjectEntry(requestedPath) {
       const root = state.project.rootDirectory;
@@ -1871,7 +1869,7 @@ function instantiateVellumApplication(
       await trashProjectPath(root, target);
       for (const buffer of affected) closeBuffer(buffer.id);
       await refreshChangedProjectPaths([target]);
-      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Moved ${path.relative(root, target)} to trash.` }) });
+      commit(Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Moved ${path.relative(root, target)} to trash.` }) }));
       schedulePersistence();
     },
     async copyProjectPath(requestedPath, relative) {
@@ -1880,7 +1878,7 @@ function instantiateVellumApplication(
       const target = resolveProjectPath(root, requestedPath);
       const value = relative ? path.relative(root, target) : target;
       await copyTextToClipboard(value);
-      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Copied ${value}.` }) });
+      commit(Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Copied ${value}.` }) }));
     },
     async importProjectAsset(sourcePath, assetDirectory = 'assets') {
       const root = state.project.rootDirectory;
@@ -1891,10 +1889,10 @@ function instantiateVellumApplication(
       const reference = markdownAssetReference(buffer.path, imported.path);
       insertTextAtSelection(buffer.id, reference);
       await refreshChangedProjectPaths([imported.path]);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         notice: Object.freeze({ status: 'success', message: `Imported ${path.relative(root, imported.path)}.` })
-      });
+      }));
       return imported.path;
     },
     async importClipboardAsset(assetDirectory = 'assets') {
@@ -1905,10 +1903,10 @@ function instantiateVellumApplication(
       const imported = await importClipboardImage(root, assetDirectory);
       insertTextAtSelection(buffer.id, markdownAssetReference(buffer.path, imported.path));
       await refreshChangedProjectPaths([imported.path]);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         notice: Object.freeze({ status: 'success', message: `Imported ${path.relative(root, imported.path)} from the clipboard.` })
-      });
+      }));
       return imported.path;
     },
     async refreshUnusedAssets() {
@@ -1921,7 +1919,7 @@ function instantiateVellumApplication(
           source: textDocumentText(buffer.editor.document)
         }))
       ));
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         navigator: Object.freeze({ ...state.navigator, mode: 'diagnostics', visible: true }),
         project: Object.freeze({ ...state.project, unusedAssets }),
@@ -1929,18 +1927,20 @@ function instantiateVellumApplication(
           status: unusedAssets.length === 0 ? 'success' : 'warning',
           message: unusedAssets.length === 0 ? 'No unused image assets found.' : `${String(unusedAssets.length)} unused image asset${unusedAssets.length === 1 ? '' : 's'} found.`
         })
-      });
+      }));
       return unusedAssets;
     },
-    async refreshProjectEntry(requestedPath) {
+    async refreshProjectEntry(requestedPath, signal) {
+      signal?.throwIfAborted();
       const root = state.project.rootDirectory;
       if (root === undefined) throw new Error('Open a project before refreshing its files.');
       const target = requestedPath === root ? root : resolveProjectPath(root, requestedPath);
       const node = state.project.fileTree.nodes[target];
       const directory = node?.kind === 'file' ? node.parentId ?? root : target;
       if (state.project.fileTree.nodes[directory]?.kind !== 'directory') throw new Error(`The selected project directory is unavailable: ${directory}`);
-      await Promise.all([api.loadFileTreeDirectory(directory), startProjectIndexRefresh()]);
-      state = Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Refreshed ${path.relative(root, directory) || path.basename(root)}.` }) });
+      await Promise.all([api.loadFileTreeDirectory(directory, signal), startProjectIndexRefresh()]);
+      signal?.throwIfAborted();
+      commit(Object.freeze({ ...state, notice: Object.freeze({ status: 'success', message: `Refreshed ${path.relative(root, directory) || path.basename(root)}.` }) }));
     },
     async revealProjectEntry(requestedPath) {
       const root = state.project.rootDirectory;
@@ -1948,19 +1948,19 @@ function instantiateVellumApplication(
       await revealProjectPath(root, requestedPath);
     },
     setProjectTreeFilter(filter) {
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, fileTree: setFileTreeFilter(state.project.fileTree, filter) })
-      });
+      }));
       schedulePersistence();
     },
     cycleProjectTreeSort() {
       const fileTree = cycleFileTreeSort(state.project.fileTree);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, fileTree }),
         notice: Object.freeze({ status: 'success', message: `Project files sorted by ${fileTree.sort}.` })
-      });
+      }));
       schedulePersistence();
     },
     toggleProjectPin() {
@@ -1970,55 +1970,40 @@ function instantiateVellumApplication(
       const pinnedProjects = pinned
         ? state.project.pinnedProjects.filter((candidate) => candidate !== root)
         : [root, ...state.project.pinnedProjects];
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, pinnedProjects: Object.freeze(pinnedProjects) }),
         notice: Object.freeze({ status: 'success', message: `${pinned ? 'Unpinned' : 'Pinned'} ${path.basename(root)}.` })
-      });
+      }));
       schedulePersistence();
     },
     dispatchCommand(commandId) {
       assertActive();
       const update = reduceCommand(state, commandId);
-      state = update.state;
+      commit(update.state);
+      const operations: VellumOperation[] = [];
+      let quit = false;
       for (const effect of update.effects) {
-        if (effect.kind === 'newFile') api.newBuffer();
-        else if (effect.kind === 'reopenClosed') api.reopenRecentlyClosed();
-        else if (effect.kind === 'closeBuffer' && state.project.activeBufferId !== undefined) {
-          api.requestCloseBuffer(state.project.activeBufferId);
-        } else if (effect.kind === 'textEdit' && state.project.activeBufferId !== undefined) {
-          api.executeMarkdownCommand(state.project.activeBufferId, effect.commandId);
-        } else if (effect.kind === 'navigate') {
-          executeNavigationEffect(api, effect.commandId);
-        } else if (effect.kind === 'cancelExport') {
-          api.cancelExport();
-        } else if (effect.kind === 'cycleFileTreeSort') {
-          api.cycleProjectTreeSort();
-        } else if (effect.kind === 'pinProject') {
-          api.toggleProjectPin();
-        } else if (effect.kind === 'diagnosticAction') {
-          if (effect.action === 'applyFix') api.applyCurrentDiagnosticFix();
-          else if (effect.action === 'ignoreRule') api.ignoreCurrentDiagnosticRule();
-          else if (effect.action === 'cycleSeverity') api.cycleDiagnosticSeverity();
-          else api.cycleDiagnosticSource();
-        }
+        const operation = executeCommandEffect(effect);
+        if (operation === 'quit') quit = api.requestCloseApplication();
+        else if (operation !== undefined) operations.push(operation);
       }
       refreshSelectionDialog();
       refreshOutline();
       refreshExportDialog();
       schedulePersistence();
-      return Object.freeze({ state, effects: update.effects });
+      return Object.freeze({ state, operations: Object.freeze(operations), quit });
     },
     updateFilePathDialog(transition) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'filePath') return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         dialogState: Object.freeze({
           ...dialog,
           command: commandInputReducer(dialog.command, transition)
         })
-      });
+      }));
     },
     async submitFilePathDialog(value, signal) {
       const dialog = state.dialogState;
@@ -2026,10 +2011,10 @@ function instantiateVellumApplication(
       signal?.throwIfAborted();
       const entered = value ?? dialog.command.editor.input.text;
       if (entered.trim().length === 0 && dialog.operation !== 'filterProjectTree') {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           dialogState: Object.freeze({ ...dialog, error: 'Enter a path.' })
-        });
+        }));
         return false;
       }
       try {
@@ -2054,7 +2039,7 @@ function instantiateVellumApplication(
             ? dialog.afterSave.bufferId
             : dialog.afterSave?.kind === 'closeApplication' || dialog.afterSave?.kind === 'saveAll'
               ? dialog.afterSave.bufferIds.find((bufferId) => state.project.buffers[bufferId]?.path === undefined)
-              : state.project.activeBufferId;
+              : dialog.saveBufferId;
           if (id !== undefined && !await api.saveBuffer(id, entered, false, signal)) return false;
         }
         signal?.throwIfAborted();
@@ -2069,14 +2054,14 @@ function instantiateVellumApplication(
           });
           const nextUnsaved = remaining.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
           if (nextUnsaved !== undefined) {
-            state = Object.freeze({
+            commit(Object.freeze({
               ...state,
               project: Object.freeze({ ...state.project, activeBufferId: nextUnsaved }),
               dialogState: saveAsDialog(Object.freeze({ kind: 'closeApplication', bufferIds: Object.freeze(remaining) }))
-            });
+            }));
             return false;
           }
-          state = clearDialog(state);
+          commit(clearDialog(state));
           if (!await api.saveAll(signal)) return false;
           for (const bufferId of [...state.project.bufferOrder]) closeBuffer(bufferId);
           await api.persistState();
@@ -2088,28 +2073,28 @@ function instantiateVellumApplication(
           });
           const nextUnsaved = remaining.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
           if (nextUnsaved !== undefined) {
-            state = Object.freeze({
+            commit(Object.freeze({
               ...state,
               project: Object.freeze({ ...state.project, activeBufferId: nextUnsaved }),
               dialogState: saveAsDialog(Object.freeze({ kind: 'saveAll', bufferIds: Object.freeze(remaining) }))
-            });
+            }));
             return false;
           }
-          state = clearDialog(state);
+          commit(clearDialog(state));
           await api.saveAll(signal);
         } else {
-          state = clearDialog(state);
+          commit(clearDialog(state));
         }
       } catch (error) {
         if (signal?.aborted === true) throw error;
         if (state.dialogState === dialog) {
-          state = Object.freeze({
+          commit(Object.freeze({
             ...state,
             dialogState: Object.freeze({
               ...dialog,
               error: error instanceof Error ? error.message : String(error)
             })
-          });
+          }));
         }
       }
       return false;
@@ -2121,11 +2106,11 @@ function instantiateVellumApplication(
       const withoutError = { ...dialog, command: nextCommand };
       delete withoutError.error;
       const nextDialog = Object.freeze(withoutError);
-      state = Object.freeze({ ...state, dialogState: nextDialog });
-      state = Object.freeze({
+      commit(Object.freeze({ ...state, dialogState: nextDialog }));
+      commit(Object.freeze({
         ...state,
         dialogState: Object.freeze({ ...nextDialog, command: selectionSuggestions(nextDialog) })
-      });
+      }));
     },
     async submitSelectionDialog(value, signal) {
       const dialog = state.dialogState;
@@ -2136,7 +2121,7 @@ function instantiateVellumApplication(
         const entry = dialog.entries.find((candidate) => candidate.id === value)
           ?? dialog.entries.find((candidate) => candidate.label.toLocaleLowerCase().includes(query));
         if (entry === undefined) {
-          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'Select a recovery generation.' }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'Select a recovery generation.' }) }));
           return;
         }
         await api.restoreRecoveryGeneration(entry.generation, signal);
@@ -2147,16 +2132,16 @@ function instantiateVellumApplication(
         const entry = dialog.entries.find((candidate) => candidate.id === value)
           ?? dialog.entries.find((candidate) => candidate.label.toLocaleLowerCase().includes(query));
         if (entry === undefined) {
-          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No recent project matches the query.' }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No recent project matches the query.' }) }));
           return;
         }
         try {
           await api.openProjectDirectory(entry.id, signal);
-          if (state.dialogState === dialog) state = clearDialog(state);
+          if (state.dialogState === dialog) commit(clearDialog(state));
         } catch (error) {
           if (signal?.aborted === true) throw error;
           if (state.dialogState === dialog) {
-            state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) }) });
+            commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) }) }));
           }
         }
         return;
@@ -2166,11 +2151,11 @@ function instantiateVellumApplication(
         const entry = dialog.entries.find((candidate) => candidate.id === value)
           ?? dialog.entries.find((candidate) => candidate.label.toLowerCase().includes(query));
         if (entry === undefined) {
-          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No completion matches the query.' }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No completion matches the query.' }) }));
           return;
         }
         if (state.project.buffers[dialog.bufferId] === undefined) {
-          state = clearDialog(state);
+          commit(clearDialog(state));
           return;
         }
         applyTransition(dialog.bufferId, {
@@ -2181,27 +2166,29 @@ function instantiateVellumApplication(
             insertedText: entry.replacement
           }])
         });
-        state = clearDialog(state);
+        commit(clearDialog(state));
         return;
       }
       if (dialog.kind === 'commandPalette') {
         const candidate = value === undefined ? undefined : commandById(value);
         if (candidate !== undefined && !candidate.enabled(state)) {
-          state = Object.freeze({
+          commit(Object.freeze({
             ...state,
             dialogState: Object.freeze({ ...dialog, error: 'The selected command is not available in the current context.' })
-          });
+          }));
           return;
         }
         const entry = candidate ?? commandPaletteEntries(state, dialog.command.editor.input.text).find((item) => item.enabled);
         if (entry === undefined) {
-          state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No enabled command matches the query.' }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No enabled command matches the query.' }) }));
           return;
         }
         const commandId = 'commandId' in entry ? entry.commandId : entry.id;
-        state = clearDialog(state);
-        api.dispatchCommand(commandId);
-        return;
+        commit(clearDialog(state));
+        const update = api.dispatchCommand(commandId);
+        const operationSignal = signal ?? new AbortController().signal;
+        for (const operation of update.operations) await operation.run(operationSignal);
+        return update;
       }
       await projectIndexTask;
       signal?.throwIfAborted();
@@ -2211,21 +2198,22 @@ function instantiateVellumApplication(
         ? value
         : quickOpenEntries(state.project.index, dialog.command.editor.input.text, state.project.recentlyOpenedPaths)[0]?.path;
       if (candidate === undefined) {
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No file matches the query.' }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'No file matches the query.' }) }));
         return;
       }
       try {
         await api.openFile(candidate, signal);
-        if (state.dialogState === dialog) state = clearDialog(state);
+        if (state.dialogState === dialog) commit(clearDialog(state));
       } catch (error) {
         if (signal?.aborted === true) throw error;
         if (state.dialogState === dialog) {
-          state = Object.freeze({
+          commit(Object.freeze({
             ...state,
             dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) })
-          });
+          }));
         }
       }
+      return undefined;
     },
     async restoreRecoveryGeneration(generation, signal) {
       signal?.throwIfAborted();
@@ -2236,7 +2224,8 @@ function instantiateVellumApplication(
         snapshots: Object.freeze([snapshot])
       }));
       signal?.throwIfAborted();
-      for (const controller of directoryReads.values()) controller.abort();
+      directoryReadScope.abort();
+      directoryReadScope = new AbortController();
       directoryReads.clear();
       projectIndexRead?.abort();
       projectIndexRead = undefined;
@@ -2250,14 +2239,14 @@ function instantiateVellumApplication(
       exportController?.abort(new DOMException('Workspace recovery restored.', 'AbortError'));
       for (const id of [...runtimes.keys()]) releaseBuffer(id);
       const configurationDiagnostics = state.configurationDiagnostics;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...restored.state,
         configurationDiagnostics,
         notice: Object.freeze({
           status: 'warning',
           message: `Restored recovery generation ${String(generation)} from ${snapshot.timestamp}.`
         })
-      });
+      }));
       for (const buffer of Object.values(state.project.buffers)) {
         const parser = restored.parsers.get(buffer.id)
           ?? createBufferParser(textDocumentText(buffer.editor.document), buffer.sourceRevision, options.parseOptions);
@@ -2274,10 +2263,10 @@ function instantiateVellumApplication(
       if (dialog?.kind !== 'documentSearch') return;
       if (field === 'replacement' && dialog.replacement === undefined) return;
       const command = commandInputReducer(field === 'query' ? dialog.query : dialog.replacement as NonNullable<typeof dialog.replacement>, transition);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         dialogState: Object.freeze({ ...dialog, [field]: command })
-      });
+      }));
       refreshDocumentSearch();
     },
     configureDocumentSearch(option) {
@@ -2287,26 +2276,26 @@ function instantiateVellumApplication(
         if (dialog.selectionOnly) {
           const next = { ...dialog, selectionOnly: false };
           delete next.selectionSpan;
-          state = Object.freeze({ ...state, dialogState: Object.freeze(next) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze(next) }));
         } else {
           const buffer = activeBuffer(state);
           const selection = buffer?.editor.selection;
           const start = selection === undefined ? 0 : Math.min(selection.anchor.offset, selection.focus.offset);
           const end = selection === undefined ? 0 : Math.max(selection.anchor.offset, selection.focus.offset);
           if (selection === undefined || start === end) {
-            state = Object.freeze({
+            commit(Object.freeze({
               ...state,
               dialogState: Object.freeze({ ...dialog, error: 'Select a nonempty source range before enabling selection-only search.' })
-            });
+            }));
             return;
           }
-          state = Object.freeze({
+          commit(Object.freeze({
             ...state,
             dialogState: Object.freeze({ ...dialog, selectionOnly: true, selectionSpan: Object.freeze({ start, end }) })
-          });
+          }));
         }
       } else {
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, [option]: !dialog[option] }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, [option]: !dialog[option] }) }));
       }
       refreshDocumentSearch();
     },
@@ -2326,7 +2315,7 @@ function instantiateVellumApplication(
         kind: 'pointer', transition: { kind: 'endSelection', anchor: match.start, offset: match.end }
       });
       const current = state.dialogState;
-      if (current?.kind === 'documentSearch') state = Object.freeze({ ...state, dialogState: Object.freeze({ ...current, selectedIndex }) });
+      if (current?.kind === 'documentSearch') commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...current, selectedIndex }) }));
     },
     replaceDocumentSearch(scope) {
       const dialog = state.dialogState;
@@ -2341,7 +2330,7 @@ function instantiateVellumApplication(
         ...(selection === undefined ? {} : { selection })
       }, dialog.replacement.editor.input.text);
       if (found.error !== undefined) {
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: found.error }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: found.error }) }));
         return;
       }
       const changes = replacementChangeSet(found, scope === 'all' ? undefined : dialog.selectedIndex ?? 0);
@@ -2352,14 +2341,14 @@ function instantiateVellumApplication(
       const dialog = state.dialogState;
       if (dialog?.kind !== 'projectDirectorySearch') return;
       const query = commandInputReducer(dialog.query, transition);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         projectSearch: Object.freeze({
           ...state.projectSearch,
           query: query.editor.input.text
         }),
         dialogState: Object.freeze({ ...dialog, query })
-      });
+      }));
       invalidateProjectSearchResults();
       schedulePersistence();
     },
@@ -2382,11 +2371,11 @@ function instantiateVellumApplication(
           ...(buffer.path === undefined ? {} : { path: buffer.path }),
           source: textDocumentText(buffer.editor.document)
         })));
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           projectSearch: Object.freeze({ ...state.projectSearch, query, searching: true, results: Object.freeze([]) }),
           dialogState: Object.freeze({ ...activeDialog, searching: true, results: Object.freeze([]) })
-        });
+        }));
         const results = await searchProjectDirectory(searchIndex, query, {
           ...searchOptions,
           onBatch: (batch) => {
@@ -2395,7 +2384,7 @@ function instantiateVellumApplication(
               || active.query.editor.input.text !== query
               || state.project.index.revision !== indexedRevision
               || projectSearchSourceIdentity() !== sourceIdentity) return;
-            state = Object.freeze({
+            commit(Object.freeze({
               ...state,
               projectSearch: Object.freeze({
                 ...state.projectSearch,
@@ -2404,7 +2393,7 @@ function instantiateVellumApplication(
                 results: Object.freeze([...state.projectSearch.results, ...batch])
               }),
               dialogState: Object.freeze({ ...active, results: Object.freeze([...active.results, ...batch]) })
-            });
+            }));
             publishApplicationUpdate('projectIndex');
           }
         }, searchSignal);
@@ -2422,7 +2411,7 @@ function instantiateVellumApplication(
           description: result.context,
           completion: { range: { startOffset: 0, endOffsetExclusive: queryText.length }, text: String(index) }
         })));
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           projectSearch: Object.freeze({
             ...state.projectSearch,
@@ -2437,7 +2426,7 @@ function instantiateVellumApplication(
             ...state.dialogState, searching: false, results,
             query: commandInputReducer(state.dialogState.query, { kind: 'setSuggestions', suggestions })
           })
-        });
+        }));
       } catch (error) {
         if (controller.signal.aborted) return;
         if (signal.aborted) {
@@ -2445,7 +2434,7 @@ function instantiateVellumApplication(
           throw error;
         }
         if (state.dialogState?.kind !== 'projectDirectorySearch') return;
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           projectSearch: Object.freeze({
             ...state.projectSearch,
@@ -2458,7 +2447,7 @@ function instantiateVellumApplication(
             ...state.dialogState, searching: false,
             error: error instanceof Error ? error.message : String(error)
           })
-        });
+        }));
       } finally {
         if (projectSearchRead === controller) projectSearchRead = undefined;
       }
@@ -2479,7 +2468,7 @@ function instantiateVellumApplication(
       const result = dialog?.kind === 'projectDirectorySearch' ? dialog.results[index] : undefined;
       if (result === undefined) return;
       const id = await api.openFile(result.path);
-      state = clearDialog(state);
+      commit(clearDialog(state));
       api.navigateTo(id, result.span.start);
       applyTransition(id, {
         kind: 'pointer', transition: { kind: 'endSelection', anchor: result.span.start, offset: result.span.end }
@@ -2488,10 +2477,10 @@ function instantiateVellumApplication(
     updateOutline(transition) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'outline') return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         dialogState: Object.freeze({ ...dialog, query: commandInputReducer(dialog.query, transition) })
-      });
+      }));
       refreshOutline();
     },
     submitOutline(value) {
@@ -2501,7 +2490,7 @@ function instantiateVellumApplication(
       const entry = dialog.entries.find((candidate) => candidate.nodeId === nodeId);
       const buffer = activeBuffer(state);
       if (entry === undefined || buffer === undefined) return;
-      state = clearDialog(state);
+      commit(clearDialog(state));
       api.navigateTo(buffer.id, entry.sourceOffset);
     },
     updateGoToLine(transition) {
@@ -2509,7 +2498,7 @@ function instantiateVellumApplication(
       if (dialog?.kind !== 'goToLine') return;
       const next = { ...dialog, command: commandInputReducer(dialog.command, transition) };
       delete next.error;
-      state = Object.freeze({ ...state, dialogState: Object.freeze(next) });
+      commit(Object.freeze({ ...state, dialogState: Object.freeze(next) }));
     },
     submitGoToLine(value) {
       const dialog = state.dialogState;
@@ -2518,14 +2507,14 @@ function instantiateVellumApplication(
       const raw = (value ?? dialog.command.editor.input.text).trim();
       const line = Number(raw);
       if (!Number.isSafeInteger(line) || line < 1 || line > buffer.preview.snapshot.document.sourceIndex.lineCount) {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           dialogState: Object.freeze({ ...dialog, error: `Enter a line from 1 to ${String(buffer.preview.snapshot.document.sourceIndex.lineCount)}.` })
-        });
+        }));
         return;
       }
       const sourceOffset = buffer.preview.snapshot.document.sourceIndex.lineSpan(line - 1).start;
-      state = clearDialog(state);
+      commit(clearDialog(state));
       api.navigateTo(buffer.id, sourceOffset);
     },
     async activatePreview(bufferId, target, signal) {
@@ -2561,7 +2550,7 @@ function instantiateVellumApplication(
       if (dialog?.kind !== 'exportProfile') return;
       const next = { ...dialog, command: commandInputReducer(dialog.command, transition) };
       delete next.error;
-      state = Object.freeze({ ...state, dialogState: Object.freeze(next) });
+      commit(Object.freeze({ ...state, dialogState: Object.freeze(next) }));
       refreshExportDialog();
     },
     async submitExportProfile(value, signal) {
@@ -2572,19 +2561,19 @@ function instantiateVellumApplication(
       const profile = exportProfiles.find((candidate) => candidate.id === entered)
         ?? exportProfiles.find((candidate) => candidate.id.includes(normalized) || candidate.label.toLowerCase().includes(normalized));
       if (profile === undefined) {
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'Select an export profile.' }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, error: 'Select an export profile.' }) }));
         return;
       }
       try {
         await executeExportRequest(dialog.scope, profile, signal);
         const notice = state.notice;
-        state = Object.freeze({ ...clearDialog(state), ...(notice === undefined ? {} : { notice }) });
+        commit(Object.freeze({ ...clearDialog(state), ...(notice === undefined ? {} : { notice }) }));
       } catch (error) {
         if (signal?.aborted === true) throw error;
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           dialogState: Object.freeze({ ...dialog, error: error instanceof Error ? error.message : String(error) })
-        });
+        }));
       }
     },
     async runProjectManifestExport(signal) {
@@ -2609,124 +2598,65 @@ function instantiateVellumApplication(
         cancelProjectSearchRead();
         stopProjectSearch();
       }
-      state = clearDialog(state);
+      commit(clearDialog(state));
     },
     resizeSplitPane(transition) {
       const splitPane = splitPaneReducer(state.splitPane, transition, {
         constraints: Object.freeze([{ minShare: 0.2, maxShare: 0.8 }, { minShare: 0.2, maxShare: 0.8 }])
       });
       if (splitPane !== state.splitPane) {
-        state = Object.freeze({ ...state, splitPane });
+        commit(Object.freeze({ ...state, splitPane }));
         schedulePersistence();
       }
     },
-    resizeTerminal(previous, next, widthProfile) {
-      currentTerminalSize = next;
+    updateTextWidthProfile(widthProfile) {
       currentWidthProfile = widthProfile;
-      const previousBody = vellumBodyGeometry(state, previous);
-      const nextBody = vellumBodyGeometry(state, next);
-      const previousPanes = vellumPaneGeometry(state, previousBody.bodyWidth, previousBody.contentRows);
-      const nextPanes = vellumPaneGeometry(state, nextBody.bodyWidth, nextBody.contentRows);
-      for (const bufferId of state.project.bufferOrder) {
-        const buffer = state.project.buffers[bufferId];
-        if (buffer === undefined) continue;
-        let editor = buffer.editor;
-        let previewScroll = buffer.previewScroll;
-        if (previousPanes.editor !== undefined && nextPanes.editor !== undefined) {
-          const decorations = state.editorMode === 'hybrid' ? api.hybridDecorations(bufferId) : undefined;
-          const previousMap = createTextAreaRowOffsetMap({
-            document: buffer.editor.document,
-            terminalWidth: previousPanes.editor.width,
-            terminalRows: previousPanes.editor.rows,
-            widthProfile,
-            ...(decorations === undefined ? {} : { decorations }),
-            lineNumbers: { minWidth: 3 },
-            wrap: { mode: 'soft' },
-            scrollbar: { visible: 'auto' }
-          });
-          const nextMap = createTextAreaRowOffsetMap({
-            document: buffer.editor.document,
-            terminalWidth: nextPanes.editor.width,
-            terminalRows: nextPanes.editor.rows,
-            widthProfile,
-            ...(decorations === undefined ? {} : { decorations }),
-            lineNumbers: { minWidth: 3 },
-            wrap: { mode: 'soft' },
-            scrollbar: { visible: 'auto' }
-          });
-          editor = Object.freeze({
-            ...buffer.editor,
-            scroll: synchronizePaneScroll(
-              buffer.editor.scroll,
-              { map: previousMap, viewportRows: previousPanes.editor.rows },
-              buffer.editor.scroll,
-              { map: nextMap, viewportRows: nextPanes.editor.rows },
-            )
-          });
-        }
-        if (previousPanes.preview !== undefined && nextPanes.preview !== undefined) {
-          const previousMap = api.previewViewportLayout(
-            bufferId,
-            previousPanes.preview.width,
-            previousPanes.preview.rows,
-            markdownTheme,
-            widthProfile
-          )?.rowOffsetMap;
-          const nextMap = api.previewViewportLayout(
-            bufferId,
-            nextPanes.preview.width,
-            nextPanes.preview.rows,
-            markdownTheme,
-            widthProfile
-          )?.rowOffsetMap;
-          if (previousMap !== undefined && nextMap !== undefined) {
-            previewScroll = synchronizePaneScroll(
-              buffer.previewScroll,
-              { map: previousMap, viewportRows: previousPanes.preview.rows },
-              buffer.previewScroll,
-              { map: nextMap, viewportRows: nextPanes.preview.rows },
-            );
-          }
-        }
-        replaceBuffer(Object.freeze({ ...buffer, editor, previewScroll }));
-      }
-      schedulePersistence();
+      // Accepted component layouts preserve source anchors after real allocation.
     },
-    updatePreviewScroll(bufferId, request, synchronization) {
+    commitEditorLayout(bufferId, snapshot) {
+      const buffer = state.project.buffers[bufferId];
+      if (buffer === undefined || snapshot.document !== buffer.editor.document) return;
+      const panes = paneLayouts.get(bufferId) ?? { origin: 'editor' as const };
+      const previous = panes.editor;
+      panes.editor = snapshot;
+      paneLayouts.set(bufferId, panes);
+      const resized = previous?.document === snapshot.document && (
+        previous.contentBounds.width !== snapshot.contentBounds.width || previous.contentBounds.height !== snapshot.contentBounds.height
+      );
+      const scroll = resized
+        ? synchronizePaneScroll(buffer.editor.scroll,
+            { map: previous.rowOffsetMap, viewportRows: previous.contentBounds.height },
+            buffer.editor.scroll, { map: snapshot.rowOffsetMap, viewportRows: snapshot.contentBounds.height })
+        : snapshot.scroll;
+      if (!sameScroll(scroll, buffer.editor.scroll) || buffer.editor.revealCaret) replaceBuffer({ ...buffer, editor: { ...buffer.editor, scroll, revealCaret: false } });
+      anchorTypewriterViewport(bufferId);
+      synchronizeCommittedPanes(bufferId);
+    },
+    commitPreviewLayout(bufferId, document, resourceRevision, snapshot) {
+      const buffer = state.project.buffers[bufferId];
+      if (buffer === undefined || document !== buffer.editor.document || resourceRevision !== buffer.previewResourceRevision) return;
+      const panes = paneLayouts.get(bufferId) ?? { origin: 'editor' as const };
+      const previous = panes.preview;
+      panes.preview = { ...snapshot, document };
+      paneLayouts.set(bufferId, panes);
+      if (previous?.document === document && (previous.width !== snapshot.width || previous.rows !== snapshot.rows)) {
+        const previewScroll = synchronizePaneScroll(buffer.previewScroll,
+          { map: previous.layout.rowOffsetMap, viewportRows: previous.rows },
+          buffer.previewScroll, { map: snapshot.layout.rowOffsetMap, viewportRows: snapshot.rows });
+        if (!sameScroll(previewScroll, buffer.previewScroll)) replaceBuffer({ ...buffer, previewScroll });
+      }
+      synchronizeCommittedPanes(bufferId);
+    },
+    updatePreviewScroll(bufferId, request) {
       const buffer = state.project.buffers[bufferId];
       if (buffer === undefined) return;
-      if (synchronization === undefined) {
-        replaceBuffer({ ...buffer, previewScroll: request.nextState });
-        schedulePersistence();
-        return;
-      }
-      const editorMap = synchronizedEditorMap(bufferId, synchronization);
-      const previewMap = api.previewViewportLayout(
-        bufferId,
-        synchronization.preview.width,
-        synchronization.preview.rows,
-        markdownTheme,
-        synchronization.widthProfile,
-      )?.rowOffsetMap;
-      if (editorMap === undefined || previewMap === undefined) return;
-      const previewScroll = normalizeScrollState(
-        request.nextState,
-        rowMapScrollGeometry(previewMap, synchronization.preview.rows),
-      );
-      const nextState = synchronizePaneScroll(
-        previewScroll,
-        { map: previewMap, viewportRows: synchronization.preview.rows },
-        buffer.editor.scroll,
-        { map: editorMap, viewportRows: synchronization.editor.rows },
-      );
-      const editor = textAreaReducer(buffer.editor, {
-        kind: 'scroll',
-        request: { nextState, source: request.source, target: 'content' },
-      }).state;
-      replaceBuffer({ ...buffer, editor, previewScroll });
+      const panes = paneLayouts.get(bufferId);
+      if (panes !== undefined) panes.origin = 'preview';
+      replaceBuffer({ ...buffer, previewScroll: request.nextState });
+      synchronizeCommittedPanes(bufferId);
       schedulePersistence();
     },
-    applyTextAreaTransition(bufferId, transition, synchronization) {
+    applyTextAreaTransition(bufferId, transition) {
       assertActive();
       const buffer = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
@@ -2741,7 +2671,7 @@ function instantiateVellumApplication(
       } else {
         applyTransition(bufferId, automatic?.action ?? transition, automatic?.caretOffset);
       }
-      if (synchronization !== undefined) synchronizeEditorViewport(bufferId, synchronization);
+      synchronizeCommittedPanes(bufferId);
       anchorTypewriterViewport(bufferId);
     },
     executeMarkdownCommand(bufferId, commandId, commandOptions) {
@@ -2780,7 +2710,7 @@ function instantiateVellumApplication(
         if (target === undefined) throw new Error('A destination path is required for an unsaved buffer.');
         const savingSamePath = destination === undefined || path.resolve(target) === snapshot.path;
         if (savingSamePath && snapshot.externalFileState.kind === 'conflict' && !overwriteConflict) {
-          state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
           return false;
         }
         const expected = savingSamePath && snapshot.externalFileState.kind === 'current'
@@ -2821,11 +2751,11 @@ function instantiateVellumApplication(
       });
       const unsaved = dirty.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
       if (unsaved !== undefined) {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           project: Object.freeze({ ...state.project, activeBufferId: unsaved }),
           dialogState: saveAsDialog(Object.freeze({ kind: 'saveAll', bufferIds: Object.freeze(dirty) }))
-        });
+        }));
         return false;
       }
       for (const bufferId of dirty) {
@@ -2838,10 +2768,10 @@ function instantiateVellumApplication(
       const buffer = state.project.buffers[bufferId];
       if (buffer === undefined) return true;
       if (bufferIsDirty(buffer)) {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           dialogState: Object.freeze({ kind: 'dirtyBuffer', bufferIds: Object.freeze([bufferId]), closeApplication: false })
-        });
+        }));
         return false;
       }
       closeBuffer(bufferId);
@@ -2852,11 +2782,11 @@ function instantiateVellumApplication(
       if (dialog?.kind !== 'dirtyBuffer' || dialog.closeApplication) return false;
       const bufferId = dialog.bufferIds[0];
       if (bufferId === undefined || action === 'cancel') {
-        state = clearDialog(state);
+        commit(clearDialog(state));
         return false;
       }
       if (action === 'save' && destination === undefined && state.project.buffers[bufferId]?.path === undefined) {
-        state = Object.freeze({ ...state, dialogState: saveAsDialog(Object.freeze({ kind: 'closeBuffer', bufferId })) });
+        commit(Object.freeze({ ...state, dialogState: saveAsDialog(Object.freeze({ kind: 'closeBuffer', bufferId })) }));
         return false;
       }
       if (action === 'save' && !await api.saveBuffer(bufferId, destination)) return false;
@@ -2867,10 +2797,10 @@ function instantiateVellumApplication(
     reopenRecentlyClosed() {
       const record = state.project.recentlyClosed[0];
       if (record === undefined) return undefined;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         project: Object.freeze({ ...state.project, recentlyClosed: Object.freeze(state.project.recentlyClosed.slice(1)) })
-      });
+      }));
       const source = textDocumentText(record.editor.document);
       const id = addBuffer({
         source,
@@ -2891,26 +2821,26 @@ function instantiateVellumApplication(
         return buffer !== undefined && bufferIsDirty(buffer);
       });
       if (dirty.length === 0) return true;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         dialogState: Object.freeze({ kind: 'dirtyBuffer', bufferIds: Object.freeze(dirty), closeApplication: true })
-      });
+      }));
       return false;
     },
     async resolveCloseApplication(action) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'dirtyBuffer' || !dialog.closeApplication || action === 'cancel') {
-        state = clearDialog(state);
+        commit(clearDialog(state));
         return false;
       }
       if (action === 'saveAll') {
         const unsaved = dialog.bufferIds.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
         if (unsaved !== undefined) {
-          state = Object.freeze({
+          commit(Object.freeze({
             ...state,
             project: Object.freeze({ ...state.project, activeBufferId: unsaved }),
             dialogState: saveAsDialog(Object.freeze({ kind: 'closeApplication', bufferIds: dialog.bufferIds }))
-          });
+          }));
           return false;
         }
         if (!await api.saveAll()) return false;
@@ -2943,7 +2873,7 @@ function instantiateVellumApplication(
               label: path.basename(renamed),
               externalFileState: Object.freeze({ kind: 'current', fingerprint: renamedFingerprint })
             });
-            state = Object.freeze({
+            commit(Object.freeze({
               ...state,
               project: Object.freeze({
                 ...state.project,
@@ -2951,7 +2881,7 @@ function instantiateVellumApplication(
                   candidate === observedPath ? renamed : candidate
                 )))
               })
-            });
+            }));
             attachWatcher(bufferId, renamed);
             return true;
           }
@@ -2962,20 +2892,20 @@ function instantiateVellumApplication(
           ...buffer,
           externalFileState: Object.freeze({ kind: 'deleted', previous: externalFileStateFingerprint(buffer.externalFileState) })
         });
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
         return true;
       }
       if (sameExternalFileRevision(currentFingerprint, previous)) {
         if (buffer.externalFileState.kind !== 'deleted') return false;
         replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'current', fingerprint: currentFingerprint }) });
         if (state.dialogState?.kind === 'externalConflict' && state.dialogState.bufferId === bufferId) {
-          state = clearDialog(state);
+          commit(clearDialog(state));
         }
         return true;
       }
       if (bufferIsDirty(buffer)) {
         replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: currentFingerprint }) });
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
         return true;
       }
       return api.reloadExternalFile(bufferId);
@@ -2994,7 +2924,7 @@ function instantiateVellumApplication(
           return false;
         }
         replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: file.fingerprint }) });
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
         return true;
       }
       const revision = snapshot.sourceRevision + 1;
@@ -3032,7 +2962,7 @@ function instantiateVellumApplication(
         };
         delete nextDialog.selectionSpan;
         delete nextDialog.selectedIndex;
-        state = Object.freeze({ ...state, dialogState: Object.freeze(nextDialog) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze(nextDialog) }));
       }
       schedulePreviewResources(bufferId);
       schedulePersistence();
@@ -3041,7 +2971,7 @@ function instantiateVellumApplication(
     keepBuffer(bufferId) {
       const buffer = state.project.buffers[bufferId];
       if (buffer?.externalFileState.kind !== 'conflict') return;
-      state = clearDialog(state);
+      commit(clearDialog(state));
     },
     async compareExternalFile(bufferId, signal) {
       const buffer = state.project.buffers[bufferId];
@@ -3051,38 +2981,38 @@ function instantiateVellumApplication(
     },
     async overwriteExternalFile(bufferId, signal) {
       await api.saveBuffer(bufferId, undefined, true, signal);
-      state = clearDialog(state);
+      commit(clearDialog(state));
     },
     async recreateDeletedFile(bufferId, signal) {
       const buffer = state.project.buffers[bufferId];
       if (buffer?.path === undefined || buffer.externalFileState.kind !== 'deleted') return;
       await api.saveBuffer(bufferId, buffer.path, true, signal);
-      state = clearDialog(state);
+      commit(clearDialog(state));
     },
     async resolveExternalFileAction(action, signal) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'externalConflict') return;
       const buffer = state.project.buffers[dialog.bufferId];
       if (buffer === undefined) {
-        state = clearDialog(state);
+        commit(clearDialog(state));
         return;
       }
       if (action === 'compare') {
         const comparison = await api.compareExternalFile(buffer.id, signal);
-        state = Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, comparison }) });
+        commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, comparison }) }));
       } else if (action === 'reloadDisk') {
         await api.reloadExternalFile(buffer.id);
-        state = clearDialog(state);
+        commit(clearDialog(state));
       } else if (action === 'keepBuffer') {
         api.keepBuffer(buffer.id);
       } else if (action === 'saveAs') {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...clearDialog(state),
           dialogState: Object.freeze({
-            kind: 'filePath', operation: 'saveAs',
+            kind: 'filePath', operation: 'saveAs', saveBufferId: buffer.id,
             command: createCommandInputState({ value: '', suggestions: createCommandSuggestions([]) })
           })
-        });
+        }));
       } else if (action === 'overwriteDisk') {
         await api.overwriteExternalFile(buffer.id, signal);
       } else if (action === 'recreate') {
@@ -3092,11 +3022,13 @@ function instantiateVellumApplication(
       }
     },
     navigateTo(bufferId, sourceOffset, recordHistory = true, selection) {
+      const panes = paneLayouts.get(bufferId);
+      if (panes !== undefined) panes.origin = 'editor';
       const target = state.project.buffers[bufferId];
       if (target === undefined) return;
       const current = activeBuffer(state);
       if (recordHistory && current !== undefined) {
-        state = pushNavigationLocation(state, navigationLocation(current));
+        commit(pushNavigationLocation(state, navigationLocation(current)));
       }
       const bounded = Math.max(0, Math.min(textDocumentText(target.editor.document).length, Math.floor(sourceOffset)));
       const editor = textAreaReducer(target.editor, {
@@ -3109,11 +3041,11 @@ function instantiateVellumApplication(
               offset: Math.max(0, Math.min(textDocumentText(target.editor.document).length, selection.end))
             }
       }).state;
-      const runtime = runtimes.get(bufferId);
-      const previewScroll = runtime?.lastPreviewLayout === undefined
+      const preview = paneLayouts.get(bufferId)?.preview;
+      const previewScroll = preview?.document !== target.editor.document
         ? target.previewScroll
         : scrollReducer(target.previewScroll, {
-            kind: 'setOffset', rows: runtime.lastPreviewLayout.rowOffsetMap.rowAtSourceOffset(bounded)
+            kind: 'setOffset', rows: preview.layout.rowOffsetMap.rowAtSourceOffset(bounded)
           });
       replaceBuffer({ ...target, editor, previewScroll });
       api.activateBuffer(bufferId);
@@ -3123,7 +3055,7 @@ function instantiateVellumApplication(
       if (current === undefined) return;
       const here = navigationLocation(current);
       const result = direction === 'back' ? navigateBack(state, here) : navigateForward(state, here);
-      state = result.state;
+      commit(result.state);
       if (result.destination !== undefined) {
         api.navigateTo(
           result.destination.bufferId,
@@ -3147,60 +3079,62 @@ function instantiateVellumApplication(
     markdownTheme() {
       return markdownTheme;
     },
-    hybridDecorations(bufferId) {
-      const buffer = state.project.buffers[bufferId];
+    hybridDecorations(bufferId, snapshot = state) {
+      const buffer = snapshot.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
-      if (buffer === undefined || runtime === undefined) {
+      if (buffer === undefined) {
         throw new Error(`Unknown buffer runtime: ${bufferId}`);
       }
-      if (hybridDecorationCacheMatches(runtime.hybridDecorations, buffer, state.writingMode.focus, currentWidthProfile)) {
-        return runtime.hybridDecorations.decorations;
+      const cached = runtime?.hybridDecorations;
+      if (hybridDecorationCacheMatches(cached, buffer, snapshot.writingMode.focus, currentWidthProfile)) {
+        return cached.decorations;
       }
       const decorations = createHybridTextDecorations(
         buffer,
         markdownTheme,
-        state.writingMode.focus,
+        snapshot.writingMode.focus,
         blockResources(buffer, runtime),
         currentWidthProfile
       );
-      runtime.hybridDecorations = hybridDecorationCache(buffer, decorations, state.writingMode.focus, currentWidthProfile);
+      if (runtime !== undefined) runtime.hybridDecorations = hybridDecorationCache(buffer, decorations, snapshot.writingMode.focus, currentWidthProfile);
       return decorations;
+    },
+    previewMedia(bufferId, snapshot = state) {
+      const buffer = snapshot.project.buffers[bufferId];
+      const runtime = runtimes.get(bufferId);
+      if (buffer?.preview.kind !== 'ready' || runtime === undefined || state.project.buffers[bufferId]?.editor.document !== buffer.editor.document) return [];
+      return [...walkMarkdown(buffer.preview.snapshot.document.tree)].flatMap(({ node }) => {
+        const image = runtime.images.get(node.id);
+        if (image?.kind !== 'ready') return [];
+        if (node.kind === 'image') {
+          const media = imagePreviewSpan(node, inlinePlainText(node.children), markdownTheme, image).media;
+          return media === undefined ? [] : [media];
+        }
+        return node.kind === 'codeBlock' && runtime.diagramText.has(node.id)
+          ? [{ image: image.image, label: 'Mermaid diagram', sourceSpan: node.contentSpan }]
+          : [];
+      });
     },
     previewLayout(
       bufferId,
       width,
       theme = markdownTheme,
       widthProfile = defaultTextWidthProfile,
+      snapshot = state,
     ) {
-      const buffer = state.project.buffers[bufferId];
+      const buffer = snapshot.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
-      if (buffer?.preview.kind !== 'ready' || runtime === undefined) return undefined;
+      if (buffer?.preview.kind !== 'ready') return undefined;
       const resources = blockResources(buffer, runtime);
       const layout = layoutMarkdownPreview(
         buffer.preview.snapshot.document.tree,
         width,
         theme,
         widthProfile,
-        runtime.previewLayouts,
+        runtime !== undefined && state.project.buffers[bufferId]?.editor.document === buffer.editor.document ? runtime.previewLayouts : createPreviewLayoutCache(),
         resources
       );
-      runtime.lastPreviewLayout = layout;
       return layout;
-    },
-    previewViewportLayout(
-      bufferId,
-      width,
-      rows,
-      theme = markdownTheme,
-      widthProfile = defaultTextWidthProfile,
-    ) {
-      const initialGeometry = vellumPreviewDocumentGeometry(width);
-      const initial = api.previewLayout(bufferId, initialGeometry.contentWidth, theme, widthProfile);
-      if (initial === undefined || initial.rows.length <= rows || width <= 1) return initial;
-      const scrollableGeometry = vellumPreviewDocumentGeometry(width - 1);
-      return scrollableGeometry.contentWidth === initialGeometry.contentWidth
-        ? initial
-        : api.previewLayout(bufferId, scrollableGeometry.contentWidth, theme, widthProfile);
     },
     async refreshPreviewResources(bufferId) {
       const buffer = state.project.buffers[bufferId];
@@ -3382,10 +3316,10 @@ function instantiateVellumApplication(
         );
         if (runtime.diagnosticController !== controller
           || state.project.buffers[bufferId]?.sourceRevision !== buffer.sourceRevision) return;
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           diagnostics: Object.freeze({ ...state.diagnostics, [bufferId]: diagnostics })
-        });
+        }));
         publishApplicationUpdate('diagnostics', bufferId);
       } finally {
         if (runtime.diagnosticController === controller) runtime.diagnosticController = undefined;
@@ -3418,10 +3352,10 @@ function instantiateVellumApplication(
         ? diagnostics.find((diagnostic) => diagnostic.span.start > caret) ?? diagnostics[0]
         : [...diagnostics].toReversed().find((diagnostic) => diagnostic.span.start < caret) ?? diagnostics.at(-1);
       if (target !== undefined) {
-        state = Object.freeze({
+        commit(Object.freeze({
           ...state,
           navigator: Object.freeze({ ...state.navigator, mode: 'diagnostics', visible: true })
-        });
+        }));
         api.navigateTo(bufferId, target.span.start, true, target.span);
       }
     },
@@ -3433,24 +3367,24 @@ function instantiateVellumApplication(
     ignoreCurrentDiagnosticRule() {
       const diagnostic = currentDiagnostic();
       if (diagnostic === undefined || state.diagnosticPreferences.ignoredRules.includes(diagnostic.rule)) return;
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         diagnosticPreferences: Object.freeze({
           ...state.diagnosticPreferences,
           ignoredRules: Object.freeze([...state.diagnosticPreferences.ignoredRules, diagnostic.rule])
         }),
         notice: Object.freeze({ status: 'success', message: `Ignored diagnostic rule ${diagnostic.rule}.` })
-      });
+      }));
       schedulePersistence();
     },
     cycleDiagnosticSeverity() {
       const previous = state.diagnosticPreferences.minimumSeverity;
       const minimumSeverity = previous === 'info' ? 'warning' : previous === 'warning' ? 'error' : 'info';
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         diagnosticPreferences: Object.freeze({ ...state.diagnosticPreferences, minimumSeverity }),
         notice: Object.freeze({ status: 'success', message: `Showing ${minimumSeverity} and higher diagnostics.` })
-      });
+      }));
       schedulePersistence();
     },
     cycleDiagnosticSource() {
@@ -3459,11 +3393,11 @@ function instantiateVellumApplication(
       ]);
       const current = sources.indexOf(state.diagnosticPreferences.source);
       const source = sources[(current + 1) % sources.length] ?? 'all';
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         diagnosticPreferences: Object.freeze({ ...state.diagnosticPreferences, source }),
         notice: Object.freeze({ status: 'success', message: `Diagnostic source filter: ${source}.` })
-      });
+      }));
       schedulePersistence();
     },
     async refreshProjectDiagnostics() {
@@ -3478,10 +3412,10 @@ function instantiateVellumApplication(
       const word = textDocumentText(buffer.editor.document).slice(diagnostic.span.start, diagnostic.span.end);
       const added = await addPersonalDictionaryWord(personalDictionaryPath, options.wordDictionary, word);
       if (added) await api.refreshDiagnostics(buffer.id);
-      state = Object.freeze({
+      commit(Object.freeze({
         ...state,
         notice: Object.freeze({ status: 'success', message: added ? `Added “${word}” to the personal dictionary.` : `“${word}” is already in the dictionary.` })
-      });
+      }));
     },
     async persistState() {
       assertActive();
@@ -3498,7 +3432,8 @@ function instantiateVellumApplication(
         clearTimeout(persistenceTimer);
         persistenceTimer = undefined;
       }
-      for (const controller of directoryReads.values()) controller.abort();
+      directoryReadScope.abort();
+      directoryReadScope = new AbortController();
       directoryReads.clear();
       if (projectWatchTimer !== undefined) clearTimeout(projectWatchTimer);
       projectWatchTimer = undefined;
@@ -3746,4 +3681,8 @@ function flattenOutlineItems(entries: readonly OutlineItem[]): readonly Omit<Out
     const { children, ...item } = entry;
     return [Object.freeze(item), ...flattenOutlineItems(children)];
   }));
+}
+
+function sameScroll(left: ScrollState, right: ScrollState): boolean {
+  return left.offsetRow === right.offsetRow && left.offsetColumn === right.offsetColumn && left.followTail === right.followTail;
 }

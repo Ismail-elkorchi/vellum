@@ -1,3 +1,4 @@
+import { observedVellum } from './pane-layouts.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
@@ -6,12 +7,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { createTextAreaRowOffsetMap } from '@ismail-elkorchi/terminal-ui/components';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { themeColor } from '@ismail-elkorchi/terminal-ui/theme';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
-import { defaultTextWidthProfile, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { collectMarkdownNodes, parseMarkdown } from 'markspan';
 import {
   createCodeHighlighter,
@@ -28,8 +28,6 @@ import { builtInExportProfiles, loadUserExportProfiles, type ExportProfile } fro
 import { exportProjectManifest, loadProjectManifest } from '../export/project.js';
 import { createVellumApplication } from '../app/application.js';
 import {
-  vellumBodyGeometry,
-  vellumPaneGeometry,
   vellumPreviewDocumentGeometry,
 } from '../app/viewport-geometry.js';
 import { loadUserMarkdownTheme } from '../markdown/theme.js';
@@ -839,12 +837,13 @@ test('preview viewport centers one readable document column and collapses its gu
     ...Array.from({ length: 30 }, (_, index) => `Paragraph ${String(index)} keeps the preview vertically scrollable.`),
   ].join('\n'));
   application.dispatchCommand('view.preview');
-  const layout = application.previewViewportLayout(bufferId, terminalSize.columns, 13);
-  assert.equal(layout?.width, 88);
   const host = createMemoryTerminalHost({ terminalSize });
-  const runtime = createTuiRuntime({ app: createVellumTui(application), host });
+  const observed = observedVellum(application, host);
+  const runtime = observed.runtime;
   try {
     await runtime.start();
+    const layout = observed.preview().layout;
+    assert.equal(layout.width, 88);
     const frame = runtime.frame();
     assert.ok(frame);
     const heading = renderFramePlain(frame).split('\n').find((line) => line.includes('Centered document'));
@@ -862,7 +861,7 @@ test('preview viewport centers one readable document column and collapses its gu
       target.id === `vellum-preview-${bufferId}:scrollbar:horizontal:track`
     )), false);
     await runtime.dispose();
-    const bottom = Math.max(0, (layout?.rows.length ?? 0) - 13);
+    const bottom = Math.max(0, layout.rows.length - observed.preview().rows);
     application.updatePreviewScroll(bufferId, {
       nextState: { offsetRow: bottom, offsetColumn: 0, followTail: false },
       source: 'keyboard',
@@ -886,7 +885,7 @@ test('preview viewport centers one readable document column and collapses its gu
   }
 });
 
-test('terminal-ui runtime resizing preserves Vellum source anchors before committing each frame', async () => {
+test('terminal-ui runtime resizing preserves Vellum source anchors from accepted layouts', async () => {
   const initialSize = Object.freeze({ columns: 80, rows: 24 });
   const directResize = Object.freeze({ columns: 120, rows: 24 });
   const hostResize = Object.freeze({ columns: 72, rows: 20 });
@@ -898,36 +897,15 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
   const bufferId = application.openSource(source);
   application.dispatchCommand('view.editorPreview');
   const host = createMemoryTerminalHost({ terminalSize: initialSize });
-  const runtime = createTuiRuntime({ app: createVellumTui(application), host });
+  const observed = observedVellum(application, host);
+  const runtime = observed.runtime;
 
-  const rowMapsAt = (terminalSize: { readonly columns: number; readonly rows: number }) => {
-    const state = application.state();
-    const buffer = state.project.buffers[bufferId];
-    assert.ok(buffer);
-    const body = vellumBodyGeometry(state, terminalSize);
-    const panes = vellumPaneGeometry(state, body.bodyWidth, body.contentRows);
-    assert.ok(panes.editor && panes.preview);
-    const editor = createTextAreaRowOffsetMap({
-      document: buffer.editor.document,
-      terminalWidth: panes.editor.width,
-      terminalRows: panes.editor.rows,
-      lineNumbers: { minWidth: 3 },
-      wrap: { mode: 'soft' },
-      scrollbar: { visible: 'auto' }
-    });
-    const preview = application.previewViewportLayout(
-      bufferId,
-      panes.preview.width,
-      panes.preview.rows,
-    )?.rowOffsetMap;
-    assert.ok(preview);
-    return Object.freeze({ editor, preview });
-  };
+  const rowMapsAt = () => ({ editor: observed.editor().rowOffsetMap, preview: observed.preview().layout.rowOffsetMap });
 
-  const sourceAnchorsAt = (terminalSize: { readonly columns: number; readonly rows: number }) => {
+  const sourceAnchorsAt = () => {
     const buffer = application.state().project.buffers[bufferId];
     assert.ok(buffer);
-    const maps = rowMapsAt(terminalSize);
+    const maps = rowMapsAt();
     return Object.freeze({
       editor: maps.editor.sourceOffsetAtRow(buffer.editor.scroll.offsetRow),
       preview: maps.preview.sourceOffsetAtRow(buffer.previewScroll.offsetRow)
@@ -935,7 +913,8 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
   };
 
   try {
-    const initialMaps = rowMapsAt(initialSize);
+    await runtime.start();
+    const initialMaps = rowMapsAt();
     const targetOffset = source.indexOf('Paragraph 24');
     application.applyTextAreaTransition(bufferId, {
       kind: 'scroll',
@@ -958,7 +937,7 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
       source: 'keyboard',
       target: 'content'
     });
-    const initialAnchors = sourceAnchorsAt(initialSize);
+    const initialAnchors = sourceAnchorsAt();
     const syntaxTree = application.state().project.buffers[bufferId]?.preview;
     assert.equal(syntaxTree?.kind, 'ready');
     if (syntaxTree?.kind !== 'ready') return;
@@ -969,15 +948,16 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
     assert.ok(anchorNodeId !== undefined);
     assert.equal(syntaxNodeAt(initialAnchors.preview), anchorNodeId);
 
-    await runtime.start();
-    const stateBeforeResize = application.state();
+    await runtime.redraw();
+    const layoutBeforeResize = observed.editor().layoutRevision;
     await runtime.resize(directResize);
-    const directAnchors = sourceAnchorsAt(directResize);
+    await runtime.dispatch({ kind: 'applicationUpdate', update: application.snapshot() });
+    const directAnchors = sourceAnchorsAt();
     const directFrame = runtime.frame();
     assert.ok(directFrame);
     assert.equal(directFrame.width, directResize.columns);
     assert.equal(runtime.state(), application.state());
-    assert.notEqual(application.state(), stateBeforeResize);
+    assert.notEqual(observed.editor().layoutRevision, layoutBeforeResize);
     assert.equal(syntaxNodeAt(directAnchors.editor), anchorNodeId);
     assert.equal(syntaxNodeAt(directAnchors.preview), anchorNodeId);
 
@@ -985,7 +965,7 @@ test('terminal-ui runtime resizing preserves Vellum source anchors before commit
     assert.ok(terminalSizeControl);
     await terminalSizeControl.setTerminalSize(hostResize);
     await runtime.redraw();
-    const hostAnchors = sourceAnchorsAt(hostResize);
+    const hostAnchors = sourceAnchorsAt();
     const hostFrame = runtime.frame();
     assert.ok(hostFrame);
     assert.equal(hostFrame.width, hostResize.columns);
@@ -1007,39 +987,19 @@ test('split preview preserves scroll edges, reveals keyboard carets, and needs n
   const application = createVellumApplication({ watchFiles: false, createBufferId: () => 'split-scroll-contracts' });
   const bufferId = application.openSource(source);
   application.dispatchCommand('view.editorPreview');
-  const body = vellumBodyGeometry(application.state(), terminalSize);
-  const panes = vellumPaneGeometry(application.state(), body.bodyWidth, body.contentRows);
-  assert.ok(panes.editor && panes.preview);
-  const synchronization = Object.freeze({
-    editor: panes.editor,
-    preview: panes.preview,
-    widthProfile: defaultTextWidthProfile,
-  });
-  const buffer = application.state().project.buffers[bufferId];
-  assert.ok(buffer);
-  const editorMap = createTextAreaRowOffsetMap({
-    document: buffer.editor.document,
-    terminalWidth: panes.editor.width,
-    terminalRows: panes.editor.rows,
-    lineNumbers: { minWidth: 3 },
-    wrap: { mode: 'soft' },
-    scrollbar: { visible: 'auto' },
-  });
-  const previewMap = application.previewViewportLayout(
-    bufferId,
-    panes.preview.width,
-    panes.preview.rows,
-  )?.rowOffsetMap;
-  assert.ok(previewMap);
-  const editorBottom = Math.max(0, editorMap.rowCount - panes.editor.rows);
-  const previewBottom = Math.max(0, previewMap.rowCount - panes.preview.rows);
-
+  const observed = observedVellum(application, createMemoryTerminalHost({ terminalSize }));
+  const runtime = observed.runtime;
   try {
+    await runtime.start();
+    const editorMap = observed.editor().rowOffsetMap;
+    const previewMap = observed.preview().layout.rowOffsetMap;
+    const editorBottom = Math.max(0, editorMap.rowCount - observed.editor().contentBounds.height);
+    const previewBottom = Math.max(0, previewMap.rowCount - observed.preview().rows);
     application.updatePreviewScroll(bufferId, {
       nextState: { offsetRow: previewBottom, offsetColumn: 0, followTail: false },
       source: 'keyboard',
       target: 'content',
-    }, synchronization);
+    });
     let current = application.state().project.buffers[bufferId];
     assert.equal(current?.previewScroll.offsetRow, previewBottom);
     assert.equal(current?.editor.scroll.offsetRow, editorBottom);
@@ -1051,7 +1011,7 @@ test('split preview preserves scroll edges, reveals keyboard carets, and needs n
         source: 'keyboard',
         target: 'content',
       },
-    }, synchronization);
+    });
     current = application.state().project.buffers[bufferId];
     assert.equal(current?.editor.scroll.offsetRow, editorBottom);
     assert.equal(current?.previewScroll.offsetRow, previewBottom);
@@ -1063,30 +1023,24 @@ test('split preview preserves scroll edges, reveals keyboard carets, and needs n
         source: 'keyboard',
         target: 'content',
       },
-    }, synchronization);
+    });
     for (let index = 0; index < 40; index += 1) {
-      application.applyTextAreaTransition(bufferId, {
+      await runtime.dispatch({ kind: 'editor', bufferId, transition: {
         kind: 'edit',
         operation: { kind: 'moveLineDown' },
-      }, synchronization);
+      } });
     }
     current = application.state().project.buffers[bufferId];
     assert.ok((current?.editor.scroll.offsetRow ?? 0) > 0);
     assert.ok((current?.previewScroll.offsetRow ?? 0) > 0);
     assert.equal(current?.editor.revealCaret, false);
 
-    const host = createMemoryTerminalHost({ terminalSize });
-    const runtime = createTuiRuntime({ app: createVellumTui(application), host });
-    try {
-      await runtime.start();
-      assert.ok(runtime.frame()?.cursor);
-      assert.equal(runtime.frame()?.hitTargets?.some((target) => (
-        target.id === `vellum-preview-${bufferId}:scrollbar:horizontal:track`
-      )), false);
-    } finally {
-      await runtime.dispose();
-    }
+    assert.ok(runtime.frame()?.cursor);
+    assert.equal(runtime.frame()?.hitTargets?.some((target) => (
+      target.id === `vellum-preview-${bufferId}:scrollbar:horizontal:track`
+    )), false);
   } finally {
+    await runtime.dispose();
     await application.dispose();
   }
 });

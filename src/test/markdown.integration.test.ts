@@ -23,7 +23,8 @@ import {
   type MarkdownPreviewAction,
 } from '../markdown/render/component.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
-import { vellumBodyGeometry, vellumPaneGeometry } from '../app/viewport-geometry.js';
+import { observedVellum } from './pane-layouts.js';
+import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { resolveMarkdownLink } from '../navigation/links.js';
 
 test('incremental document metrics and preview block layout equal a fresh parse while reusing identities', async () => {
@@ -151,61 +152,29 @@ test('editor and preview row-offset maps remain source anchored through wrapping
       assert.ok(narrowPreview.sourceOffsetAtRow(narrowPreview.rowAtSourceOffset(offset)) <= offset);
     }
     application.dispatchCommand('view.editorPreview');
-    const previousSize = { columns: 80, rows: 24 };
-    const nextSize = { columns: 120, rows: 24 };
-    const previousBody = vellumBodyGeometry(application.state(), previousSize);
-    const previousPanes = vellumPaneGeometry(application.state(), previousBody.bodyWidth, previousBody.contentRows);
-    assert.ok(previousPanes.editor && previousPanes.preview);
-    const widthProfile = defineTextWidthProfile({ ambiguous: 'narrow', emoji: 'wide' });
-    const previousEditorMap = createTextAreaRowOffsetMap({
-      document: buffer.editor.document,
-      terminalWidth: previousPanes.editor.width,
-      terminalRows: previousPanes.editor.rows,
-      widthProfile,
-      lineNumbers: { minWidth: 3 }, wrap: { mode: 'soft' }, scrollbar: { visible: 'auto' }
-    });
-    const previousPreviewMap = application.previewViewportLayout(
-      id,
-      previousPanes.preview.width,
-      previousPanes.preview.rows,
-      undefined,
-      widthProfile,
-    )?.rowOffsetMap;
-    assert.ok(previousPreviewMap);
-    const anchor = source.indexOf('const');
-    application.applyTextAreaTransition(id, { kind: 'scroll', request: {
-      nextState: { offsetRow: previousEditorMap.rowAtSourceOffset(anchor), offsetColumn: 0, followTail: false },
-      source: 'keyboard', target: 'content'
-    } }, { editor: previousPanes.editor, preview: previousPanes.preview, widthProfile });
-    const previousEditorAnchor = previousEditorMap.sourceOffsetAtRow(application.state().project.buffers[id]?.editor.scroll.offsetRow ?? 0);
-    const previousPreviewAnchor = previousPreviewMap.sourceOffsetAtRow(application.state().project.buffers[id]?.previewScroll.offsetRow ?? 0);
-    application.resizeTerminal(previousSize, nextSize, widthProfile);
-    const nextBody = vellumBodyGeometry(application.state(), nextSize);
-    const nextPanes = vellumPaneGeometry(application.state(), nextBody.bodyWidth, nextBody.contentRows);
-    assert.ok(nextPanes.editor && nextPanes.preview);
-    const resized = application.state().project.buffers[id];
-    assert.ok(resized);
-    const nextEditorMap = createTextAreaRowOffsetMap({
-      document: resized.editor.document,
-      terminalWidth: nextPanes.editor.width,
-      terminalRows: nextPanes.editor.rows,
-      widthProfile,
-      lineNumbers: { minWidth: 3 }, wrap: { mode: 'soft' }, scrollbar: { visible: 'auto' }
-    });
-    const nextPreviewMap = application.previewViewportLayout(
-      id,
-      nextPanes.preview.width,
-      nextPanes.preview.rows,
-      undefined,
-      widthProfile,
-    )?.rowOffsetMap;
-    assert.ok(nextPreviewMap);
-    const nextEditorAnchor = nextEditorMap.sourceOffsetAtRow(resized.editor.scroll.offsetRow);
-    const nextPreviewAnchor = nextPreviewMap.sourceOffsetAtRow(resized.previewScroll.offsetRow);
-    const tree = resized.preview.kind === 'ready' ? resized.preview.snapshot.document.tree : undefined;
-    const blockAt = (offset: number) => tree?.children.find((node) => node.span.start <= offset && offset <= node.span.end)?.id;
-    assert.equal(blockAt(nextEditorAnchor), blockAt(previousEditorAnchor));
-    assert.equal(blockAt(nextPreviewAnchor), blockAt(previousPreviewAnchor));
+    const panes = observedVellum(application, createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } }));
+    try {
+      await panes.runtime.start();
+      const previousEditorMap = panes.editor().rowOffsetMap;
+      const previousPreviewMap = panes.preview().layout.rowOffsetMap;
+      const anchor = source.indexOf('const');
+      await panes.runtime.dispatch({ kind: 'editor', bufferId: id, transition: { kind: 'scroll', request: {
+        nextState: { offsetRow: previousEditorMap.rowAtSourceOffset(anchor), offsetColumn: 0, followTail: false },
+        source: 'keyboard', target: 'content'
+      } } });
+      const previousEditorAnchor = previousEditorMap.sourceOffsetAtRow(application.state().project.buffers[id]?.editor.scroll.offsetRow ?? 0);
+      const previousPreviewAnchor = previousPreviewMap.sourceOffsetAtRow(application.state().project.buffers[id]?.previewScroll.offsetRow ?? 0);
+      await panes.runtime.resize({ columns: 120, rows: 24 });
+      const resized = application.state().project.buffers[id];
+      assert.ok(resized);
+      const nextEditorAnchor = panes.editor().rowOffsetMap.sourceOffsetAtRow(resized.editor.scroll.offsetRow);
+      const nextPreviewAnchor = panes.preview().layout.rowOffsetMap.sourceOffsetAtRow(resized.previewScroll.offsetRow);
+      const tree = resized.preview.kind === 'ready' ? resized.preview.snapshot.document.tree : undefined;
+      const blockAt = (offset: number) => tree?.children.find((node) => node.span.start <= offset && offset <= node.span.end)?.id;
+      assert.equal(blockAt(nextEditorAnchor), blockAt(previousEditorAnchor));
+      assert.equal(blockAt(nextPreviewAnchor), blockAt(previousPreviewAnchor));
+    } finally { await panes.runtime.dispose(); }
+
   } finally {
     await application.dispose();
   }
@@ -231,9 +200,9 @@ test('Markdown preview geometry follows the active terminal text-width profile',
     const preview = markdownPreview({
       id: 'wide-profile-preview',
       label: 'Wide profile preview',
-      layout: wide,
-      viewportWidth: wide.width,
-      contentColumn: 0,
+      version: 'static',
+      media: wide.media.map((entry) => entry.media),
+      layoutAt: () => ({ layout: wide, contentColumn: 0 }),
       onAction: (action: MarkdownPreviewAction) => action,
     });
     assert.doesNotThrow(() => renderElementSnapshot({
@@ -475,9 +444,9 @@ test('extension preview and accessibility retain front matter, callout, math, ta
       element: markdownPreview({
         id: 'semantic-preview',
         label: 'Rendered Markdown',
-        layout,
-        viewportWidth: layout.width,
-        contentColumn: 0,
+        version: 'static',
+        media: layout.media.map((entry) => entry.media),
+        layoutAt: () => ({ layout, contentColumn: 0 }),
         onAction: (action: MarkdownPreviewAction) => action,
       }),
       terminalSize: { columns: 50, rows: layout.rows.length },
@@ -774,9 +743,9 @@ test('preview activation maps terminal cells to exact inline spans and navigates
         element: markdownPreview({
           id: 'keyboard-preview',
           label: 'Keyboard preview',
-          layout,
-          viewportWidth: layout.width,
-          contentColumn: 0,
+          version: 'static',
+          media: layout.media.map((entry) => entry.media),
+          layoutAt: () => ({ layout, contentColumn: 0 }),
           onAction: (action: MarkdownPreviewAction) => action,
         }),
         terminalSize: { columns: 72, rows: layout.rows.length },

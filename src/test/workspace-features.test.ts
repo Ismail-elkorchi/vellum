@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createMemoryTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
-import { defaultTextWidthProfile, textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
+import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
 import { createVellumApplication } from '../app/application.js';
 import { builtInExportProfiles, type ExportProfile } from '../export/profiles.js';
@@ -470,20 +470,18 @@ test('focus, typewriter, and distraction-free writing modes alter the editor at 
     assert.equal(application.state().writingMode.focus, true);
     assert.equal(application.hybridDecorations(id).count > ordinaryDecorationCount, true);
 
-    application.resizeTerminal(
-      Object.freeze({ columns: 80, rows: 24 }),
-      Object.freeze({ columns: 120, rows: 30 }),
-      defaultTextWidthProfile
-    );
+    const runtime = createTuiRuntime({ app: createVellumTui(application), host: createMemoryTerminalHost({ terminalSize: { columns: 120, rows: 30 } }) });
+    await runtime.start();
     assert.equal(vellumBodyGeometry(application.state(), { columns: 120, rows: 30 }).fileTreeWidth > 0, true);
     application.dispatchCommand('view.toggleTypewriterMode');
-    application.applyTextAreaTransition(id, {
+    await runtime.dispatch({ kind: 'editor', bufferId: id, transition: {
       kind: 'pointer', transition: { kind: 'placeCaret', offset: source.length }
-    });
+    } });
     assert.equal((application.state().project.buffers[id]?.editor.scroll.offsetRow ?? 0) > 0, true);
 
     application.dispatchCommand('view.toggleDistractionFreeMode');
     assert.equal(vellumBodyGeometry(application.state(), { columns: 120, rows: 30 }).fileTreeWidth, 0);
+    await runtime.dispose();
   } finally {
     await application.dispose();
     await rm(directory, { recursive: true, force: true });

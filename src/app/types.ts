@@ -2,7 +2,8 @@ import type {
   CommandInputState,
   ScrollState,
   SplitPaneState,
-  TextAreaState
+  TextAreaState,
+  ScrollableTreeState
 } from '@ismail-elkorchi/terminal-ui/behavior';
 import type {
   MarkdownDiagnostic,
@@ -188,13 +189,11 @@ export interface FileTreeNode {
 export interface FileTreeState {
   readonly nodes: Readonly<Record<string, FileTreeNode>>;
   readonly rootIds: readonly string[];
-  readonly expandedIds: readonly string[];
+  readonly interaction: ScrollableTreeState;
   readonly pendingExpansionIds: readonly string[];
-  readonly activeId?: string;
   readonly exclusionPatterns: readonly string[];
   readonly filter: string;
   readonly sort: 'foldersFirst' | 'nameAscending' | 'nameDescending';
-  readonly scroll: ScrollState;
   readonly revision: number;
 }
 
@@ -399,6 +398,7 @@ export interface FilePathDialogState {
     | 'importAsset'
     | 'filterProjectTree';
   readonly projectSourcePath?: string;
+  readonly saveBufferId?: BufferId;
   readonly command: CommandInputState;
   readonly afterSave?:
     | { readonly kind: 'closeBuffer'; readonly bufferId: BufferId }
@@ -487,6 +487,8 @@ export interface ExportState {
 }
 
 export interface AppState {
+  /** Revision of the authoritative application snapshot. */
+  readonly revision: number;
   readonly project: ProjectState;
   readonly paneArrangement: PaneArrangement;
   readonly editorMode: EditorMode;

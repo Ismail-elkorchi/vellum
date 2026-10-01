@@ -201,8 +201,8 @@ function projectState(seed: AppState = initialAppState()): AppState {
           [document]: Object.freeze({ id: document, path: document, label: 'document.md', kind: 'file', parentId: root, loaded: true, loading: false, children: Object.freeze([]) }),
           [asset]: Object.freeze({ id: asset, path: asset, label: 'assets', kind: 'directory', parentId: root, loaded: false, loading: false, children: Object.freeze([]) })
         }),
-        rootIds: Object.freeze([root]), expandedIds: Object.freeze([root]), pendingExpansionIds: Object.freeze([]),
-        activeId: document, exclusionPatterns: Object.freeze(['.git', 'node_modules']), filter: '', sort: 'foldersFirst', revision: 1
+        rootIds: Object.freeze([root]), pendingExpansionIds: Object.freeze([]),
+        interaction: Object.freeze({ ...seed.project.fileTree.interaction, expandedIds: Object.freeze([root]), activeId: document, selection: Object.freeze({ mode: 'single', selectedId: document }) }), exclusionPatterns: Object.freeze(['.git', 'node_modules']), filter: '', sort: 'foldersFirst', revision: 1
       }),
       index: Object.freeze({ documents: Object.freeze({ [document]: indexed }), orderedPaths: Object.freeze([document]), assetPaths: Object.freeze([]), indexing: false, revision: 1 })
     })

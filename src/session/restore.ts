@@ -76,6 +76,7 @@ export async function restoreApplicationSeed(
     : restoredOrder[0];
   const recoveredCount = snapshot?.buffers.length ?? 0;
   const state: AppState = Object.freeze({
+    revision: 0,
     project: Object.freeze({
       ...(projectDirectory === undefined ? {} : { rootDirectory: projectDirectory }),
       fileTree: Object.freeze({ ...fileTree, pendingExpansionIds: Object.freeze([...pendingExpansionIds]) }),
