@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   createScrollState,
   createTreeSource,
+  matchingTreeView,
   treeReducer,
   type TreeTransition
 } from '@ismail-elkorchi/terminal-ui/behavior';
@@ -22,7 +23,7 @@ export function createFileTreeState(
   exclusionPatterns: readonly string[] = defaultFileTreeExclusions
 ): FileTreeState {
   if (rootDirectory === undefined) {
-    return Object.freeze({
+    return withFileTreeSource({
       nodes: Object.freeze({}),
       rootIds: Object.freeze([]),
       interaction: Object.freeze({ expandedIds: Object.freeze([]), selection: Object.freeze({ mode: 'single' }), scroll: createScrollState() }),
@@ -43,7 +44,7 @@ export function createFileTreeState(
     loading: false,
     children: Object.freeze([])
   });
-  return Object.freeze({
+  return withFileTreeSource({
     nodes: Object.freeze({ [root]: node }),
     rootIds: Object.freeze([root]),
     interaction: Object.freeze({ expandedIds: Object.freeze([root]), activeId: root, selection: Object.freeze({ mode: 'single', selectedId: root }), scroll: createScrollState() }),
@@ -139,7 +140,7 @@ export function commitDirectoryNodes(
   const activeId = state.interaction.activeId !== undefined && nextNodes[state.interaction.activeId] !== undefined
     ? state.interaction.activeId
     : directoryId;
-  return Object.freeze({
+  return withFileTreeSource({
     ...state,
     nodes: Object.freeze(nextNodes),
     interaction: Object.freeze({ ...state.interaction, expandedIds: Object.freeze(expandedIds), activeId, selection: Object.freeze({ mode: 'single', selectedId: activeId }) }),
@@ -148,7 +149,7 @@ export function commitDirectoryNodes(
 }
 
 export function terminalFileTreeSource(
-  state: FileTreeState
+  state: Pick<FileTreeState, 'nodes' | 'rootIds' | 'filter' | 'sort'>
 ): TreeSource<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> {
   const roots = state.rootIds.flatMap((id) => {
     const node = terminalNode(state, id);
@@ -157,8 +158,13 @@ export function terminalFileTreeSource(
   return createTreeSource(roots);
 }
 
+/** Replace the source only when loaded domain nodes, filtering or ordering change. */
+export function withFileTreeSource(state: Omit<FileTreeState, 'source' | 'view'>): FileTreeState {
+  return Object.freeze({ ...state, source: terminalFileTreeSource(state), view: null });
+}
+
 export function setFileTreeFilter(state: FileTreeState, filter: string): FileTreeState {
-  return filter === state.filter ? state : Object.freeze({ ...state, filter, revision: state.revision + 1 });
+  return filter === state.filter ? state : withFileTreeSource({ ...state, filter, revision: state.revision + 1 });
 }
 
 export function cycleFileTreeSort(state: FileTreeState): FileTreeState {
@@ -167,20 +173,23 @@ export function cycleFileTreeSort(state: FileTreeState): FileTreeState {
     : state.sort === 'nameAscending'
       ? 'nameDescending'
       : 'foldersFirst';
-  return Object.freeze({ ...state, sort, revision: state.revision + 1 });
+  return withFileTreeSource({ ...state, sort, revision: state.revision + 1 });
 }
 
 export function reduceFileTree(
   state: FileTreeState,
   transition: TreeTransition
 ): FileTreeState {
-  const source = terminalFileTreeSource(state);
-  const interaction = treeReducer(state.interaction, transition, { source });
-  return interaction === state.interaction ? state : Object.freeze({ ...state, interaction });
+  const interaction = treeReducer(state.interaction, transition, { source: state.source, view: state.view });
+  return interaction === state.interaction ? state : Object.freeze({
+    ...state,
+    interaction,
+    view: matchingTreeView(state.source, interaction, state.view) ?? null
+  });
 }
 
 function terminalNode(
-  state: FileTreeState,
+  state: Pick<FileTreeState, 'nodes' | 'rootIds' | 'filter' | 'sort'>,
   nodeId: string
 ): TreeNode<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> | undefined {
   const node = state.nodes[nodeId];

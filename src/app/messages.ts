@@ -15,8 +15,8 @@ export type AppMessage =
   | { readonly kind: 'previewScroll'; readonly bufferId: BufferId; readonly request: ScrollRequest }
   | { readonly kind: 'tabs'; readonly transition: TabsTransition<BufferId> }
   | { readonly kind: 'closeTab'; readonly bufferId: BufferId }
-  | { readonly kind: 'fileTree'; readonly transition: TreeTransition }
-  | { readonly kind: 'activateFileTree'; readonly nodeId: string }
+  | { readonly kind: 'fileTree'; readonly transition: TreeTransition; readonly treeRevision: number }
+  | { readonly kind: 'activateFileTree'; readonly nodeId: string; readonly treeRevision: number }
   | { readonly kind: 'split'; readonly transition: SplitPaneTransition }
   | { readonly kind: 'command'; readonly commandId: CommandId }
   | { readonly kind: 'filePath'; readonly transition: CommandInputTransition }
@@ -45,4 +45,3 @@ export type AppMessage =
   | { readonly kind: 'exit' };
 
 export type VellumMessage = Exclude<AppMessage, { readonly kind: 'applicationUpdate' }>;
-

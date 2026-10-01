@@ -7,6 +7,7 @@ import { createVellumApplication, type VellumApplication } from '../app/applicat
 import type { AppState, ExternalFileFingerprint, ProjectDocumentIndexEntry } from '../app/types.js';
 import { initialAppState } from '../commands/registry.js';
 import { createVellumTui } from '../tui.js';
+import { withFileTreeSource } from '../project/file-tree.js';
 
 const documentSource = [
   '---', 'title: Snapshot', 'status: draft', '---', '',
@@ -194,7 +195,7 @@ function projectState(seed: AppState = initialAppState()): AppState {
       ...seed.project,
       rootDirectory: root,
       recentProjects: Object.freeze([root]),
-      fileTree: Object.freeze({
+      fileTree: withFileTreeSource({
         ...seed.project.fileTree,
         nodes: Object.freeze({
           [root]: Object.freeze({ id: root, path: root, label: 'project', kind: 'directory', loaded: true, loading: false, children: Object.freeze([document, asset]) }),

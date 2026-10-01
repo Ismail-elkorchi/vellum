@@ -47,10 +47,10 @@ function routeVellumMessage(
       return effectUpdate(
         `tree:${'id' in message.transition ? message.transition.id : 'viewport'}`,
         'replace',
-        async (signal) => application.applyFileTreeTransition(message.transition, signal)
+        async (signal) => application.applyFileTreeTransition(message.transition, signal, message.treeRevision)
       );
     case 'activateFileTree':
-      return effectUpdate(`tree:${message.nodeId}`, 'keep-first', async (signal) => application.activateFileTreeNode(message.nodeId, signal));
+      return effectUpdate(`tree:${message.nodeId}`, 'keep-first', async (signal) => application.activateFileTreeNode(message.nodeId, signal, message.treeRevision));
     case 'split':
       application.resizeSplitPane(message.transition);
       return {};

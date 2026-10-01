@@ -11,7 +11,7 @@ import { stat } from 'node:fs/promises';
 import type { AppState, BufferId, BufferState } from '../app/types.js';
 import { readSourceFile } from '../files/file-system.js';
 import { createBufferParser, type BufferParser } from '../markdown/preview.js';
-import { createFileTreeState } from '../project/file-tree.js';
+import { createFileTreeState, withFileTreeSource } from '../project/file-tree.js';
 import { emptyProjectIndex } from '../project/index.js';
 import {
   latestRecoverySnapshot,
@@ -65,7 +65,7 @@ export async function restoreApplicationSeed(
     }
   }
   const baseFileTree = createFileTreeState(projectDirectory);
-  const fileTree = Object.freeze({
+  const fileTree = withFileTreeSource({
     ...baseFileTree,
     filter: session?.fileTreeFilter ?? '',
     sort: session?.fileTreeSort ?? 'foldersFirst'

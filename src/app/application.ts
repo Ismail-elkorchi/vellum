@@ -4,6 +4,7 @@ import { updateVellumApplication } from './update.js';
 import { randomUUID } from 'node:crypto';
 import { watch, type FSWatcher } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import path from 'node:path';
 import {
   createScrollState,
@@ -12,6 +13,8 @@ import {
   createCommandSuggestions,
   createTextAreaState,
   normalizeScrollState,
+  matchingTreeView,
+  prepareTreeView,
   scrollReducer,
   splitPaneReducer,
   textAreaReducer,
@@ -44,6 +47,7 @@ import type {
   ExportHistoryEntry,
   FileFormat,
   FilePathDialogState,
+  FileTreeState,
   NavigationLocation
 } from './types.js';
 import { activeBuffer, bufferIsDirty } from './types.js';
@@ -278,6 +282,7 @@ export interface VellumApplicationOptions {
 
 export type VellumApplicationUpdateReason =
   | 'state'
+  | 'fileTreeView'
   | 'previewResource'
   | 'externalFileRevision'
   | 'projectIndex'
@@ -323,8 +328,8 @@ export interface VellumApplication {
   loadFileTreeDirectory(directoryId: string, signal?: AbortSignal): Promise<void>;
   refreshFileTree(): Promise<void>;
   activateBuffer(bufferId: BufferId): void;
-  applyFileTreeTransition(transition: TreeTransition, signal?: AbortSignal): Promise<void>;
-  activateFileTreeNode(nodeId: string, signal?: AbortSignal): Promise<void>;
+  applyFileTreeTransition(transition: TreeTransition, signal?: AbortSignal, treeRevision?: number): Promise<void>;
+  activateFileTreeNode(nodeId: string, signal?: AbortSignal, treeRevision?: number): Promise<void>;
   createProjectFile(requestedPath: string, source?: string): Promise<BufferId>;
   createProjectDirectory(requestedPath: string): Promise<string>;
   moveProjectEntry(sourcePath: string, destinationPath: string, updateLinks?: boolean): Promise<void>;
@@ -501,6 +506,10 @@ function instantiateVellumApplication(
   let currentWidthProfile: TextWidthProfile = defaultTextWidthProfile;
   let exportController: AbortController | undefined;
   const listeners = new Set<(update: VellumApplicationUpdate) => void>();
+  let fileTreePreparation: {
+    readonly snapshot: FileTreeState;
+    readonly controller: AbortController;
+  } | undefined;
 
   // The application is the sole state owner. Headless calls, TUI messages and
   // asynchronous completions all commit here; subscribers receive exact snapshots.
@@ -510,7 +519,24 @@ function instantiateVellumApplication(
     bufferId?: BufferId
   ): void => {
     if (next === state && reason === 'state') return;
+    const previousTree = state.project.fileTree;
+    const nextTree = next.project.fileTree;
+    // A bounded input token follows projection changes across project replacement,
+    // including changes that supersede another pending preparation.
+    if (previousTree.source !== nextTree.source
+      || previousTree.interaction.expandedIds !== nextTree.interaction.expandedIds
+      || previousTree.interaction.query !== nextTree.interaction.query
+      || previousTree.interaction.loadStatusById !== nextTree.interaction.loadStatusById) {
+      next = Object.freeze({
+        ...next,
+        project: Object.freeze({
+          ...next.project,
+          fileTree: Object.freeze({ ...nextTree, revision: previousTree.revision + 1 })
+        })
+      });
+    }
     state = Object.freeze({ ...next, revision: state.revision + 1 });
+    if (previousTree !== state.project.fileTree) scheduleFileTreePreparation();
     const update = Object.freeze({
       state,
       revision: state.revision,
@@ -535,6 +561,50 @@ function instantiateVellumApplication(
     }));
     publishApplicationUpdate(reason, bufferId);
   };
+
+  // Projection work belongs to the same application lifecycle as lazy IO. A
+  // pending snapshot renders no rows; only the current completed view is committed.
+  function scheduleFileTreePreparation(): void {
+    const snapshot = state.project.fileTree;
+    if (disposed) return;
+    if (matchingTreeView(snapshot.source, snapshot.interaction, snapshot.view) !== undefined) {
+      fileTreePreparation?.controller.abort();
+      fileTreePreparation = undefined;
+      return;
+    }
+    const pending = fileTreePreparation?.snapshot;
+    if (pending !== undefined && pending.source === snapshot.source
+      && pending.interaction.expandedIds === snapshot.interaction.expandedIds
+      && pending.interaction.query === snapshot.interaction.query
+      && pending.interaction.loadStatusById === snapshot.interaction.loadStatusById) return;
+    fileTreePreparation?.controller.abort();
+    const controller = new AbortController();
+    fileTreePreparation = { snapshot, controller };
+    void prepareTreeView(snapshot.source, snapshot.interaction, {
+      signal: controller.signal,
+      yield: async () => yieldToEventLoop(undefined, { signal: controller.signal })
+    }).then((view) => {
+      const current = state.project.fileTree;
+      if (disposed || controller.signal.aborted || fileTreePreparation?.controller !== controller
+        || matchingTreeView(current.source, current.interaction, view) === undefined) return;
+      fileTreePreparation = undefined;
+      commit(Object.freeze({
+        ...state,
+        project: Object.freeze({ ...state.project, fileTree: Object.freeze({ ...current, view }) })
+      }), 'fileTreeView');
+    }).catch((error: unknown) => {
+      if (!disposed && !controller.signal.aborted && fileTreePreparation?.controller === controller) {
+        fileTreePreparation = undefined;
+        publishFailure('backgroundFailure', error);
+      }
+    });
+  }
+
+  function currentFileTreeInput(revision: number): boolean {
+    const current = state.project.fileTree;
+    return revision === current.revision
+      && matchingTreeView(current.source, current.interaction, current.view) !== undefined;
+  }
 
   const writePersistence = async (): Promise<void> => {
     if (options.sessionStore === undefined && options.recoveryStore === undefined) return;
@@ -1654,14 +1724,18 @@ function instantiateVellumApplication(
       }));
       schedulePersistence();
     },
-    async applyFileTreeTransition(transition, signal) {
+    async applyFileTreeTransition(transition, signal, treeRevision) {
       signal?.throwIfAborted();
       assertActive();
+      if (treeRevision !== undefined && !currentFileTreeInput(treeRevision)) return;
       const next = reduceFileTree(state.project.fileTree, transition);
-      commit(Object.freeze({
-        ...state,
-        project: Object.freeze({ ...state.project, fileTree: next })
-      }));
+      if (next === state.project.fileTree && transition.kind !== 'expand') return;
+      if (next !== state.project.fileTree) {
+        commit(Object.freeze({
+          ...state,
+          project: Object.freeze({ ...state.project, fileTree: next })
+        }));
+      }
       const activeId = next.interaction.activeId;
       if (activeId !== undefined && next.interaction.expandedIds.includes(activeId)) {
         const node = next.nodes[activeId];
@@ -1669,8 +1743,10 @@ function instantiateVellumApplication(
       }
       schedulePersistence();
     },
-    async activateFileTreeNode(nodeId, signal) {
+    async activateFileTreeNode(nodeId, signal, treeRevision) {
       signal?.throwIfAborted();
+      assertActive();
+      if (treeRevision !== undefined && !currentFileTreeInput(treeRevision)) return;
       const node = state.project.fileTree.nodes[nodeId];
       if (node === undefined) return;
       if (node.kind === 'file') {
@@ -3428,6 +3504,8 @@ function instantiateVellumApplication(
     async dispose() {
       if (disposed) return;
       disposed = true;
+      fileTreePreparation?.controller.abort();
+      fileTreePreparation = undefined;
       if (persistenceTimer !== undefined) {
         clearTimeout(persistenceTimer);
         persistenceTimer = undefined;
@@ -3451,6 +3529,7 @@ function instantiateVellumApplication(
     }
   };
 
+  scheduleFileTreePreparation();
   for (const buffer of Object.values(state.project.buffers)) {
     const parser = restoredParsers.get(buffer.id)
       ?? createBufferParser(textDocumentText(buffer.editor.document), buffer.sourceRevision, options.parseOptions);

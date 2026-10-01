@@ -5,6 +5,7 @@ import type {
   TextAreaState,
   ScrollableTreeState
 } from '@ismail-elkorchi/terminal-ui/behavior';
+import type { TreeSource, TreeView } from '@ismail-elkorchi/terminal-ui/components';
 import type {
   MarkdownDiagnostic,
   MarkdownSessionSnapshot,
@@ -190,10 +191,14 @@ export interface FileTreeState {
   readonly nodes: Readonly<Record<string, FileTreeNode>>;
   readonly rootIds: readonly string[];
   readonly interaction: ScrollableTreeState;
+  /** Retained domain source and its accepted projection; null means preparation is pending. */
+  readonly source: TreeSource<Readonly<{ path: string; kind: FileTreeNode['kind'] }>>;
+  readonly view: TreeView<Readonly<{ path: string; kind: FileTreeNode['kind'] }>> | null;
   readonly pendingExpansionIds: readonly string[];
   readonly exclusionPatterns: readonly string[];
   readonly filter: string;
   readonly sort: 'foldersFirst' | 'nameAscending' | 'nameDescending';
+  /** Application-owned projection revision used to reject queued input from an older tree. */
   readonly revision: number;
 }
 

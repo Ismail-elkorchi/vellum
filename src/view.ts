@@ -30,7 +30,6 @@ import type {
   VellumApplication
 } from './app/application.js';
 import { markdownPreview } from './markdown/render/component.js';
-import { terminalFileTreeSource } from './project/file-tree.js';
 import { documentOutline } from './navigation/outline.js';
 import {
   vellumBodyGeometry,
@@ -263,15 +262,16 @@ function previewPane(application: VellumApplication, state: AppState, buffer: Bu
 
 function navigator(state: AppState) {
   if (state.navigator.mode !== 'files') return navigatorSummary(state);
-  const source = terminalFileTreeSource(state.project.fileTree);
+  const snapshot = state.project.fileTree;
   return tree({
     id: VELLUM_IDS.fileTree,
-    source,
-    state: state.project.fileTree.interaction,
+    source: snapshot.source,
+    view: snapshot.view,
+    state: snapshot.interaction,
     emptyText: 'Project directory is empty',
     meta: { accessibleName: 'File tree', focus: { order: 1 } },
-    onTransition: (transition: TreeTransition): AppMessage => ({ kind: 'fileTree', transition }),
-    onActivate: (event: TreeActivateEvent): AppMessage => ({ kind: 'activateFileTree', nodeId: event.id })
+    onTransition: (transition: TreeTransition): AppMessage => ({ kind: 'fileTree', transition, treeRevision: snapshot.revision }),
+    onActivate: (event: TreeActivateEvent): AppMessage => ({ kind: 'activateFileTree', nodeId: event.id, treeRevision: snapshot.revision })
   });
 }
 

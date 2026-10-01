@@ -93,6 +93,8 @@ test('tree interaction is owned directly and preserved when deriving a source', 
   assert.deepEqual(initial.interaction.expandedIds, [root]);
   const next = reduceFileTree(initial, { kind: 'toggle', id: root });
   assert.deepEqual(next.interaction.expandedIds, []);
+  assert.equal(next.source, initial.source);
+  assert.equal(next.view, null);
   const interaction = next.interaction;
   terminalFileTreeSource(next);
   assert.equal(next.interaction, interaction);
