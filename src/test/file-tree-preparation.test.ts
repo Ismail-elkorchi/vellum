@@ -16,21 +16,29 @@ import { commitDirectoryNodes, createFileTreeState, reduceFileTree } from '../pr
 import { createVellumTui } from '../tui.js';
 import { VELLUM_IDS, viewVellum } from '../view.js';
 
+const virtualProjectRoot = path.resolve('virtual', 'project');
+
 function projectSeed(count = 4_096): AppState {
-  const root = '/virtual/project';
+  const root = virtualProjectRoot;
   const children: FileTreeNode[] = Array.from({ length: count }, (_, index) => {
     const label = `document-${String(index).padStart(5, '0')}.md`;
     return Object.freeze({
-      id: `${root}/${label}`, path: `${root}/${label}`, label, kind: 'file',
+      id: path.join(root, label), path: path.join(root, label), label, kind: 'file',
       parentId: root, loaded: true, loading: false, children: Object.freeze([])
     });
   });
+  const fileTree = commitDirectoryNodes(createFileTreeState(root), root, children);
+  assert.deepEqual(fileTree.rootIds, [root]);
+  assert.equal(fileTree.nodes[root]?.loaded, true, 'synthetic fixture root must be loaded without filesystem IO');
+  assert.equal(fileTree.nodes[root]?.children.length, count);
+  assert.equal(Object.keys(fileTree.nodes).length, count + 1);
+  assert.equal(fileTree.source.nodeCount, count + 1, 'preparation must exercise the full synthetic source');
   const seed = initialAppState();
   return Object.freeze({
     ...seed,
     project: Object.freeze({
       ...seed.project, rootDirectory: root,
-      fileTree: commitDirectoryNodes(createFileTreeState(root), root, children)
+      fileTree
     })
   });
 }
@@ -88,7 +96,7 @@ test('large tree preparation yields, publishes exact snapshots, and retains sour
     assert.equal(application.state().project.fileTree.source, source);
     assert.equal(application.state().project.fileTree.view, ready.view);
     assert.equal(application.state().project.fileTree.revision, ready.revision);
-    assert.equal(application.state().project.fileTree.interaction.activeId, '/virtual/project/document-00000.md');
+    assert.equal(application.state().project.fileTree.interaction.activeId, path.join(virtualProjectRoot, 'document-00000.md'));
     application.openSource('Unrelated editor update');
     await nextTurn();
     assert.equal(application.state().project.fileTree.source, source);
@@ -114,8 +122,8 @@ test('replacement filters, sorting and disclosure reject obsolete preparations a
     application.setProjectTreeFilter('document-000');
     application.cycleProjectTreeSort();
     application.cycleProjectTreeSort();
-    await application.applyFileTreeTransition({ kind: 'collapse', id: '/virtual/project' });
-    await application.applyFileTreeTransition({ kind: 'expand', id: '/virtual/project' });
+    await application.applyFileTreeTransition({ kind: 'collapse', id: virtualProjectRoot });
+    await application.applyFileTreeTransition({ kind: 'expand', id: virtualProjectRoot });
     const desired = application.state().project.fileTree;
     const ready = await waitForTree(application);
     assert.equal(ready.source, desired.source);
@@ -125,17 +133,17 @@ test('replacement filters, sorting and disclosure reject obsolete preparations a
     assert.equal(ready.view?.collection.items[1]?.row.node.label, 'document-00099.md');
     assert.deepEqual(completions, [ready]);
     const current = application.state();
-    await application.applyFileTreeTransition({ kind: 'collapse', id: '/virtual/project' }, undefined, old.revision);
-    await application.activateFileTreeNode('/virtual/project/document-00000.md', undefined, old.revision);
+    await application.applyFileTreeTransition({ kind: 'collapse', id: virtualProjectRoot }, undefined, old.revision);
+    await application.activateFileTreeNode(path.join(virtualProjectRoot, 'document-00000.md'), undefined, old.revision);
     assert.equal(application.state(), current);
     assert.equal(application.state().project.bufferOrder.length, 0);
     await nextTurn();
     assert.equal(application.state(), current);
-    await application.applyFileTreeTransition({ kind: 'collapse', id: '/virtual/project' });
+    await application.applyFileTreeTransition({ kind: 'collapse', id: virtualProjectRoot });
     const collapsed = await waitForTree(application);
     assert.equal(collapsed.source, ready.source);
     const collapsedState = application.state();
-    await application.applyFileTreeTransition({ kind: 'expand', id: '/virtual/project' }, undefined, ready.revision);
+    await application.applyFileTreeTransition({ kind: 'expand', id: virtualProjectRoot }, undefined, ready.revision);
     assert.equal(application.state(), collapsedState, 'a stale expansion view is rejected even for the same source');
     assert.equal(collapsed.view?.collection.totalCount, 1);
   } finally { await application.dispose(); }
