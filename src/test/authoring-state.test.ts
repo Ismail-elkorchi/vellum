@@ -88,8 +88,10 @@ test('a cancelled lazy read does not commit nodes and can be retried', async () 
 });
 
 test('tree interaction is owned directly and preserved when deriving a source', () => {
-  const initial = createFileTreeState('/workspace');
-  const next = reduceFileTree(initial, { kind: 'toggle', id: '/workspace' });
+  const root = path.resolve('workspace');
+  const initial = createFileTreeState(root);
+  assert.deepEqual(initial.interaction.expandedIds, [root]);
+  const next = reduceFileTree(initial, { kind: 'toggle', id: root });
   assert.deepEqual(next.interaction.expandedIds, []);
   const interaction = next.interaction;
   terminalFileTreeSource(next);
