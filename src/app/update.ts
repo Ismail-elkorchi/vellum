@@ -1,4 +1,4 @@
-import type { TuiEffect, TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
+import type { TuiCancellation, TuiEffect, TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
 import { tabsReducer } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { AppState, DialogState } from './types.js';
 import type { VellumApplication } from './application.js';
@@ -147,9 +147,9 @@ function routeVellumMessage(
       return effectUpdate(`export:${dialog?.kind === 'exportProfile' ? dialog.scope : 'unknown'}`, 'keep-first', async (signal) => application.submitExportProfile(message.value, signal));
     }
     case 'dismissDialog': {
-      const cancelEffects = dialogEffects(application.state().dialogState);
+      const cancel = dialogCancellation(application.state().dialogState);
       application.dismissDialog();
-      return { cancelEffects };
+      return { cancel };
     }
     case 'externalFile': {
       const dialog = application.state().dialogState;
@@ -170,7 +170,7 @@ function routeVellumMessage(
       if (dialog?.kind !== 'dirtyBuffer') return {};
       if (message.action === 'cancel') {
         application.dismissDialog();
-        return { cancelEffects: dialogEffects(dialog) };
+        return { cancel: dialogCancellation(dialog) };
       }
       if (dialog.closeApplication) {
         return {
@@ -211,10 +211,10 @@ function effectUpdate(
   };
 }
 
-function dialogEffects(dialog: DialogState | undefined): readonly string[] {
-  if (dialog?.kind === 'filePath') return [`file-path:${dialog.operation}`];
-  if (dialog?.kind === 'dirtyBuffer') return [dialog.closeApplication ? 'vellum-close-application' : `close:${dialog.bufferIds[0] ?? 'unknown'}`];
+function dialogCancellation(dialog: DialogState | undefined): readonly TuiCancellation[] {
+  if (dialog?.kind === 'filePath') return [{ kind: 'effect', id: `file-path:${dialog.operation}` }];
+  if (dialog?.kind === 'dirtyBuffer') return [{ kind: 'effect', id: dialog.closeApplication ? 'vellum-close-application' : `close:${dialog.bufferIds[0] ?? 'unknown'}` }];
   if (dialog?.kind === 'commandPalette' || dialog?.kind === 'quickOpen' || dialog?.kind === 'completion'
-    || dialog?.kind === 'recentProject' || dialog?.kind === 'recoverySelection') return ['selection:submit'];
+    || dialog?.kind === 'recentProject' || dialog?.kind === 'recoverySelection') return [{ kind: 'effect', id: 'selection:submit' }];
   return [];
 }
