@@ -14,7 +14,7 @@ import {
 } from 'markspan';
 import { createBufferParser } from '../markdown/preview.js';
 import { createPreviewLayoutCache, layoutMarkdownPreview } from '../markdown/render/layout.js';
-import { markdownPreview } from '../markdown/render/component.js';
+import { markdownPreview, prepareMarkdownPreviewPresentation } from '../markdown/render/component.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 import { createVellumApplication } from '../app/application.js';
 import type { ProjectDocumentIndexEntry, ProjectIndexState } from '../app/types.js';
@@ -85,8 +85,7 @@ for (const fixture of fixtures) {
       id: 'benchmark-preview',
       label: 'Benchmark preview',
       version: 'static',
-      media: layout.media.map((entry) => entry.media),
-      layoutAt: () => ({ layout, contentColumn: 0 }),
+      presentation: await prepareMarkdownPreviewPresentation(layout, 80, 0, 'benchmark-preview'),
       onAction: ignoreMessage,
     });
     rows.push(measure(fixture.name, 'preview component render', () => (

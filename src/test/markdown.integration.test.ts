@@ -19,6 +19,7 @@ import { createVellumApplication } from '../app/application.js';
 import { createHybridTextDecorations } from '../markdown/hybrid.js';
 import {
   markdownPreview,
+  prepareMarkdownPreviewPresentation,
   markdownPreviewActivationAt,
   type MarkdownPreviewAction,
 } from '../markdown/render/component.js';
@@ -155,6 +156,7 @@ test('editor and preview row-offset maps remain source anchored through wrapping
     const panes = observedVellum(application, createMemoryTerminalHost({ terminalSize: { columns: 80, rows: 24 } }));
     try {
       await panes.runtime.start();
+      await panes.settle();
       const previousEditorMap = panes.editor().rowOffsetMap;
       const previousPreviewMap = panes.preview().layout.rowOffsetMap;
       const anchor = source.indexOf('const');
@@ -165,6 +167,7 @@ test('editor and preview row-offset maps remain source anchored through wrapping
       const previousEditorAnchor = previousEditorMap.sourceOffsetAtRow(application.state().project.buffers[id]?.editor.scroll.offsetRow ?? 0);
       const previousPreviewAnchor = previousPreviewMap.sourceOffsetAtRow(application.state().project.buffers[id]?.previewScroll.offsetRow ?? 0);
       await panes.runtime.resize({ columns: 120, rows: 24 });
+      await panes.settle();
       const resized = application.state().project.buffers[id];
       assert.ok(resized);
       const nextEditorAnchor = panes.editor().rowOffsetMap.sourceOffsetAtRow(resized.editor.scroll.offsetRow);
@@ -201,8 +204,7 @@ test('Markdown preview geometry follows the active terminal text-width profile',
       id: 'wide-profile-preview',
       label: 'Wide profile preview',
       version: 'static',
-      media: wide.media.map((entry) => entry.media),
-      layoutAt: () => ({ layout: wide, contentColumn: 0 }),
+      presentation: await prepareMarkdownPreviewPresentation(wide, 24, 0, 'wide-profile-preview'),
       onAction: (action: MarkdownPreviewAction) => action,
     });
     assert.doesNotThrow(() => renderElementSnapshot({
@@ -210,11 +212,13 @@ test('Markdown preview geometry follows the active terminal text-width profile',
       terminalSize: { columns: 24, rows: 1 },
       widthProfile: wideProfile,
     }));
-    assert.throws(() => renderElementSnapshot({
+    const pending = renderElementSnapshot({
       element: preview,
       terminalSize: { columns: 24, rows: 1 },
       widthProfile: narrowProfile,
-    }), /must use the active terminal text-width profile/u);
+    });
+    assert.match(pending.plainTextFrame, /Preparing preview/u);
+    assert.equal(pending.frame.hitTargets?.length ?? 0, 0);
   } finally {
     await application.dispose();
   }
@@ -445,8 +449,7 @@ test('extension preview and accessibility retain front matter, callout, math, ta
         id: 'semantic-preview',
         label: 'Rendered Markdown',
         version: 'static',
-        media: layout.media.map((entry) => entry.media),
-        layoutAt: () => ({ layout, contentColumn: 0 }),
+        presentation: await prepareMarkdownPreviewPresentation(layout, 50, 0, 'semantic-preview'),
         onAction: (action: MarkdownPreviewAction) => action,
       }),
       terminalSize: { columns: 50, rows: layout.rows.length },
@@ -744,8 +747,7 @@ test('preview activation maps terminal cells to exact inline spans and navigates
           id: 'keyboard-preview',
           label: 'Keyboard preview',
           version: 'static',
-          media: layout.media.map((entry) => entry.media),
-          layoutAt: () => ({ layout, contentColumn: 0 }),
+          presentation: await prepareMarkdownPreviewPresentation(layout, 72, 0, 'keyboard-preview'),
           onAction: (action: MarkdownPreviewAction) => action,
         }),
         terminalSize: { columns: 72, rows: layout.rows.length },

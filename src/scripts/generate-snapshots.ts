@@ -2,11 +2,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createMemoryTerminalHost, type TerminalSize } from '@ismail-elkorchi/terminal-ui/host';
 import { renderFramePlain } from '@ismail-elkorchi/terminal-ui/renderer';
-import { createTuiRuntime } from '@ismail-elkorchi/terminal-ui/tui';
+import type { AccessibleNode } from '@ismail-elkorchi/terminal-ui/accessibility';
+import { observedVellum } from '../test/pane-layouts.js';
 import { createVellumApplication, type VellumApplication } from '../app/application.js';
 import type { AppState, ExternalFileFingerprint, ProjectDocumentIndexEntry } from '../app/types.js';
 import { initialAppState } from '../commands/registry.js';
-import { createVellumTui } from '../tui.js';
 import { withFileTreeSource } from '../project/file-tree.js';
 
 const documentSource = [
@@ -46,9 +46,14 @@ const snapshots = [];
 for (const scenario of scenarios) {
   const application = await scenario.create();
   const host = createMemoryTerminalHost({ terminalSize: scenario.size });
-  const runtime = createTuiRuntime({ app: createVellumTui(application), host });
+  const observed = observedVellum(application, host);
+  const runtime = observed.runtime;
   try {
-    const frame = await runtime.start();
+    let frame = await runtime.start();
+    if (containsPreview(frame.accessibility.root)) {
+      await observed.settle();
+      frame = runtime.frame() ?? frame;
+    }
     snapshots.push(Object.freeze({
       name: scenario.name,
       size: scenario.size,
@@ -67,6 +72,10 @@ if (process.argv.includes('--write')) await writeFile(filePath, output, 'utf8');
 else {
   const current = await readFile(filePath, 'utf8');
   if (current !== output) throw new Error('Application snapshots are stale. Run npm run snapshots:update.');
+}
+
+function containsPreview(node: AccessibleNode | undefined): boolean {
+  return node !== undefined && (node.id.startsWith('preview-content-') || (node.children?.some(containsPreview) ?? false));
 }
 
 async function documentApplication(editorMode: AppState['editorMode'], paneArrangement: AppState['paneArrangement']): Promise<VellumApplication> {
@@ -146,13 +155,13 @@ async function recoverySelection(): Promise<VellumApplication> {
     watchFiles: false,
     initialState: state,
     recoveryJournal: Object.freeze({
-      schemaVersion: 1,
+      schemaVersion: 2,
       snapshots: Object.freeze([1, 2].map((generation) => Object.freeze({
         generation,
         timestamp: `2026-08-31T0${String(generation)}:00:00.000Z`,
         buffers: Object.freeze([Object.freeze({
           id: 'draft', label: 'draft.md', source: `draft ${String(generation)}`, checksum: 'unused-in-view',
-          savedSourceRevision: 0, currentSourceRevision: generation,
+          savedSource: '', currentSourceRevision: generation,
           externalFileState: Object.freeze({ kind: 'untracked' as const }),
           format: Object.freeze({ bom: false, lineEnding: 'lf' as const })
         })])

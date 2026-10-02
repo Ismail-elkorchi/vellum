@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createNodeTerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import { stat } from 'node:fs/promises';
 import { stdin, stderr, stdout } from 'node:process';
 import {
@@ -122,7 +123,9 @@ async function runCli(
       userProfiles.profiles,
       startupDiagnostics
     );
-    await runVellum(application, keymap);
+    await runVellum(application, keymap, parsed.emojiWidth === undefined ? undefined : createNodeTerminalHost({
+      capabilities: { widthProfile: { emoji: parsed.emojiWidth, ambiguous: 'narrow' } }
+    }));
     return 0;
   } catch (error) {
     streams.error.write((error instanceof Error ? error.message : String(error)) + '\n');

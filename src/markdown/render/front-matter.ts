@@ -1,3 +1,4 @@
+import type { MarkdownRenderWork } from './work.js';
 import type {
   MarkdownFrontMatterMappingEntry,
   MarkdownFrontMatterValue,
@@ -10,25 +11,26 @@ export interface FrontMatterPreviewRow {
 }
 
 /** Produces a readable, structurally indented view of parsed YAML front matter. */
-export function frontMatterPreviewRows(
+export function* frontMatterPreviewRows(
   value: MarkdownFrontMatterValue | null
-): readonly FrontMatterPreviewRow[] {
+): MarkdownRenderWork<readonly FrontMatterPreviewRow[]> {
   if (value === null) return Object.freeze([]);
   const rows: FrontMatterPreviewRow[] = [];
   if (value.kind === 'mapping') {
-    appendMapping(rows, value.entries, 0);
+    yield* appendMapping(rows, value.entries, 0);
   } else {
-    appendValue(rows, value, 0, 'value:');
+    yield* appendValue(rows, value, 0, 'value:');
   }
   return Object.freeze(rows);
 }
 
-function appendMapping(
+function* appendMapping(
   rows: FrontMatterPreviewRow[],
   entries: readonly MarkdownFrontMatterMappingEntry[],
   depth: number,
-): void {
+): MarkdownRenderWork<void> {
   for (const entry of entries) {
+    yield;
     if (entry.value.kind === 'scalar') {
       rows.push(row(`${indent(depth)}${entry.key}: ${scalarText(entry.value.value)}`, {
         start: entry.keySpan.start,
@@ -36,33 +38,34 @@ function appendMapping(
       }));
     } else {
       rows.push(row(`${indent(depth)}${entry.key}:`, entry.keySpan));
-      appendValue(rows, entry.value, depth + 1);
+      yield* appendValue(rows, entry.value, depth + 1);
     }
   }
 }
 
-function appendValue(
+function* appendValue(
   rows: FrontMatterPreviewRow[],
   value: MarkdownFrontMatterValue,
   depth: number,
   prefix?: string,
-): void {
+): MarkdownRenderWork<void> {
   if (value.kind === 'scalar') {
     rows.push(row(`${indent(depth)}${prefix === undefined ? '' : `${prefix} `}${scalarText(value.value)}`, value.span));
     return;
   }
   if (prefix !== undefined) rows.push(row(`${indent(depth)}${prefix}`, value.span));
   if (value.kind === 'mapping') {
-    appendMapping(rows, value.entries, prefix === undefined ? depth : depth + 1);
+    yield* appendMapping(rows, value.entries, prefix === undefined ? depth : depth + 1);
     return;
   }
   const itemDepth = prefix === undefined ? depth : depth + 1;
   for (const item of value.items) {
+    yield;
     if (item.kind === 'scalar') {
       rows.push(row(`${indent(itemDepth)}- ${scalarText(item.value)}`, item.span));
     } else {
       rows.push(row(`${indent(itemDepth)}-`, item.span));
-      appendValue(rows, item, itemDepth + 1);
+      yield* appendValue(rows, item, itemDepth + 1);
     }
   }
 }

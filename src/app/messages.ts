@@ -1,15 +1,16 @@
 import type { CommandInputTransition, ScrollRequest, SplitPaneTransition, TextAreaTransition, TreeTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import type { TabsTransition } from '@ismail-elkorchi/terminal-ui/components';
 import type { TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
-import type { BufferId, CommandId } from './types.js';
+import type { BufferId, CommandId, ProjectState } from './types.js';
 import type { VellumApplicationUpdate } from './application.js';
-import type { MarkdownPreviewLayoutSnapshot } from '../markdown/render/component.js';
+import type { MarkdownPreviewAllocation, MarkdownPreviewLayoutSnapshot } from '../markdown/render/component.js';
 import type { MarkdownPreviewActivation } from '../markdown/render/layout.js';
 import type { TextAreaLayoutSnapshot } from '@ismail-elkorchi/terminal-ui/components';
 import type { TextDocument } from '@ismail-elkorchi/terminal-ui/text';
 
 export type AppMessage =
   | { readonly kind: 'editorLayout'; readonly bufferId: BufferId; readonly snapshot: TextAreaLayoutSnapshot }
+  | { readonly kind: 'previewAllocation'; readonly bufferId: BufferId; readonly document: TextDocument; readonly resourceRevision: number; readonly allocation: MarkdownPreviewAllocation }
   | { readonly kind: 'previewLayout'; readonly bufferId: BufferId; readonly document: TextDocument; readonly resourceRevision: number; readonly snapshot: MarkdownPreviewLayoutSnapshot }
   | { readonly kind: 'editor'; readonly bufferId: BufferId; readonly transition: TextAreaTransition }
   | { readonly kind: 'previewScroll'; readonly bufferId: BufferId; readonly request: ScrollRequest }
@@ -42,6 +43,6 @@ export type AppMessage =
   | { readonly kind: 'checkExternalFiles' }
   | { readonly kind: 'applicationUpdate'; readonly update: VellumApplicationUpdate }
   | { readonly kind: 'terminalResize'; readonly widthProfile: TextWidthProfile }
-  | { readonly kind: 'exit' };
+  | { readonly kind: 'exit'; readonly project: ProjectState };
 
 export type VellumMessage = Exclude<AppMessage, { readonly kind: 'applicationUpdate' }>;

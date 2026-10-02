@@ -1,3 +1,4 @@
+import type { TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import type { EditorMode, PaneArrangement } from './app/types.js';
 
 export interface CliOptionDefinition {
@@ -8,6 +9,7 @@ export interface CliOptionDefinition {
 
 export const cliOptionDefinitions: readonly CliOptionDefinition[] = Object.freeze([
   Object.freeze({ names: Object.freeze(['-h', '--help']), description: 'Show command help.' }),
+  Object.freeze({ names: Object.freeze(['--emoji-width']), valueName: 'mode', description: 'Emoji cells: wide, narrow, or codepoint for separately rendered sequences.' }),
   Object.freeze({ names: Object.freeze(['--line']), valueName: 'number', description: 'Place the caret on a one-based source line.' }),
   Object.freeze({ names: Object.freeze(['--preview']), description: 'Open the preview pane.' }),
   Object.freeze({ names: Object.freeze(['--source']), description: 'Open the source editor.' }),
@@ -27,6 +29,7 @@ export interface OpenCliArguments {
   readonly path?: string;
   readonly line?: number;
   readonly editorMode?: EditorMode;
+  readonly emojiWidth?: TextWidthProfile['emoji'];
   readonly paneArrangement?: PaneArrangement;
   readonly help: boolean;
   readonly strictConfig?: true;
@@ -64,6 +67,7 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
   let exportScope: ExportCliArguments['scope'] = 'document';
   let diagnosticMode: DiagnosticCliArguments['kind'] | undefined;
   let editorMode: EditorMode | undefined;
+  let emojiWidth: TextWidthProfile['emoji'] | undefined;
   let paneArrangement: PaneArrangement | undefined;
   let presentationOption: string | undefined;
   const positional: string[] = [];
@@ -84,6 +88,13 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
       const requested = argument === '--check-keymap' ? 'checkKeymap' : 'keyboardReport';
       if (diagnosticMode !== undefined) throw new Error('Keyboard diagnostic options conflict.');
       diagnosticMode = requested;
+    }
+    else if (argument === '--emoji-width') {
+      const value = values[++index];
+      if (value !== 'wide' && value !== 'narrow' && value !== 'codepoint') {
+        throw new Error('--emoji-width requires wide, narrow, or codepoint.');
+      }
+      emojiWidth = value;
     }
     else if (argument === '--line') {
       const raw = values[++index];
@@ -108,7 +119,7 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
   }
   if (diagnosticMode !== undefined) {
     if (positional.length > 0 || exportMode || line !== undefined || profileId !== undefined || outputPath !== undefined
-      || overwrite || presentationOption !== undefined) {
+      || overwrite || presentationOption !== undefined || emojiWidth !== undefined) {
       throw new Error('Keyboard diagnostic options cannot be combined with files, export, or editor options.');
     }
     return Object.freeze({
@@ -130,7 +141,7 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
     if (exportScope !== 'projectManifest' && profileId === undefined) throw new Error('Document and batch exports require --profile <id>.');
     if (exportScope === 'projectManifest' && profileId !== undefined) throw new Error('A project manifest declares its own export profiles.');
     if (exportScope !== 'document' && outputPath !== undefined) throw new Error('--output is only valid for one document export.');
-    if (line !== undefined || presentationOption !== undefined) throw new Error('Editor options cannot be used with vellum export.');
+    if (line !== undefined || presentationOption !== undefined || emojiWidth !== undefined) throw new Error('Editor options cannot be used with vellum export.');
     return Object.freeze({
       kind: 'export',
       path: positional[0] as string,
@@ -149,6 +160,7 @@ export function parseCliArguments(arguments_: readonly string[]): CliArguments {
     ...(positional[0] === undefined ? {} : { path: positional[0] }),
     ...(line === undefined ? {} : { line }),
     ...(editorMode === undefined ? {} : { editorMode }),
+    ...(emojiWidth === undefined ? {} : { emojiWidth }),
     ...(paneArrangement === undefined ? {} : { paneArrangement }),
     ...(strictConfig ? { strictConfig: true as const } : {}),
     help

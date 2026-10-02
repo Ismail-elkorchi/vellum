@@ -5,61 +5,64 @@ import type {
   MarkdownTableRowNode,
   SourceSpan,
 } from 'markspan';
+import type { MarkdownRenderWork } from './work.js';
 import type { MarkdownTheme } from '../theme.js';
-import { inlinePlainText, renderInline, type MarkdownRenderSpan } from './inline.js';
+import { inlinePlainTextWork, renderInline, type MarkdownRenderSpan } from './inline.js';
 import type { MarkdownBlockResources } from './resources.js';
 import {
   blankMarkdownRow,
-  wrapMarkdownSpans,
+  measureMarkdownSpanWidthWork,
+  wrapMarkdownSpansWork,
   type MarkdownLayoutMedia,
   type MarkdownLayoutRow,
 } from './wrap.js';
 
-export function renderTable(
+export function* renderTable(
   node: MarkdownTableNode,
   width: number,
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources = {}
-): readonly MarkdownLayoutRow[] {
+): MarkdownRenderWork<readonly MarkdownLayoutRow[]> {
   const maximum = Math.max(1, Math.floor(width));
   if (maximum < node.align.length * 7 + 1) {
-    return renderNarrowTable(node, maximum, theme, widthProfile, resources);
+    return yield* renderNarrowTable(node, maximum, theme, widthProfile, resources);
   }
   const sourceRows = [node.header, ...node.rows];
-  const natural = node.align.map((_, column) => Math.max(3, ...sourceRows.map((row, rowIndex) => {
-    const cell = row.cells[column];
-    if (cell === undefined) return 0;
-    const spans = renderInline(
-      cell.children,
-      theme,
-      rowIndex === 0 ? theme.tableHeader : theme.body,
-      undefined,
-      resources,
-    );
-    return Math.max(
-      ...spans.flatMap((span) => span.text.split('\n').map((text) => (
-        measureTextCells(text, { widthProfile }).cells
-      ))),
-      ...spans.flatMap((span) => span.media === undefined ? [] : [Math.max(
-        span.media.image.width,
-        measureTextCells(`[Image: ${span.media.label}]`, { widthProfile }).cells,
-      )]),
-      0,
-    );
-  })));
+  const natural: number[] = [];
+  for (let column = 0; column < node.align.length; column += 1) {
+    let maximumCellWidth = 3;
+    for (let rowIndex = 0; rowIndex < sourceRows.length; rowIndex += 1) {
+      yield;
+      const cell = sourceRows[rowIndex]?.cells[column];
+      if (cell === undefined) continue;
+      const spans = yield* renderInline(cell.children, theme, rowIndex === 0 ? theme.tableHeader : theme.body, undefined, resources);
+      for (const span of spans) {
+        maximumCellWidth = Math.max(maximumCellWidth, yield* measureMarkdownSpanWidthWork(span, widthProfile));
+        if (span.media !== undefined) maximumCellWidth = Math.max(maximumCellWidth, span.media.image.width,
+          yield* measureMarkdownSpanWidthWork({ ...span, text: `[Image: ${span.media.label}]` }, widthProfile));
+      }
+    }
+    natural.push(maximumCellWidth);
+  }
   const borderCells = 3 * natural.length + 1;
   const available = Math.max(natural.length, maximum - borderCells);
-  const widths = fitColumns(natural, available);
+  const widths = yield* fitColumns(natural, available);
   const rows: MarkdownLayoutRow[] = [
     borderRow(widths, 'top', node.span.start, node.id, node.span, theme),
   ];
-  rows.push(...renderGridRow(node, node.header, 0, widths, theme, widthProfile, resources));
+  for (const row of yield* renderGridRow(node, node.header, 0, widths, theme, widthProfile, resources)) {
+    rows.push(row);
+    yield;
+  }
   rows.push(borderRow(widths, 'header', node.delimiterSpan.start, node.id, node.delimiterSpan, theme));
   for (let index = 0; index < node.rows.length; index += 1) {
     const row = node.rows[index];
     if (row === undefined) continue;
-    rows.push(...renderGridRow(node, row, index + 1, widths, theme, widthProfile, resources));
+    for (const line of yield* renderGridRow(node, row, index + 1, widths, theme, widthProfile, resources)) {
+      rows.push(line);
+      yield;
+    }
     if (index < node.rows.length - 1) {
       rows.push(borderRow(widths, 'body', row.span.end, node.id, row.span, theme));
     }
@@ -68,7 +71,7 @@ export function renderTable(
   return Object.freeze(rows);
 }
 
-function renderGridRow(
+function* renderGridRow(
   node: MarkdownTableNode,
   row: MarkdownTableRowNode,
   rowIndex: number,
@@ -76,19 +79,24 @@ function renderGridRow(
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources,
-): readonly MarkdownLayoutRow[] {
-  const cellRows = widths.map((columnWidth, column) => {
+): MarkdownRenderWork<readonly MarkdownLayoutRow[]> {
+  const cellRows: (readonly MarkdownLayoutRow[])[] = [];
+  let rowHeight = 1;
+  for (let column = 0; column < widths.length; column += 1) {
+    yield;
     const cell = row.cells[column];
-    return cell === undefined
+    const lines = cell === undefined
       ? Object.freeze([blankMarkdownRow(row.span.start, row.id)])
-      : wrapMarkdownSpans(
-          renderInline(cell.children, theme, rowIndex === 0 ? theme.tableHeader : theme.body, undefined, resources),
-          columnWidth,
-          widthProfile,
+      : yield* wrapMarkdownSpansWork(
+          yield* renderInline(cell.children, theme, rowIndex === 0 ? theme.tableHeader : theme.body, undefined, resources),
+          widths[column] ?? 1, widthProfile,
         );
-  });
-  const rowHeight = Math.max(1, ...cellRows.map((lines) => lines.length));
-  return Object.freeze(Array.from({ length: rowHeight }, (_, visualRow): MarkdownLayoutRow => {
+    cellRows.push(lines);
+    rowHeight = Math.max(rowHeight, lines.length);
+  }
+  const rendered: MarkdownLayoutRow[] = [];
+  for (let visualRow = 0; visualRow < rowHeight; visualRow += 1) {
+    yield;
     const spans: MarkdownRenderSpan[] = [synthetic('│ ', node.id, row.span, theme.tableBorder)];
     const media: MarkdownLayoutMedia[] = [];
     const sourceOffsets: number[] = [];
@@ -107,7 +115,10 @@ function renderGridRow(
         spans.push(synthetic(' '.repeat(leftPadding), cell?.id ?? row.id, cell?.contentSpan ?? row.span, style));
       }
       if (line !== undefined) {
-        spans.push(...line.inlineSpans);
+        for (const span of line.inlineSpans) {
+          spans.push(span);
+          yield;
+        }
         sourceOffsets.push(line.sourceOffset);
         for (const entry of line.media ?? []) {
           media.push(Object.freeze({ ...entry, column: columnOffset + leftPadding + entry.column }));
@@ -125,23 +136,24 @@ function renderGridRow(
       columnOffset += columnWidth + 3;
     }
     const inlineSpans = Object.freeze(spans);
-    return Object.freeze({
+    rendered.push(Object.freeze({
       spans: inlineSpans,
       inlineSpans,
-      sourceOffset: visualRow === 0 ? row.span.start : Math.min(...sourceOffsets, row.span.end),
+      sourceOffset: visualRow === 0 ? row.span.start : sourceOffsets.reduce((minimum, offset) => Math.min(minimum, offset), row.span.end),
       nodeId: node.id,
       ...(media.length === 0 ? {} : { media: Object.freeze(media) }),
-    });
-  }));
+    }));
+  }
+  return Object.freeze(rendered);
 }
 
-function renderNarrowTable(
+function* renderNarrowTable(
   node: MarkdownTableNode,
   width: number,
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources
-): readonly MarkdownLayoutRow[] {
+): MarkdownRenderWork<readonly MarkdownLayoutRow[]> {
   const rows: MarkdownLayoutRow[] = [];
   const dataRows = node.rows.length === 0 ? [node.header] : node.rows;
   for (let rowIndex = 0; rowIndex < dataRows.length; rowIndex += 1) {
@@ -151,18 +163,21 @@ function renderNarrowTable(
       const header = node.header.cells[column];
       const cell = row.cells[column];
       if (cell === undefined) continue;
-      const label = inlinePlainText(header?.children ?? []).trim() || `Column ${String(column + 1)}`;
+      const label = (yield* inlinePlainTextWork(header?.children ?? [])).trim() || `Column ${String(column + 1)}`;
       const spans = [
         synthetic(`${label}: `, cell.id, cell.contentSpan, theme.tableHeader),
-        ...renderInline(
+        ...(yield* renderInline(
           cell.children,
           theme,
           row === node.header ? theme.tableHeader : theme.body,
           undefined,
           resources,
-        ),
+        )),
       ];
-      rows.push(...wrapMarkdownSpans(spans, width, widthProfile));
+      for (const line of yield* wrapMarkdownSpansWork(spans, width, widthProfile)) {
+      rows.push(line);
+      yield;
+    }
     }
     if (rowIndex < dataRows.length - 1) rows.push(blankMarkdownRow(row.span.end, node.id));
   }
@@ -205,12 +220,13 @@ function alignmentPadding(remaining: number, alignment: MarkdownTableAlignment):
 
 function rowWidth(row: MarkdownLayoutRow, widthProfile: TextWidthProfile): number {
   const text = measureTextCells(row.inlineSpans.map((span) => span.text).join(''), { widthProfile }).cells;
-  return Math.max(text, ...[...(row.media ?? [])].map((entry) => entry.column + entry.width), 0);
+  return (row.media ?? []).reduce((maximum, entry) => Math.max(maximum, entry.column + entry.width), text);
 }
 
-function fitColumns(natural: readonly number[], available: number): readonly number[] {
+function* fitColumns(natural: readonly number[], available: number): MarkdownRenderWork<readonly number[]> {
   const values = natural.map((value) => Math.max(1, value));
   while (values.reduce((sum, value) => sum + value, 0) > available) {
+    yield;
     let index = 0;
     for (let candidate = 1; candidate < values.length; candidate += 1) {
       if ((values[candidate] ?? 0) > (values[index] ?? 0)) index = candidate;

@@ -1,5 +1,6 @@
 import { mergeTerminalStyles, type TerminalStyle } from '@ismail-elkorchi/terminal-ui/renderer';
 import { markdownCodeValueSourceSpan, type MarkdownCodeBlockNode } from 'markspan';
+import { finishMarkdownRender, type MarkdownRenderWork } from './work.js';
 import type { MarkdownTheme } from '../theme.js';
 import type { MarkdownRenderSpan } from './inline.js';
 
@@ -19,6 +20,14 @@ export function renderCodeBlock(
   theme: MarkdownTheme,
   highlighted?: HighlightedCode
 ): readonly MarkdownRenderSpan[] {
+  return finishMarkdownRender(renderCodeBlockWork(node, theme, highlighted));
+}
+
+export function* renderCodeBlockWork(
+  node: MarkdownCodeBlockNode,
+  theme: MarkdownTheme,
+  highlighted?: HighlightedCode,
+): MarkdownRenderWork<readonly MarkdownRenderSpan[]> {
   const spans: MarkdownRenderSpan[] = [];
   if (node.language !== null) {
     spans.push(Object.freeze({
@@ -31,11 +40,12 @@ export function renderCodeBlock(
   }
   let cursor = 0;
   for (const token of highlighted?.tokens ?? []) {
+    yield;
     const start = Math.max(cursor, Math.min(node.value.length, token.span.start));
     const end = Math.max(start, Math.min(node.value.length, token.span.end));
-    if (start > cursor) appendCodeSpans(spans, node, cursor, start, theme.codeBlock);
+    if (start > cursor) yield* appendCodeSpans(spans, node, cursor, start, theme.codeBlock);
     if (end > start) {
-      appendCodeSpans(
+      yield* appendCodeSpans(
         spans,
         node,
         start,
@@ -46,22 +56,33 @@ export function renderCodeBlock(
     cursor = end;
   }
   if (cursor < node.value.length) {
-    appendCodeSpans(spans, node, cursor, node.value.length, theme.codeBlock);
+    yield* appendCodeSpans(spans, node, cursor, node.value.length, theme.codeBlock);
   } else if (node.value.length === 0 && spans.length === (node.language === null ? 0 : 1)) {
     spans.push(codeSpan(node, '', 0, 0, theme.codeBlock));
   }
   return Object.freeze(spans);
 }
 
-function appendCodeSpans(
+function* appendCodeSpans(
   output: MarkdownRenderSpan[],
   node: MarkdownCodeBlockNode,
   start: number,
   end: number,
   style: TerminalStyle
-): void {
+): MarkdownRenderWork<void> {
   let cursor = start;
-  for (const segment of node.valueSourceMap.segments) {
+  const segments = node.valueSourceMap.segments;
+  let lower = 0;
+  let upper = segments.length;
+  while (lower < upper) {
+    const middle = (lower + upper) >>> 1;
+    if ((segments[middle]?.valueEnd ?? Infinity) <= start) lower = middle + 1;
+    else upper = middle;
+  }
+  for (let index = lower; index < segments.length; index += 1) {
+    yield;
+    const segment = segments[index];
+    if (segment === undefined || segment.valueStart >= end) break;
     const segmentStart = Math.max(start, segment.valueStart);
     const segmentEnd = Math.min(end, segment.valueEnd);
     if (segmentEnd <= segmentStart) continue;

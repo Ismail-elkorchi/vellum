@@ -133,7 +133,8 @@ async function restoreBuffer(
   let pathValue: string | undefined;
   let label: string;
   let sourceRevision: number;
-  let savedRevision: number;
+  let savedSource: string;
+  let savedFileFingerprint: BufferState['savedFileFingerprint'];
   let externalFileState: BufferState['externalFileState'];
   let format: BufferState['format'];
 
@@ -142,7 +143,8 @@ async function restoreBuffer(
     pathValue = recovered.path;
     label = recovered.label;
     sourceRevision = recovered.currentSourceRevision;
-    savedRevision = recovered.savedSourceRevision;
+    savedSource = recovered.savedSource;
+    savedFileFingerprint = recovered.savedFileFingerprint;
     externalFileState = recovered.externalFileState;
     format = recovered.format;
   } else if (metadata?.path !== undefined) {
@@ -152,7 +154,8 @@ async function restoreBuffer(
       pathValue = file.path;
       label = file.label;
       sourceRevision = 0;
-      savedRevision = 0;
+      savedSource = file.source;
+      savedFileFingerprint = file.fingerprint;
       externalFileState = Object.freeze({ kind: 'current', fingerprint: file.fingerprint });
       format = file.format;
     } catch (error) {
@@ -164,7 +167,8 @@ async function restoreBuffer(
     pathValue = undefined;
     label = metadata?.label ?? 'Untitled';
     sourceRevision = 0;
-    savedRevision = 0;
+    savedSource = '';
+    savedFileFingerprint = undefined;
     externalFileState = Object.freeze({ kind: 'untracked' });
     format = Object.freeze({ bom: false, lineEnding: 'lf' });
   }
@@ -193,7 +197,8 @@ async function restoreBuffer(
       label,
       editor,
       sourceRevision,
-      savedRevision,
+      savedSource,
+      ...(savedFileFingerprint === undefined ? {} : { savedFileFingerprint }),
       preview: parser.preview(),
       previewResourceRevision: 0,
       previewScroll: createScrollState({

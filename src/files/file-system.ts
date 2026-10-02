@@ -214,7 +214,9 @@ export async function saveSourceFile(
     if (temporaryCreated) await rm(temporaryPath, { force: true });
     if (reservation !== undefined) await removeOwnedReservation(exactPath, reservation);
   }
-  return readSourceFile(exactPath);
+  const saved = await readSourceFile(exactPath);
+  if (saved.fingerprint.contentHash !== bytesHash(bytes)) throw new ExternalFileChangedError(saved.fingerprint);
+  return saved;
 }
 
 interface FileReservation {

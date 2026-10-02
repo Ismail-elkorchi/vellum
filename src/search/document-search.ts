@@ -57,7 +57,7 @@ export function findDocumentMatches(
         end,
         text: match[0],
         ...(replacement === undefined ? {} : {
-          replacementText: expandReplacement(replacement, match)
+          replacementText: options.regularExpression === true ? expandReplacement(replacement, match) : replacement
         })
       }));
     }

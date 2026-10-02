@@ -1,6 +1,6 @@
 import type { TuiEffect, TuiUpdateResult } from '@ismail-elkorchi/terminal-ui/tui';
 import { tabsReducer } from '@ismail-elkorchi/terminal-ui/behavior';
-import type { AppState } from './types.js';
+import type { AppState, DialogState } from './types.js';
 import type { VellumApplication } from './application.js';
 import type { AppMessage, VellumMessage } from './messages.js';
 
@@ -18,6 +18,18 @@ function routeVellumMessage(
     case 'editorLayout':
       application.commitEditorLayout(message.bufferId, message.snapshot);
       return {};
+    case 'previewAllocation': {
+      const operation = application.acceptPreviewAllocation(message.bufferId, message.document, message.resourceRevision, message.allocation);
+      return operation === undefined ? {} : { effects: [{
+        id: operation.id, concurrency: operation.concurrency,
+        async run({ signal }) {
+          await operation.run(signal);
+          return signal.aborted ? { kind: 'none' } : {
+            kind: 'message', message: { kind: 'applicationUpdate', update: application.snapshot() },
+          };
+        },
+      }] };
+    }
     case 'previewLayout':
       application.commitPreviewLayout(message.bufferId, message.document, message.resourceRevision, message.snapshot);
       return {};
@@ -78,8 +90,9 @@ function routeVellumMessage(
           id: `file-path:${dialog?.kind === 'filePath' ? dialog.operation : 'unknown'}`,
           concurrency: 'replace',
           async run({ signal }) {
+            if (application.state().dialogState !== dialog) return { kind: 'none' };
             const closeApplication = await application.submitFilePathDialog(message.value, signal);
-            return closeApplication ? { kind: 'message', message: { kind: 'exit' } } : { kind: 'none' };
+            return closeApplication ? { kind: 'message', message: { kind: 'exit', project: application.state().project } } : { kind: 'none' };
           }
         }]
       };
@@ -87,11 +100,14 @@ function routeVellumMessage(
     case 'selection':
       application.updateSelectionDialog(message.transition);
       return {};
-    case 'submitSelection':
+    case 'submitSelection': {
+      const dialog = application.state().dialogState;
       return { effects: [{ id: 'selection:submit', concurrency: 'replace', async run({ signal }) {
+        if (application.state().dialogState !== dialog) return { kind: 'none' };
         const update = await application.submitSelectionDialog(message.value, signal);
-        return update?.quit === true ? { kind: 'message', message: { kind: 'exit' } } : { kind: 'none' };
+        return update?.quit === true ? { kind: 'message', message: { kind: 'exit', project: application.state().project } } : { kind: 'none' };
       } }] };
+    }
     case 'documentSearch':
       application.updateDocumentSearch(message.field, message.transition);
       return {};
@@ -130,9 +146,11 @@ function routeVellumMessage(
       const dialog = application.state().dialogState;
       return effectUpdate(`export:${dialog?.kind === 'exportProfile' ? dialog.scope : 'unknown'}`, 'keep-first', async (signal) => application.submitExportProfile(message.value, signal));
     }
-    case 'dismissDialog':
+    case 'dismissDialog': {
+      const cancelEffects = dialogEffects(application.state().dialogState);
       application.dismissDialog();
-      return {};
+      return { cancelEffects };
+    }
     case 'externalFile': {
       const dialog = application.state().dialogState;
       return effectUpdate(`conflict:${dialog?.kind === 'externalConflict' ? dialog.bufferId : 'unknown'}`, 'keep-first', async (signal) => application.resolveExternalFileAction(message.action, signal));
@@ -150,28 +168,29 @@ function routeVellumMessage(
     case 'resolveDirty': {
       const dialog = application.state().dialogState;
       if (dialog?.kind !== 'dirtyBuffer') return {};
+      if (message.action === 'cancel') {
+        application.dismissDialog();
+        return { cancelEffects: dialogEffects(dialog) };
+      }
       if (dialog.closeApplication) {
-        if (message.action === 'cancel') {
-          void application.resolveCloseApplication('cancel');
-          return {};
-        }
         return {
-            effects: [{
+          effects: [{
             id: 'vellum-close-application',
             concurrency: 'replace',
-            async run() {
-              const closed = await application.resolveCloseApplication(message.action === 'save' ? 'saveAll' : 'discardAll');
-              return closed ? { kind: 'message', message: { kind: 'exit' } } : { kind: 'none' };
+            async run({ signal }) {
+              if (application.state().dialogState !== dialog) return { kind: 'none' };
+              const closed = await application.resolveCloseApplication(message.action === 'save' ? 'saveAll' : 'discardAll', signal);
+              return closed ? { kind: 'message', message: { kind: 'exit', project: application.state().project } } : { kind: 'none' };
             }
           }]
         };
       }
-      return effectUpdate(`close:${dialog.bufferIds[0] ?? 'unknown'}`, 'keep-first', async () => {
-        await application.resolveDirtyBuffer(message.action);
+      return effectUpdate(`close:${dialog.bufferIds[0] ?? 'unknown'}`, 'keep-first', async (signal) => {
+        if (application.state().dialogState === dialog) await application.resolveDirtyBuffer(message.action, undefined, signal);
       });
     }
     case 'exit':
-      return { exit: { reason: 'quit' } };
+      return application.canExit(message.project) ? { exit: { reason: 'quit' } } : {};
   }
 }
 
@@ -190,4 +209,12 @@ function effectUpdate(
       }
     }]
   };
+}
+
+function dialogEffects(dialog: DialogState | undefined): readonly string[] {
+  if (dialog?.kind === 'filePath') return [`file-path:${dialog.operation}`];
+  if (dialog?.kind === 'dirtyBuffer') return [dialog.closeApplication ? 'vellum-close-application' : `close:${dialog.bufferIds[0] ?? 'unknown'}`];
+  if (dialog?.kind === 'commandPalette' || dialog?.kind === 'quickOpen' || dialog?.kind === 'completion'
+    || dialog?.kind === 'recentProject' || dialog?.kind === 'recoverySelection') return ['selection:submit'];
+  return [];
 }

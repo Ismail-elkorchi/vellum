@@ -1,3 +1,4 @@
+import type { TerminalHost } from '@ismail-elkorchi/terminal-ui/host';
 import type { AppMessage } from './app/messages.js';
 import {
   defineTui,
@@ -74,12 +75,17 @@ export function createVellumTui(
   });
 }
 
-export async function runVellum(application: VellumApplication, keymap: ValidatedKeymap = defaultKeymap()) {
+export async function runVellum(
+  application: VellumApplication,
+  keymap: ValidatedKeymap = defaultKeymap(),
+  host?: TerminalHost
+) {
   const activeBufferId = application.state().project.activeBufferId;
   try {
-    return await runTui(createVellumTui(application, keymap), activeBufferId === undefined
-      ? {}
-      : { initialFocus: { kind: 'element', elementId: `${VELLUM_IDS.editor}-${activeBufferId}` } });
+    return await runTui(createVellumTui(application, keymap), {
+      ...(host === undefined ? {} : { host }),
+      ...(activeBufferId === undefined ? {} : { initialFocus: { kind: 'element' as const, elementId: `${VELLUM_IDS.editor}-${activeBufferId}` } })
+    });
   } finally {
     await application.dispose();
   }

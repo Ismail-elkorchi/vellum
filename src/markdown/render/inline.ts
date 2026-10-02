@@ -4,8 +4,8 @@ import {
   type TerminalLink,
   type TerminalStyle
 } from '@ismail-elkorchi/terminal-ui/renderer';
-import { sanitizeTerminalText } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownInlineNode, SourceSpan } from 'markspan';
+import { finishMarkdownRender, type MarkdownRenderWork } from './work.js';
 import type { MarkdownTheme } from '../theme.js';
 import { footnoteReferenceSpan } from './footnote.js';
 import { imagePreviewSpan, type MarkdownRenderMedia } from './image.js';
@@ -19,13 +19,19 @@ export interface MarkdownRenderSpan extends RenderSpan {
   readonly nodeId: number;
   readonly sourceSpan: SourceSpan;
   readonly sourceMapping: 'identity' | 'anchor';
+  readonly whitespace?: 'preserve';
   readonly activation?: MarkdownActivation;
   readonly media?: MarkdownRenderMedia;
 }
 
 export function inlinePlainText(nodes: readonly MarkdownInlineNode[]): string {
+  return finishMarkdownRender(inlinePlainTextWork(nodes));
+}
+
+export function* inlinePlainTextWork(nodes: readonly MarkdownInlineNode[]): MarkdownRenderWork<string> {
   let text = '';
   for (const node of nodes) {
+    yield;
     switch (node.kind) {
       case 'text':
       case 'escape':
@@ -39,7 +45,7 @@ export function inlinePlainText(nodes: readonly MarkdownInlineNode[]): string {
       case 'strikethrough':
       case 'link':
       case 'image':
-        text += inlinePlainText(node.children);
+        text += yield* inlinePlainTextWork(node.children);
         break;
       case 'softBreak':
       case 'hardBreak':
@@ -55,15 +61,16 @@ export function inlinePlainText(nodes: readonly MarkdownInlineNode[]): string {
   return text;
 }
 
-export function renderInline(
+export function* renderInline(
   nodes: readonly MarkdownInlineNode[],
   theme: MarkdownTheme,
   inheritedStyle: TerminalStyle = theme.body,
   inheritedLink?: TerminalLink,
   resources: MarkdownBlockResources = {}
-): readonly MarkdownRenderSpan[] {
+): MarkdownRenderWork<readonly MarkdownRenderSpan[]> {
   const spans: MarkdownRenderSpan[] = [];
-  const visit = (node: MarkdownInlineNode, style: TerminalStyle, link?: TerminalLink): void => {
+  function* visit(node: MarkdownInlineNode, style: TerminalStyle, link?: TerminalLink): MarkdownRenderWork<void> {
+    yield;
     switch (node.kind) {
       case 'text':
         spans.push(valueSpan(node.value, node.id, node.span, style, link, true));
@@ -73,16 +80,16 @@ export function renderInline(
         spans.push(valueSpan(node.value, node.id, node.span, style, link, false));
         break;
       case 'strong':
-        for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.strong) ?? style, link);
+        for (const child of node.children) yield* visit(child, mergeTerminalStyles(style, theme.strong) ?? style, link);
         break;
       case 'emphasis':
-        for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.emphasis) ?? style, link);
+        for (const child of node.children) yield* visit(child, mergeTerminalStyles(style, theme.emphasis) ?? style, link);
         break;
       case 'strikethrough':
-        for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.deleted) ?? style, link);
+        for (const child of node.children) yield* visit(child, mergeTerminalStyles(style, theme.deleted) ?? style, link);
         break;
       case 'codeSpan':
-        spans.push(valueSpan(node.value, node.id, node.contentSpan, mergeTerminalStyles(style, theme.inlineCode), link, true));
+        spans.push(valueSpan(node.value, node.id, node.contentSpan, mergeTerminalStyles(style, theme.inlineCode), link, true, 'preserve'));
         break;
       case 'mathInline': {
         const rendered = resources.mathText?.get(node.id);
@@ -101,8 +108,9 @@ export function renderInline(
           ? link
           : Object.freeze({ href: node.destination, id: `markdown-link-${String(node.id)}` });
         const start = spans.length;
-        for (const child of node.children) visit(child, mergeTerminalStyles(style, theme.link) ?? style, terminalLink);
+        for (const child of node.children) yield* visit(child, mergeTerminalStyles(style, theme.link) ?? style, terminalLink);
         for (let index = start; index < spans.length; index += 1) {
+          yield;
           const current = spans[index];
           if (current !== undefined) spans[index] = Object.freeze({
             ...current,
@@ -116,7 +124,7 @@ export function renderInline(
         break;
       }
       case 'image':
-        spans.push(imagePreviewSpan(node, inlinePlainText(node.children), theme, resources.images?.get(node.id)));
+        spans.push(imagePreviewSpan(node, yield* inlinePlainTextWork(node.children), theme, resources.images?.get(node.id)));
         break;
       case 'softBreak':
         spans.push(valueSpan(' ', node.id, node.span, style, link, false));
@@ -132,7 +140,7 @@ export function renderInline(
         break;
     }
   };
-  for (const node of nodes) visit(node, inheritedStyle, inheritedLink);
+  for (const node of nodes) yield* visit(node, inheritedStyle, inheritedLink);
   return Object.freeze(spans);
 }
 
@@ -143,15 +151,16 @@ function valueSpan(
   style?: TerminalStyle,
   link?: TerminalLink,
   sourceDerived = false,
+  whitespace?: 'preserve',
 ): MarkdownRenderSpan {
-  const sanitized = sanitizeTerminalText(value).text;
   return Object.freeze({
-    text: sanitized,
+    text: value,
+    ...(whitespace === undefined ? {} : { whitespace }),
     ...(style === undefined ? {} : { style }),
     ...(link === undefined ? {} : { link }),
     nodeId,
     sourceSpan,
-    sourceMapping: sourceDerived && sanitized.length === sourceSpan.end - sourceSpan.start
+    sourceMapping: sourceDerived && value.length === sourceSpan.end - sourceSpan.start
       ? 'identity'
       : 'anchor',
   });

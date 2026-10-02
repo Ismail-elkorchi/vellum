@@ -539,7 +539,7 @@ test('saving an older source revision never replaces edits made while disk I/O i
     assert.equal(textDocumentText(buffer?.editor.document as never), 'new original source');
     assert.equal(await readFile(destination, 'utf8'), 'original source');
     assert.equal(buffer === undefined ? undefined : bufferIsDirty(buffer), true);
-    assert.equal(buffer?.savedRevision, 1);
+    assert.equal(buffer?.savedSource, 'original source');
     assert.equal(buffer?.sourceRevision, 2);
   } finally {
     await application.dispose();
@@ -562,7 +562,7 @@ test('overlapping save and save-all operations serialize each buffer revision', 
     assert.equal(await readFile(destination, 'utf8'), 'first second original source');
     const buffer = application.state().project.buffers[id];
     assert.equal(buffer === undefined ? undefined : bufferIsDirty(buffer), false);
-    assert.equal(buffer?.savedRevision, buffer?.sourceRevision);
+    assert.equal(buffer?.savedSource, textDocumentText(buffer?.editor.document as never));
   } finally {
     await application.dispose();
     await rm(directory, { recursive: true, force: true });
@@ -677,7 +677,7 @@ test('reopening a recently closed buffer restores its complete editing state', a
     assert.ok(before);
     assert.equal(application.requestCloseBuffer(id), false);
     await application.resolveDirtyBuffer('discard');
-    const reopenedId = application.reopenRecentlyClosed();
+    const reopenedId = await application.reopenRecentlyClosed();
     assert.ok(reopenedId);
     const reopened = application.state().project.buffers[reopenedId];
     assert.equal(textDocumentText(reopened?.editor.document as never), textDocumentText(before.editor.document));
@@ -687,7 +687,7 @@ test('reopening a recently closed buffer restores its complete editing state', a
     assert.deepEqual(reopened?.editor.scroll, before.editor.scroll);
     assert.deepEqual(reopened?.previewScroll, before.previewScroll);
     assert.equal(reopened?.sourceRevision, before.sourceRevision);
-    assert.equal(reopened?.savedRevision, before.savedRevision);
+    assert.equal(reopened?.savedSource, before.savedSource);
     assert.equal(reopened === undefined ? undefined : bufferIsDirty(reopened), true);
     assert.equal(reopened?.preview.sourceRevision, before.sourceRevision);
     application.applyTextAreaTransition(reopenedId, { kind: 'edit', operation: { kind: 'insert', text: 'again ' } });
@@ -716,7 +716,7 @@ test('saving pathless dirty buffers during close uses Save As and completes the 
     assert.equal(application.requestCloseApplication(), false);
     assert.equal(await application.resolveCloseApplication('saveAll'), false);
     assert.equal(await application.submitFilePathDialog(path.join(directory, 'second.md')), true);
-    assert.deepEqual(application.state().project.bufferOrder, []);
+    assert.deepEqual(application.state().project.bufferOrder, [second]);
     assert.equal(await readFile(path.join(directory, 'second.md'), 'utf8'), 'second changed');
   } finally {
     await application.dispose();
@@ -786,9 +786,9 @@ test('unknown recovery schemas are quarantined with a clear diagnostic', async (
     assert.equal(await first.read(), undefined);
     assert.match(first.diagnostics()[0] ?? '', /Unsupported recovery schema version: 99/u);
     const second = createRecoveryStore(directory);
-    await writeFile(second.filePath, JSON.stringify({ schemaVersion: 2, snapshots: [] }), 'utf8');
+    await writeFile(second.filePath, JSON.stringify({ schemaVersion: 1, snapshots: [] }), 'utf8');
     assert.equal(await second.read(), undefined);
-    assert.match(second.diagnostics()[0] ?? '', /Unsupported recovery schema version: 2/u);
+    assert.match(second.diagnostics()[0] ?? '', /Unsupported recovery schema version: 1/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

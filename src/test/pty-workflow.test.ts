@@ -37,7 +37,8 @@ test('a legacy PTY preserves Unicode editing, mouse scrolling, resizing, focus c
     assert.equal(textDocumentText(application.state().project.buffers[bufferId]?.editor.document as never), source);
 
     await harness.input(keyInput('f8'));
-    await waitUntil(() => application.state().paneArrangement === 'editorPreview');
+    await waitUntil(() => application.state().paneArrangement === 'editorPreview'
+      && harness.frames().at(-1)?.hitTargets?.some((target) => target.id === `preview-content-${bufferId}:content`) === true);
     // Paste commits its actual caret-revealing scroll. Refocus the source pane
     // after changing the split structure, then explicitly start the scroll exercise.
     const sourceTarget = harness.frames().at(-1)?.hitTargets?.find((target) => target.id === `vellum-editor-${bufferId}:text`);

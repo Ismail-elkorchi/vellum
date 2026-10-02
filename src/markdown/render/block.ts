@@ -1,16 +1,17 @@
 import type { MarkdownBlockNode, MarkdownListItemNode, SourceSpan } from 'markspan';
 import { measureTextCells, type TextWidthProfile } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownTheme } from '../theme.js';
-import { renderCodeBlock } from './code.js';
+import { renderCodeBlockWork } from './code.js';
 import { renderInline, type MarkdownRenderSpan } from './inline.js';
 import { renderTable } from './table.js';
 import {
   blankMarkdownRow,
   shiftMarkdownRow,
-  wrapMarkdownPreformattedSpans,
-  wrapMarkdownSpans,
+  wrapMarkdownPreformattedSpansWork,
+  wrapMarkdownSpansWork,
   type MarkdownLayoutRow,
 } from './wrap.js';
+import type { MarkdownRenderWork } from './work.js';
 import type { MarkdownBlockResources } from './resources.js';
 import { frontMatterPreviewRows } from './front-matter.js';
 
@@ -21,25 +22,25 @@ export interface MarkdownRenderedBlock {
   readonly rows: readonly MarkdownLayoutRow[];
 }
 
-export function renderMarkdownBlock(
+export function* renderMarkdownBlock(
   node: MarkdownBlockNode,
   width: number,
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources = {}
-): MarkdownRenderedBlock {
+): MarkdownRenderWork<MarkdownRenderedBlock> {
   const maximum = Math.max(1, Math.floor(width));
   let rows: readonly MarkdownLayoutRow[];
   switch (node.kind) {
     case 'paragraph':
       const tableOfContents = resources.tableOfContents?.get(node.id);
       rows = tableOfContents === undefined
-        ? wrapMarkdownSpans(
-            renderInline(node.children, theme, theme.body, undefined, resources),
+        ? yield* wrapMarkdownSpansWork(
+            yield* renderInline(node.children, theme, theme.body, undefined, resources),
             maximum,
             widthProfile,
           )
-        : wrapMarkdownPreformattedSpans(
+        : yield* wrapMarkdownPreformattedSpansWork(
             [synthetic(tableOfContents, node.id, node.span, theme.body)],
             maximum,
             widthProfile
@@ -47,8 +48,8 @@ export function renderMarkdownBlock(
       break;
     case 'heading':
       const headingStyle = theme.headings[node.depth - 1] ?? theme.body;
-      rows = wrapMarkdownSpans(
-        renderInline(node.children, theme, headingStyle, undefined, resources),
+      rows = yield* wrapMarkdownSpansWork(
+        yield* renderInline(node.children, theme, headingStyle, undefined, resources),
         maximum,
         widthProfile,
       );
@@ -69,10 +70,10 @@ export function renderMarkdownBlock(
             }),
           })]
         : diagram === undefined
-          ? renderCodeBlock(node, theme, resources.highlightedCode?.get(node.id))
+          ? yield* renderCodeBlockWork(node, theme, resources.highlightedCode?.get(node.id))
           : [synthetic(diagram, node.id, node.contentSpan, theme.diagramFailure)];
-      rows = decorateCodeRows(
-        wrapMarkdownPreformattedSpans(
+      rows = yield* decorateCodeRows(
+        yield* wrapMarkdownPreformattedSpansWork(
           spans,
           Math.max(1, maximum - codeGutter(maximum).width),
           widthProfile,
@@ -85,7 +86,7 @@ export function renderMarkdownBlock(
     }
     case 'mathBlock': {
       const text = resources.mathText?.get(node.id) ?? `Math: ${node.value}`;
-      rows = wrapMarkdownPreformattedSpans(
+      rows = yield* wrapMarkdownPreformattedSpansWork(
         [synthetic(text, node.id, node.contentSpan, theme.math)],
         maximum,
         widthProfile,
@@ -93,7 +94,7 @@ export function renderMarkdownBlock(
       break;
     }
     case 'table':
-      rows = renderTable(node, maximum, theme, widthProfile, resources);
+      rows = yield* renderTable(node, maximum, theme, widthProfile, resources);
       break;
     case 'frontMatter': {
       const collected: MarkdownLayoutRow[] = [];
@@ -101,37 +102,45 @@ export function renderMarkdownBlock(
         diagnostic.span.start <= node.span.end && diagnostic.span.end >= node.span.start
       )) ?? []).toSorted((left, right) => left.span.start - right.span.start);
       for (const diagnostic of diagnostics) {
-        collected.push(...wrapMarkdownSpans([
+        for (const row of yield* wrapMarkdownSpansWork([
           synthetic(
             `Front matter ${diagnostic.severity}: ${diagnostic.message}`,
             node.id,
             diagnostic.span,
             theme.diagnostics[diagnostic.severity],
           )
-        ], maximum, widthProfile));
+        ], maximum, widthProfile)) {
+          collected.push(row);
+          yield;
+        }
       }
-      for (const entry of frontMatterPreviewRows(node.value)) {
-        collected.push(...wrapMarkdownPreformattedSpans([
+      for (const entry of yield* frontMatterPreviewRows(node.value)) {
+        for (const row of yield* wrapMarkdownPreformattedSpansWork([
           synthetic(entry.text, node.id, entry.sourceSpan, theme.frontMatter)
-        ], maximum, widthProfile));
+        ], maximum, widthProfile)) {
+          collected.push(row);
+          yield;
+        }
       }
       if (collected.length === 0) {
-        collected.push(...wrapMarkdownSpans([
+        for (const row of yield* wrapMarkdownSpansWork([
           synthetic('Invalid front matter', node.id, node.span, theme.diagnostics['error'])
-        ], maximum, widthProfile));
+        ], maximum, widthProfile)) {
+          collected.push(row);
+          yield;
+        }
       }
       rows = Object.freeze(collected);
       break;
     }
     case 'callout': {
       const label = node.calloutKind.toUpperCase();
-      const labelRows = wrapMarkdownSpans([
+      const labelRows = yield* wrapMarkdownSpansWork([
         synthetic(label, node.id, node.labelSpan, theme.callouts[node.calloutKind])
       ], maximum, widthProfile);
       const gutter = structuralGutter(maximum, node.id, node.markerSpans[0] ?? node.span, theme.callouts[node.calloutKind]);
-      rows = Object.freeze([
-        ...labelRows,
-        ...prefixChildBlocks(
+      const collected = [...labelRows];
+      for (const row of yield* prefixChildBlocks(
           node.children,
           maximum,
           theme,
@@ -140,13 +149,16 @@ export function renderMarkdownBlock(
           gutter,
           resources,
           true,
-        ),
-      ]);
+        )) {
+        collected.push(row);
+        yield;
+      }
+      rows = Object.freeze(collected);
       break;
     }
     case 'blockQuote': {
       const gutter = structuralGutter(maximum, node.id, node.markerSpans[0] ?? node.span, theme.blockquote);
-      rows = prefixChildBlocks(
+      rows = yield* prefixChildBlocks(
         node.children,
         maximum,
         theme,
@@ -159,7 +171,7 @@ export function renderMarkdownBlock(
       break;
     }
     case 'list':
-      rows = renderList(node, maximum, theme, widthProfile, resources);
+      rows = yield* renderList(node, maximum, theme, widthProfile, resources);
       break;
     case 'footnoteDefinition': {
       const requested = `[^${node.label}]: `;
@@ -167,7 +179,7 @@ export function renderMarkdownBlock(
         ? requested
         : maximum >= 3 ? '† ' : maximum >= 2 ? '†' : '';
       const prefix = synthetic(prefixText, node.id, node.labelSpan, theme.link);
-      rows = prefixChildBlocks(
+      rows = yield* prefixChildBlocks(
         node.children,
         maximum,
         theme,
@@ -183,7 +195,7 @@ export function renderMarkdownBlock(
       const ruleWidth = measureTextCells('─', { widthProfile }).cells;
       const glyph = ruleWidth <= maximum ? '─' : '-';
       const repeats = Math.max(1, Math.floor(maximum / Math.min(maximum, ruleWidth)));
-      rows = wrapMarkdownSpans(
+      rows = yield* wrapMarkdownSpansWork(
         [synthetic(glyph.repeat(repeats), node.id, node.markerSpan, theme.tableBorder)],
         maximum,
         widthProfile,
@@ -191,7 +203,7 @@ export function renderMarkdownBlock(
       break;
     }
     case 'htmlBlock':
-      rows = wrapMarkdownSpans(
+      rows = yield* wrapMarkdownSpansWork(
         [synthetic('[HTML block]', node.id, node.span, theme.htmlPlaceholder)],
         maximum,
         widthProfile,
@@ -202,24 +214,36 @@ export function renderMarkdownBlock(
       break;
   }
   const first = rows[0];
-  const anchoredRows = first === undefined || first.sourceOffset === node.span.start
-    ? rows
-    : Object.freeze([
-      Object.freeze({ ...first, sourceOffset: node.span.start }),
-      ...rows.slice(1)
-    ]);
+  let anchoredRows = rows;
+  if (first !== undefined && first.sourceOffset !== node.span.start) {
+    const anchored: MarkdownLayoutRow[] = [Object.freeze({ ...first, sourceOffset: node.span.start })];
+    for (let index = 1; index < rows.length; index += 1) {
+      yield;
+      const row = rows[index];
+      if (row !== undefined) anchored.push(row);
+    }
+    anchoredRows = Object.freeze(anchored);
+  }
   return Object.freeze({ nodeId: node.id, kind: node.kind, sourceSpan: node.span, rows: anchoredRows });
 }
 
-function renderList(
+function* renderList(
   node: Extract<MarkdownBlockNode, { readonly kind: 'list' }>,
   width: number,
   theme: MarkdownTheme,
   widthProfile: TextWidthProfile,
   resources: MarkdownBlockResources,
-): readonly MarkdownLayoutRow[] {
-  const markers = node.items.map((item, index) => listMarker(node, item, index, theme));
-  const markerWidth = Math.max(0, ...markers.map((marker) => textWidth(marker.text, widthProfile)));
+): MarkdownRenderWork<readonly MarkdownLayoutRow[]> {
+  const markers: { readonly text: string; readonly style: MarkdownTheme['body'] }[] = [];
+  let markerWidth = 0;
+  for (let index = 0; index < node.items.length; index += 1) {
+    yield;
+    const item = node.items[index];
+    if (item === undefined) continue;
+    const marker = listMarker(node, item, index, theme);
+    markers.push(marker);
+    markerWidth = Math.max(markerWidth, textWidth(marker.text, widthProfile));
+  }
   const compact = markerWidth + 1 >= width - 1;
   const effectiveMarkerWidth = compact ? Math.min(1, Math.max(0, width - 1)) : markerWidth;
   const rows: MarkdownLayoutRow[] = [];
@@ -237,7 +261,7 @@ function renderList(
       item.span,
       theme.body,
     );
-    rows.push(...prefixChildBlocks(
+    for (const row of yield* prefixChildBlocks(
       item.children,
       width,
       theme,
@@ -246,7 +270,10 @@ function renderList(
       continuation,
       resources,
       !node.tight || item.spread,
-    ));
+    )) {
+      rows.push(row);
+      yield;
+    }
     if (!node.tight && index < node.items.length - 1) {
       rows.push(blankMarkdownRow(item.span.end, node.id));
     }
@@ -274,7 +301,7 @@ function listMarker(
   });
 }
 
-function prefixChildBlocks(
+function* prefixChildBlocks(
   children: readonly MarkdownBlockNode[],
   width: number,
   theme: MarkdownTheme,
@@ -283,7 +310,7 @@ function prefixChildBlocks(
   continuationPrefix: MarkdownRenderSpan,
   resources: MarkdownBlockResources,
   separateChildren: boolean,
-): readonly MarkdownLayoutRow[] {
+): MarkdownRenderWork<readonly MarkdownLayoutRow[]> {
   const prefixWidth = textWidth(firstPrefix.text, widthProfile);
   const continuationWidth = textWidth(continuationPrefix.text, widthProfile);
   if (prefixWidth !== continuationWidth) {
@@ -301,7 +328,7 @@ function prefixChildBlocks(
         prefixWidth,
       ));
     }
-    const rendered = renderMarkdownBlock(
+    const rendered = yield* renderMarkdownBlock(
       child,
       Math.max(1, width - prefixWidth),
       theme,
@@ -309,6 +336,7 @@ function prefixChildBlocks(
       resources,
     );
     for (const row of rendered.rows) {
+      yield;
       const leader = firstOutputRow ? firstPrefix : continuationPrefix;
       rows.push(shiftMarkdownRow(
         row,
@@ -318,26 +346,31 @@ function prefixChildBlocks(
       firstOutputRow = false;
     }
   }
-  if (rows.length === 0) return wrapMarkdownSpans([firstPrefix], width, widthProfile);
+  if (rows.length === 0) return yield* wrapMarkdownSpansWork([firstPrefix], width, widthProfile);
   return Object.freeze(rows);
 }
 
-function decorateCodeRows(
+function* decorateCodeRows(
   rows: readonly MarkdownLayoutRow[],
   node: Extract<MarkdownBlockNode, { readonly kind: 'codeBlock' }>,
   width: number,
   theme: MarkdownTheme,
-): readonly MarkdownLayoutRow[] {
+): MarkdownRenderWork<readonly MarkdownLayoutRow[]> {
   const gutter = codeGutter(width);
   const prefix = synthetic(gutter.text, node.id, node.fence?.openingSpan ?? node.span, theme.codeBlock);
-  return Object.freeze(rows.map((row) => Object.freeze({
-    ...shiftMarkdownRow(
-      row,
-      gutter.width === 0 ? Object.freeze([]) : Object.freeze([prefix]),
-      gutter.width,
-    ),
-    background: theme.codeBlock,
-  })));
+  const decorated: MarkdownLayoutRow[] = [];
+  for (const row of rows) {
+    yield;
+    decorated.push(Object.freeze({
+      ...shiftMarkdownRow(
+        row,
+        gutter.width === 0 ? Object.freeze([]) : Object.freeze([prefix]),
+        gutter.width,
+      ),
+      background: theme.codeBlock,
+    }));
+  }
+  return Object.freeze(decorated);
 }
 
 function codeGutter(width: number): { readonly text: string; readonly width: number } {

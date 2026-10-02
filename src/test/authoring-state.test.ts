@@ -108,9 +108,10 @@ test('accepted Unicode editor geometry follows divider drag, preview toggles and
   application.dispatchCommand('view.editorPreview');
   const observed = observedVellum(application, createMemoryTerminalHost({ terminalSize: { columns: 120, rows: 24 } }));
   const runtime = observed.runtime;
-  const settle = () => runtime.dispatch({ kind: 'applicationUpdate', update: application.snapshot() });
+  const settle = () => observed.settle();
   try {
     await runtime.start();
+    await settle();
     const before = observed.editor();
     assert.ok(before.allocatedBounds.width > before.contentBounds.width);
     assert.ok(before.contentBounds.height > 0);

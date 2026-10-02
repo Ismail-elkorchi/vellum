@@ -9,10 +9,11 @@ import type {
   ExternalFileState,
   FileFormat
 } from '../app/types.js';
+import { bufferIsDirty } from '../app/types.js';
 import { defaultVellumStateDirectory } from '../config/paths.js';
 import { flushDirectoryMetadata } from '../files/durability.js';
 
-const recoverySchemaVersion = 1;
+const recoverySchemaVersion = 2;
 const maximumSnapshots = 5;
 
 export interface RecoveryBufferRecord {
@@ -21,7 +22,8 @@ export interface RecoveryBufferRecord {
   readonly label: string;
   readonly source: string;
   readonly checksum: string;
-  readonly savedSourceRevision: number;
+  readonly savedSource: string;
+  readonly savedFileFingerprint?: ExternalFileFingerprint;
   readonly currentSourceRevision: number;
   readonly externalFileState: ExternalFileState;
   readonly format: FileFormat;
@@ -34,7 +36,7 @@ export interface RecoverySnapshot {
 }
 
 export interface RecoveryJournal {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly snapshots: readonly RecoverySnapshot[];
 }
 
@@ -134,7 +136,7 @@ export function latestRecoverySnapshot(journal: RecoveryJournal | undefined): Re
 function unsafeBufferRecords(state: AppState): readonly RecoveryBufferRecord[] {
   return Object.freeze(state.project.bufferOrder.flatMap((id) => {
     const buffer = state.project.buffers[id];
-    if (buffer === undefined || (buffer.path !== undefined && buffer.sourceRevision === buffer.savedRevision)) return [];
+    if (buffer === undefined || (buffer.path !== undefined && !bufferIsDirty(buffer))) return [];
     const source = textDocumentText(buffer.editor.document);
     return [Object.freeze({
       id,
@@ -142,7 +144,8 @@ function unsafeBufferRecords(state: AppState): readonly RecoveryBufferRecord[] {
       label: buffer.label,
       source,
       checksum: sourceChecksum(source),
-      savedSourceRevision: buffer.savedRevision,
+      savedSource: buffer.savedSource,
+      ...(buffer.savedFileFingerprint === undefined ? {} : { savedFileFingerprint: buffer.savedFileFingerprint }),
       currentSourceRevision: buffer.sourceRevision,
       externalFileState: buffer.externalFileState,
       format: buffer.format
@@ -188,7 +191,7 @@ function decodeRecoverySnapshot(value: unknown): RecoverySnapshot {
 function decodeRecoveryBuffer(value: unknown): RecoveryBufferRecord {
   const buffer = objectValue(value, 'Recovery buffer');
   exactFields(buffer, [
-    'id', 'path', 'label', 'source', 'checksum', 'savedSourceRevision',
+    'id', 'path', 'label', 'source', 'checksum', 'savedSource', 'savedFileFingerprint',
     'currentSourceRevision', 'externalFileState', 'format'
   ], 'Recovery buffer');
   const id = nonemptyString(buffer['id'], 'Recovery buffer id');
@@ -199,11 +202,19 @@ function decodeRecoveryBuffer(value: unknown): RecoveryBufferRecord {
   if (buffer['checksum'] !== sourceChecksum(buffer['source'])) {
     throw new TypeError(`Recovery buffer ${id} checksum does not match its source.`);
   }
-  const savedSourceRevision = nonnegativeInteger(buffer['savedSourceRevision'], `Recovery buffer ${id} saved revision`);
+  if (typeof buffer['savedSource'] !== 'string') throw new TypeError(`Recovery buffer ${id} saved source must be a string.`);
+  const savedFileFingerprint = buffer['savedFileFingerprint'] === undefined
+    ? undefined
+    : decodeFingerprint(buffer['savedFileFingerprint'], id);
   const currentSourceRevision = nonnegativeInteger(buffer['currentSourceRevision'], `Recovery buffer ${id} current revision`);
-  if (savedSourceRevision > currentSourceRevision) throw new TypeError(`Recovery buffer ${id} revisions are invalid.`);
   const externalFileState = decodeExternalFileState(buffer['externalFileState'], id);
-  if ((pathValue === undefined) !== (externalFileState.kind === 'untracked')) {
+  const format = decodeFileFormat(buffer['format'], id);
+  if (savedFileFingerprint !== undefined
+    && savedFileFingerprint.contentHash !== sourceChecksum((format.bom ? '\ufeff' : '') + buffer['savedSource'])) {
+    throw new TypeError(`Recovery buffer ${id} saved source does not match its disk baseline.`);
+  }
+  if ((pathValue === undefined) !== (externalFileState.kind === 'untracked')
+    || (pathValue === undefined) !== (savedFileFingerprint === undefined)) {
     throw new TypeError(`Recovery buffer ${id} path and external-file state are inconsistent.`);
   }
   return Object.freeze({
@@ -212,10 +223,11 @@ function decodeRecoveryBuffer(value: unknown): RecoveryBufferRecord {
     label: buffer['label'],
     source: buffer['source'],
     checksum: buffer['checksum'],
-    savedSourceRevision,
+    savedSource: buffer['savedSource'],
+    ...(savedFileFingerprint === undefined ? {} : { savedFileFingerprint }),
     currentSourceRevision,
     externalFileState,
-    format: decodeFileFormat(buffer['format'], id)
+    format
   });
 }
 

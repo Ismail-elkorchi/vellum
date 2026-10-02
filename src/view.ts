@@ -33,7 +33,6 @@ import { markdownPreview } from './markdown/render/component.js';
 import { documentOutline } from './navigation/outline.js';
 import {
   vellumBodyGeometry,
-  vellumPreviewDocumentGeometry,
 } from './app/viewport-geometry.js';
 
 export const VELLUM_IDS = Object.freeze({
@@ -236,20 +235,17 @@ function previewPane(application: VellumApplication, state: AppState, buffer: Bu
     id: `preview-content-${buffer.id}`,
     label: `${buffer.label} rendered preview`,
     version: `${String(buffer.sourceRevision)}:${String(buffer.previewResourceRevision)}`,
-    media: application.previewMedia(buffer.id, state),
-    layoutAt: (width, widthProfile) => {
-      const geometry = vellumPreviewDocumentGeometry(width);
-      const layout = application.previewLayout(buffer.id, geometry.contentWidth, application.markdownTheme(), widthProfile, state);
-      if (layout === undefined) throw new Error('Preview document is no longer available.');
-      return { layout, contentColumn: geometry.contentColumn };
-    },
+    presentation: application.previewPresentation(buffer.id, state),
     onAction: (action): AppMessage => action.kind === 'layout'
       ? { kind: 'previewLayout', bufferId: buffer.id, document: buffer.editor.document, resourceRevision: buffer.previewResourceRevision, snapshot: action.snapshot }
-      : { kind: 'previewActivate', bufferId: buffer.id, target: action.target }
+      : action.kind === 'allocate'
+        ? { kind: 'previewAllocation', bufferId: buffer.id, document: buffer.editor.document, resourceRevision: buffer.previewResourceRevision, allocation: action.allocation }
+        : { kind: 'previewActivate', bufferId: buffer.id, target: action.target }
   }), {
     id: `${VELLUM_IDS.preview}-${buffer.id}`,
     offset: { row: buffer.previewScroll.offsetRow, column: buffer.previewScroll.offsetColumn },
     scrollbar: { visible: 'auto' },
+    keyboardScroll: 'vertical',
     scrollPolicy: { wheel: { rows: 5, columns: 8 } },
     meta: { accessibility: { label: `${buffer.label} preview` } },
     onScroll: (request: ScrollRequest): AppMessage => ({

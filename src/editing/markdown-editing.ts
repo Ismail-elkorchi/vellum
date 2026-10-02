@@ -104,7 +104,10 @@ export function automaticMarkdownTransition(
   if (operation.kind === 'insert' && ['*', '**', '_', '__', '`', '```', '[', '(', ']', ')'].includes(operation.text)) {
     return insertPair(buffer, source, operation.text, path);
   }
-  if (operation.kind === 'deleteBackward') return deleteEmptyPair(source, caret);
+  if (operation.kind === 'deleteBackward') {
+    const range = textDocumentSelectionRange(buffer.editor.document, buffer.editor.selection, buffer.editor.caret);
+    return range.startOffset === range.endOffsetExclusive ? deleteEmptyPair(source, caret) : undefined;
+  }
   return undefined;
 }
 

@@ -6,6 +6,7 @@ import {
 } from '@ismail-elkorchi/terminal-ui/text';
 import type { MarkdownDocumentNode, SourceSpan } from 'markspan';
 import type { MarkdownTheme } from '../theme.js';
+import { finishMarkdownRender, prepareMarkdownRender, type MarkdownRenderPreparationOptions, type MarkdownRenderWork } from './work.js';
 import { renderMarkdownBlock, type MarkdownRenderedBlock } from './block.js';
 import type { MarkdownBlockResources } from './resources.js';
 import {
@@ -62,6 +63,31 @@ export function layoutMarkdownPreview(
   cache: MarkdownBlockLayoutCache<MarkdownRenderedBlock>,
   resources: MarkdownBlockResources = {}
 ): MarkdownPreviewLayout {
+  return finishMarkdownRender(markdownPreviewWork(tree, width, theme, widthProfile, cache, resources));
+}
+
+/** Prepare the exact same layout as the headless renderer without monopolizing input. */
+export function prepareMarkdownPreview(
+  tree: MarkdownDocumentNode,
+  width: number,
+  theme: MarkdownTheme,
+  widthProfile: TextWidthProfile,
+  cache: MarkdownBlockLayoutCache<MarkdownRenderedBlock>,
+  resources: MarkdownBlockResources = {},
+  options: MarkdownRenderPreparationOptions = {},
+): Promise<MarkdownPreviewLayout> {
+  return prepareMarkdownRender(markdownPreviewWork(tree, width, theme, widthProfile, cache, resources), options);
+}
+
+function* markdownPreviewWork(
+  tree: MarkdownDocumentNode,
+  width: number,
+  theme: MarkdownTheme,
+  widthProfile: TextWidthProfile,
+  cache: MarkdownBlockLayoutCache<MarkdownRenderedBlock>,
+  resources: MarkdownBlockResources,
+): MarkdownRenderWork<MarkdownPreviewLayout> {
+  const pendingBlocks: { readonly nodeId: number; readonly sourceStart: number; readonly value: MarkdownRenderedBlock }[] = [];
   const normalizedWidth = Math.max(1, Math.floor(width));
   const blocks: MarkdownRenderedBlock[] = [];
   const rows: MarkdownLayoutRow[] = [];
@@ -70,20 +96,15 @@ export function layoutMarkdownPreview(
   let rebuiltBlockLayouts = 0;
   let previousVisible: MarkdownRenderedBlock | undefined;
   for (const node of tree.children) {
+    yield;
     activeIds.add(node.id);
     const existing = cache.get(node.id, normalizedWidth, theme, widthProfile);
     const block = existing === undefined
-      ? renderMarkdownBlock(node, normalizedWidth, theme, widthProfile, resources)
-      : translateBlock(existing.value, node.span.start - existing.sourceStart);
+      ? yield* renderMarkdownBlock(node, normalizedWidth, theme, widthProfile, resources)
+      : yield* translateBlock(existing.value, node.span.start - existing.sourceStart);
     if (existing === undefined) {
       rebuiltBlockLayouts += 1;
-      cache.set(node.id, {
-        width: normalizedWidth,
-        theme,
-        widthProfile,
-        sourceStart: node.span.start,
-        value: block,
-      });
+      pendingBlocks.push({ nodeId: node.id, sourceStart: node.span.start, value: block });
     } else {
       reusedBlockLayouts += 1;
     }
@@ -92,16 +113,26 @@ export function layoutMarkdownPreview(
     if (previousVisible !== undefined) {
       rows.push(blankMarkdownRow(previousVisible.sourceSpan.end, previousVisible.nodeId));
     }
-    rows.push(...block.rows);
+    for (const row of block.rows) {
+      rows.push(row);
+      yield;
+    }
     previousVisible = block;
   }
-  cache.retain(activeIds);
-  const rowOffsetMap = createRowOffsetMap(rows.map((row) => row.sourceOffset));
+  const offsets: number[] = [];
+  for (const row of rows) {
+    offsets.push(row.sourceOffset);
+    yield;
+  }
+  const rowOffsetMap = createRowOffsetMap(offsets);
   const activations: MarkdownPreviewActionFragment[] = [];
   const media: MarkdownPreviewMediaPlacement[] = [];
   for (let row = 0; row < rows.length; row += 1) {
+    yield;
     let column = 0;
-    for (const span of rows[row]?.inlineSpans ?? []) {
+    const inlineSpans = rows[row]?.inlineSpans ?? [];
+    for (const span of inlineSpans.some((entry) => entry.activation !== undefined) ? inlineSpans : []) {
+      yield;
       const width = measureTextCells(span.text, { widthProfile }).cells;
       if (span.activation !== undefined && width > 0) {
         activations.push(Object.freeze({
@@ -119,6 +150,13 @@ export function layoutMarkdownPreview(
       media.push(Object.freeze({ ...entry, row }));
     }
   }
+  const accessibility = yield* accessibleMarkdownDocument(tree, resources.diagnostics);
+  // Publish only complete work. Aborted or superseded preparation never leaves
+  // a partial cache that another allocation can mistake for its generation.
+  for (const entry of pendingBlocks) {
+    cache.set(entry.nodeId, { width: normalizedWidth, theme, widthProfile, sourceStart: entry.sourceStart, value: entry.value });
+  }
+  cache.retain(activeIds);
   return Object.freeze({
     width: normalizedWidth,
     widthProfile,
@@ -127,7 +165,7 @@ export function layoutMarkdownPreview(
     media: Object.freeze(media),
     rowOffsetMap,
     activations: Object.freeze(activations),
-    accessibility: accessibleMarkdownDocument(tree, resources.diagnostics),
+    accessibility,
     instrumentation: Object.freeze({
       reusedBlockLayouts,
       rebuiltBlockLayouts,
@@ -136,23 +174,25 @@ export function layoutMarkdownPreview(
   });
 }
 
-function translateBlock(block: MarkdownRenderedBlock, delta: number): MarkdownRenderedBlock {
+function* translateBlock(block: MarkdownRenderedBlock, delta: number): MarkdownRenderWork<MarkdownRenderedBlock> {
   if (delta === 0) return block;
   const move = (span: SourceSpan): SourceSpan => Object.freeze({ start: span.start + delta, end: span.end + delta });
-  const rows = block.rows.map((row) => {
+  const rows: MarkdownLayoutRow[] = [];
+  for (const row of block.rows) {
+    yield;
     const inlineSpans = row.inlineSpans.map((span) => Object.freeze({ ...span, sourceSpan: move(span.sourceSpan) }));
     const media = row.media?.map((entry) => Object.freeze({
       ...entry,
       media: Object.freeze({ ...entry.media, sourceSpan: move(entry.media.sourceSpan) }),
     }));
-    return Object.freeze({
+    rows.push(Object.freeze({
       ...row,
       sourceOffset: row.sourceOffset + delta,
       spans: Object.freeze(inlineSpans),
       inlineSpans: Object.freeze(inlineSpans),
       ...(media === undefined ? {} : { media: Object.freeze(media) }),
-    });
-  });
+    }));
+  }
   return Object.freeze({
     ...block,
     sourceSpan: move(block.sourceSpan),

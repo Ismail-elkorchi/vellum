@@ -1,3 +1,4 @@
+import { bufferIsDirty } from '../app/types.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -117,9 +118,9 @@ test('project moves commit path and source-exact link changes as one editor tran
     assert.equal(await readFile(movedPath, 'utf8'), '# Target\n');
     assert.equal(application.state().project.buffers[targetId]?.path, movedPath);
     assert.equal(textDocumentText(application.state().project.buffers[targetId]?.editor.document as never), 'Draft # Target\n');
-    assert.equal(application.state().project.buffers[targetId]?.savedRevision, 0);
+    assert.equal(bufferIsDirty(application.state().project.buffers[targetId]!), true);
     assert.equal(textDocumentText(application.state().project.buffers[chapterId]?.editor.document as never), '# Chapter\n\n[Target](../notes/target.md)\n');
-    assert.equal(application.state().project.buffers[chapterId]?.savedRevision, application.state().project.buffers[chapterId]?.sourceRevision);
+    assert.equal(bufferIsDirty(application.state().project.buffers[chapterId]!), false);
     await assert.rejects(readFile(targetPath, 'utf8'), /ENOENT/u);
   } finally {
     await application.dispose();

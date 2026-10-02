@@ -1,3 +1,4 @@
+import { textDocumentText } from '@ismail-elkorchi/terminal-ui/text';
 import type {
   CommandInputState,
   ScrollState,
@@ -149,6 +150,7 @@ export interface ExternalFileFingerprint {
   readonly contentHash: string;
 }
 
+/** Most recently observed disk state, never the authority for an ordinary save. */
 export type ExternalFileState =
   | { readonly kind: 'untracked' }
   | { readonly kind: 'current'; readonly fingerprint: ExternalFileFingerprint }
@@ -167,7 +169,10 @@ export interface BufferState {
   readonly label: string;
   readonly editor: TextAreaState;
   readonly sourceRevision: number;
-  readonly savedRevision: number;
+  /** Exact loaded/saved contents; independent of monotonic parser revisions. */
+  readonly savedSource: string;
+  /** Fingerprint of the loaded/saved contents, relocated only when the file moves. */
+  readonly savedFileFingerprint?: ExternalFileFingerprint;
   readonly preview: MarkdownPreview;
   /** Monotonic identity for asynchronously completed preview resources. */
   readonly previewResourceRevision: number;
@@ -242,7 +247,10 @@ export interface ClosedBufferRecord {
   readonly label: string;
   readonly editor: TextAreaState;
   readonly sourceRevision: number;
-  readonly savedRevision: number;
+  /** Exact loaded/saved contents; independent of monotonic parser revisions. */
+  readonly savedSource: string;
+  /** Fingerprint of the loaded/saved contents, relocated only when the file moves. */
+  readonly savedFileFingerprint?: ExternalFileFingerprint;
   readonly previewScroll: ScrollState;
   readonly externalFileState: ExternalFileState;
   readonly format: FileFormat;
@@ -520,5 +528,5 @@ export function activeBuffer(state: AppState): BufferState | undefined {
 }
 
 export function bufferIsDirty(buffer: BufferState): boolean {
-  return buffer.sourceRevision !== buffer.savedRevision;
+  return textDocumentText(buffer.editor.document) !== buffer.savedSource;
 }

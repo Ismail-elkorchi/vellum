@@ -842,6 +842,7 @@ test('preview viewport centers one readable document column and collapses its gu
   const runtime = observed.runtime;
   try {
     await runtime.start();
+    await observed.settle();
     const layout = observed.preview().layout;
     assert.equal(layout.width, 88);
     const frame = runtime.frame();
@@ -914,6 +915,7 @@ test('terminal-ui runtime resizing preserves Vellum source anchors from accepted
 
   try {
     await runtime.start();
+    await observed.settle();
     const initialMaps = rowMapsAt();
     const targetOffset = source.indexOf('Paragraph 24');
     application.applyTextAreaTransition(bufferId, {
@@ -952,6 +954,7 @@ test('terminal-ui runtime resizing preserves Vellum source anchors from accepted
     const layoutBeforeResize = observed.editor().layoutRevision;
     await runtime.resize(directResize);
     await runtime.dispatch({ kind: 'applicationUpdate', update: application.snapshot() });
+    await observed.settle();
     const directAnchors = sourceAnchorsAt();
     const directFrame = runtime.frame();
     assert.ok(directFrame);
@@ -965,6 +968,7 @@ test('terminal-ui runtime resizing preserves Vellum source anchors from accepted
     assert.ok(terminalSizeControl);
     await terminalSizeControl.setTerminalSize(hostResize);
     await runtime.redraw();
+    await observed.settle();
     const hostAnchors = sourceAnchorsAt();
     const hostFrame = runtime.frame();
     assert.ok(hostFrame);
@@ -991,6 +995,7 @@ test('split preview preserves scroll edges, reveals keyboard carets, and needs n
   const runtime = observed.runtime;
   try {
     await runtime.start();
+    await observed.settle();
     const editorMap = observed.editor().rowOffsetMap;
     const previewMap = observed.preview().layout.rowOffsetMap;
     const editorBottom = Math.max(0, editorMap.rowCount - observed.editor().contentBounds.height);
@@ -1088,7 +1093,10 @@ test('preview resource completion redraws the TUI without input and rejects stal
     await application.refreshPreviewResources(id);
     await waitUntil(() => {
       host.clock.advance(1);
-      return runtime.metrics().frameCommits > initialCommits;
+      const frame = runtime.frame();
+      return runtime.metrics().frameCommits > initialCommits && frame !== undefined
+        && renderFramePlain(frame).includes('new value')
+        && frame.cells.some((cell) => cell.style?.underline === true);
     });
     assert.equal(application.state().project.buffers[id]?.previewResourceRevision, 1);
     assert.equal(previewUpdates.length, 1);

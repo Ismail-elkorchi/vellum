@@ -29,6 +29,7 @@ import type { ScrollGeometry } from '@ismail-elkorchi/terminal-ui/interaction';
 import type { TreeTransition } from '@ismail-elkorchi/terminal-ui/behavior';
 import {
   defaultTextWidthProfile,
+  textWidthProfileKey,
   createTextChangeSet,
   textCaretAt,
   textDocumentSelectionBetween,
@@ -83,6 +84,7 @@ import {
 } from '../editing/markdown-editing.js';
 import {
   externalFileFingerprint,
+  ExternalFileChangedError,
   readSourceFile,
   sameExternalFileRevision,
   saveSourceFile
@@ -134,14 +136,15 @@ import { extractMarkdownOutline } from 'markspan';
 import {
   createPreviewLayoutCache,
   layoutMarkdownPreview,
+  prepareMarkdownPreview,
   type MarkdownPreviewLayout
 } from '../markdown/render/layout.js';
 import type { MarkdownBlockLayoutCache } from '../markdown/render/cache.js';
 import type { MarkdownRenderedBlock } from '../markdown/render/block.js';
 import type { MarkdownBlockResources } from '../markdown/render/resources.js';
-import { imagePreviewSpan, type MarkdownRenderMedia } from '../markdown/render/image.js';
-import { inlinePlainText } from '../markdown/render/inline.js';
-import type { MarkdownPreviewLayoutSnapshot } from '../markdown/render/component.js';
+import { prepareMarkdownPreviewPresentation, type MarkdownPreviewAllocation, type MarkdownPreviewLayoutSnapshot, type MarkdownPreviewPresentation } from '../markdown/render/component.js';
+import { vellumPreviewDocumentGeometry } from './viewport-geometry.js';
+import { finishMarkdownRender, prepareMarkdownRender, type MarkdownRenderWork } from '../markdown/render/work.js';
 import { darkTerminalMarkdownTheme, type MarkdownTheme } from '../markdown/theme.js';
 import {
   createHybridTextDecorations,
@@ -180,6 +183,13 @@ interface BufferRuntime {
   watcher: FSWatcher | undefined;
   readonly pending: Set<AbortController>;
   readonly previewLayouts: MarkdownBlockLayoutCache<MarkdownRenderedBlock>;
+  previewPresentation: MarkdownPreviewPresentation;
+  previewPreparation: {
+    readonly document: BufferState['editor']['document'];
+    readonly resourceRevision: number;
+    readonly allocation: MarkdownPreviewAllocation;
+    readonly controller: AbortController;
+  } | undefined;
   readonly highlighter: CodeHighlighter;
   readonly mathRenderer: MathRenderer;
   readonly diagramRenderers: DiagramRendererRegistry;
@@ -284,6 +294,7 @@ export type VellumApplicationUpdateReason =
   | 'state'
   | 'fileTreeView'
   | 'previewResource'
+  | 'previewLayout'
   | 'externalFileRevision'
   | 'projectIndex'
   | 'diagnostics'
@@ -374,17 +385,19 @@ export interface VellumApplication {
   updatePreviewScroll(bufferId: BufferId, request: ScrollRequest): void;
   commitEditorLayout(bufferId: BufferId, snapshot: TextAreaLayoutSnapshot): void;
   commitPreviewLayout(bufferId: BufferId, document: BufferState['editor']['document'], resourceRevision: number, snapshot: MarkdownPreviewLayoutSnapshot): void;
-  previewMedia(bufferId: BufferId, snapshot?: AppState): readonly MarkdownRenderMedia[];
+  acceptPreviewAllocation(bufferId: BufferId, document: BufferState['editor']['document'], resourceRevision: number, allocation: MarkdownPreviewAllocation): VellumOperation | undefined;
+  previewPresentation(bufferId: BufferId, snapshot?: AppState): MarkdownPreviewPresentation;
   applyTextAreaTransition(bufferId: BufferId, transition: TextAreaTransition): void;
   executeMarkdownCommand(bufferId: BufferId, commandId: import('./types.js').CommandId, options?: MarkdownCommandOptions): void;
   indentList(bufferId: BufferId, outdent: boolean): void;
   saveBuffer(bufferId: BufferId, destination?: string, overwriteConflict?: boolean, signal?: AbortSignal): Promise<boolean>;
   saveAll(signal?: AbortSignal): Promise<boolean>;
   requestCloseBuffer(bufferId: BufferId): boolean;
-  resolveDirtyBuffer(action: 'save' | 'discard' | 'cancel', destination?: string): Promise<boolean>;
-  reopenRecentlyClosed(): BufferId | undefined;
+  resolveDirtyBuffer(action: 'save' | 'discard' | 'cancel', destination?: string, signal?: AbortSignal): Promise<boolean>;
+  reopenRecentlyClosed(signal?: AbortSignal): Promise<BufferId | undefined>;
   requestCloseApplication(): boolean;
-  resolveCloseApplication(action: 'saveAll' | 'discardAll' | 'cancel'): Promise<boolean>;
+  canExit(project: AppState['project']): boolean;
+  resolveCloseApplication(action: 'saveAll' | 'discardAll' | 'cancel', signal?: AbortSignal): Promise<boolean>;
   checkExternalFile(bufferId: BufferId): Promise<boolean>;
   reloadExternalFile(bufferId: BufferId): Promise<boolean>;
   keepBuffer(bufferId: BufferId): void;
@@ -424,6 +437,8 @@ interface CommittedPaneLayouts {
   preview?: MarkdownPreviewLayoutSnapshot & { readonly document: BufferState['editor']['document'] };
   origin: 'editor' | 'preview';
 }
+
+const pendingPreview: MarkdownPreviewPresentation = Object.freeze({ kind: 'pending', rows: 1 });
 
 const defaultFormat: FileFormat = Object.freeze({ bom: false, lineEnding: 'lf' });
 
@@ -887,6 +902,8 @@ function instantiateVellumApplication(
     watcher: undefined,
     pending: new Set(),
     previewLayouts: createPreviewLayoutCache(),
+    previewPresentation: pendingPreview,
+    previewPreparation: undefined,
     highlighter: previewResourcePool.highlighter,
     mathRenderer: previewResourcePool.mathRenderer,
     diagramRenderers: previewResourcePool.diagramRenderers,
@@ -1041,20 +1058,31 @@ function instantiateVellumApplication(
     }));
   };
 
+  const findOpenFile = (filePath: string, fingerprint?: ExternalFileFingerprint): BufferState | undefined => (
+    Object.values(state.project.buffers).find((buffer) => {
+      const observed = buffer.externalFileState.kind === 'untracked' ? undefined : externalFileStateFingerprint(buffer.externalFileState);
+      return buffer.path === filePath || (fingerprint !== undefined && observed !== undefined
+        && (observed.realPath === fingerprint.realPath
+          || (observed.device === fingerprint.device && observed.inode === fingerprint.inode)));
+    })
+  );
+
   const addBuffer = (input: {
     readonly source: string;
     readonly label: string;
     readonly path?: string;
     readonly format: FileFormat;
     readonly sourceRevision: number;
-    readonly savedRevision: number;
+    readonly savedSource: string;
+    readonly savedFileFingerprint?: ExternalFileFingerprint;
     readonly externalFileState: ExternalFileState;
     readonly editor?: TextAreaState;
     readonly previewScroll?: ScrollState;
   }): BufferId => {
     const id = createId();
     if (state.project.buffers[id] !== undefined) throw new Error(`Duplicate buffer identifier: ${id}`);
-    if ((input.path === undefined) !== (input.externalFileState.kind === 'untracked')) {
+    if ((input.path === undefined) !== (input.externalFileState.kind === 'untracked')
+      || (input.path === undefined) !== (input.savedFileFingerprint === undefined)) {
       throw new Error('A buffer path and its external file state must describe the same source document.');
     }
     if (input.editor !== undefined && textDocumentText(input.editor.document) !== input.source) {
@@ -1067,7 +1095,8 @@ function instantiateVellumApplication(
       label: input.label,
       editor: input.editor ?? createTextAreaState({ value: input.source }),
       sourceRevision: input.sourceRevision,
-      savedRevision: input.savedRevision,
+      savedSource: input.savedSource,
+      ...(input.savedFileFingerprint === undefined ? {} : { savedFileFingerprint: input.savedFileFingerprint }),
       preview: parser.preview(),
       previewResourceRevision: 0,
       previewScroll: input.previewScroll ?? createScrollState(),
@@ -1097,9 +1126,22 @@ function instantiateVellumApplication(
     return id;
   };
 
+  const invalidatePreviewPreparation = (runtime: BufferRuntime): void => {
+    runtime.previewPreparation?.controller.abort();
+    runtime.previewPreparation = undefined;
+    const presentation = runtime.previewPresentation;
+    runtime.previewPresentation = Object.freeze({
+      kind: 'pending', rows: presentation.kind === 'ready' ? presentation.layout.rows.length : presentation.rows,
+    });
+  };
+
   const replaceBuffer = (buffer: BufferState): void => {
     const previous = state.project.buffers[buffer.id];
     if (previous === undefined) return;
+    if (previous.editor.document !== buffer.editor.document || previous.previewResourceRevision !== buffer.previewResourceRevision) {
+      const runtime = runtimes.get(buffer.id);
+      if (runtime !== undefined) invalidatePreviewPreparation(runtime);
+    }
     commit(Object.freeze({
       ...state,
       project: Object.freeze({
@@ -1175,6 +1217,7 @@ function instantiateVellumApplication(
     const runtime = runtimes.get(bufferId);
     if (runtime === undefined) return;
     runtime.watcher?.close();
+    invalidatePreviewPreparation(runtime);
     runtime.diagnosticController?.abort();
     for (const controller of runtime.pending) controller.abort();
     runtime.pending.clear();
@@ -1188,6 +1231,7 @@ function instantiateVellumApplication(
   };
 
   const resetSessionScopedPreviewCaches = (runtime: BufferRuntime): void => {
+    invalidatePreviewPreparation(runtime);
     for (const controller of runtime.pending) controller.abort();
     runtime.pending.clear();
     runtime.previewLayouts.clear();
@@ -1207,7 +1251,8 @@ function instantiateVellumApplication(
       label: buffer.label,
       editor: buffer.editor,
       sourceRevision: buffer.sourceRevision,
-      savedRevision: buffer.savedRevision,
+      savedSource: buffer.savedSource,
+      ...(buffer.savedFileFingerprint === undefined ? {} : { savedFileFingerprint: buffer.savedFileFingerprint }),
       previewScroll: buffer.previewScroll,
       externalFileState: buffer.externalFileState,
       format: buffer.format
@@ -1245,6 +1290,14 @@ function instantiateVellumApplication(
     invalidateProjectSearchResults();
     releaseBuffer(bufferId);
     schedulePersistence();
+  };
+
+  const sameClosingBuffers = (project: AppState['project'], bufferId?: BufferId): boolean => {
+    const ids = bufferId === undefined ? project.bufferOrder : [bufferId];
+    if (bufferId === undefined && (state.project.bufferOrder.length !== ids.length
+      || state.project.bufferOrder.some((id, index) => id !== ids[index]))) return false;
+    return ids.every((id) => state.project.buffers[id] !== undefined
+      && state.project.buffers[id]?.sourceRevision === project.buffers[id]?.sourceRevision);
   };
 
   const applyTransition = (
@@ -1355,16 +1408,19 @@ function instantiateVellumApplication(
     anchorTypewriterViewport(bufferId);
   };
 
-  const blockResources = (buffer: BufferState, runtime: BufferRuntime | undefined): MarkdownBlockResources => {
+  function* blockResourcesWork(buffer: BufferState, runtime: BufferRuntime | undefined): MarkdownRenderWork<MarkdownBlockResources> {
     // A queued immutable view must never borrow resources from a newer document.
     const current = runtime !== undefined && state.project.buffers[buffer.id]?.editor.document === buffer.editor.document;
     const tableOfContents = new Map<number, string>();
     if (buffer.preview.kind === 'ready') {
       const source = current && runtime !== undefined ? runtime.parser.source() : textDocumentText(buffer.editor.document);
-      const headings = [...walkMarkdown(buffer.preview.snapshot.document.tree)].flatMap(({ node }) => node.kind === 'heading'
-        ? [`${'  '.repeat(node.depth - 1)}• ${source.slice(node.contentSpan.start, node.contentSpan.end).trim()}`]
-        : []);
+      const headings: string[] = [];
       for (const { node } of walkMarkdown(buffer.preview.snapshot.document.tree)) {
+        yield;
+        if (node.kind === 'heading') headings.push(`${'  '.repeat(node.depth - 1)}• ${source.slice(node.contentSpan.start, node.contentSpan.end).trim()}`);
+      }
+      for (const { node } of walkMarkdown(buffer.preview.snapshot.document.tree)) {
+        yield;
         if (node.kind === 'paragraph' && /^\s*\[(?:toc|_toc_)\]\s*$/iu.test(source.slice(node.span.start, node.span.end))) {
           tableOfContents.set(node.id, headings.join('\n') || 'Table of contents is empty.');
         }
@@ -1380,7 +1436,11 @@ function instantiateVellumApplication(
       tableOfContents,
       diagnostics: buffer.preview.kind === 'ready' ? buffer.preview.snapshot.document.diagnostics : Object.freeze([])
     });
-  };
+  }
+
+  const blockResources = (buffer: BufferState, runtime: BufferRuntime | undefined): MarkdownBlockResources => (
+    finishMarkdownRender(blockResourcesWork(buffer, runtime))
+  );
 
   const visibleDiagnosticsFor = (bufferId: BufferId): readonly import('./types.js').VellumDiagnostic[] => {
     const ranks = { info: 0, warning: 1, error: 2 } as const;
@@ -1549,7 +1609,7 @@ function instantiateVellumApplication(
     const operation = (id: string, run: VellumOperation['run'], concurrency: VellumOperation['concurrency'] = 'keep-first'): VellumOperation => ({ id, concurrency, run });
     switch (effect.kind) {
       case 'newFile': api.newBuffer(); return;
-      case 'reopenClosed': api.reopenRecentlyClosed(); return;
+      case 'reopenClosed': return operation('reopen-closed', async (signal) => { await api.reopenRecentlyClosed(signal); });
       case 'closeBuffer': if (bufferId !== undefined) api.requestCloseBuffer(bufferId); return;
       case 'textEdit': if (bufferId !== undefined) api.executeMarkdownCommand(bufferId, effect.commandId); return;
       case 'navigate': executeNavigationEffect(api, effect.commandId); return;
@@ -1597,7 +1657,7 @@ function instantiateVellumApplication(
       assertActive();
       const sourceRevision = source.length === 0 ? 0 : 1;
       return addBuffer({
-        source, label, format: defaultFormat, sourceRevision, savedRevision: 0,
+        source, label, format: defaultFormat, sourceRevision, savedSource: '',
         externalFileState: Object.freeze({ kind: 'untracked' })
       });
     },
@@ -1605,25 +1665,34 @@ function instantiateVellumApplication(
       assertActive();
       const sourceRevision = source.length === 0 ? 0 : 1;
       return addBuffer({
-        source, label, format: defaultFormat, sourceRevision, savedRevision: 0,
+        source, label, format: defaultFormat, sourceRevision, savedSource: '',
         externalFileState: Object.freeze({ kind: 'untracked' })
       });
     },
     async openFile(filePath, signal) {
       assertActive();
+      signal?.throwIfAborted();
+      const alreadyOpen = findOpenFile(path.resolve(filePath));
+      if (alreadyOpen !== undefined) {
+        api.activateBuffer(alreadyOpen.id);
+        await api.checkExternalFile(alreadyOpen.id);
+        return alreadyOpen.id;
+      }
       const file = await readSourceFile(filePath, signal);
       assertActive();
-      const existing = Object.values(state.project.buffers).find((buffer) => {
-        const external = buffer.externalFileState;
-        return buffer.path === file.path
-          || (external.kind === 'current' && external.fingerprint.realPath === file.realPath)
-          || (external.kind === 'conflict' && external.disk.realPath === file.realPath);
-      });
+      const existing = findOpenFile(file.path, file.fingerprint);
       if (existing !== undefined) {
         api.activateBuffer(existing.id);
-        const existingFingerprint = existing.externalFileState.kind === 'untracked'
-          ? undefined
-          : externalFileStateFingerprint(existing.externalFileState);
+        if (existing.path !== file.path && existing.path !== undefined
+          && await externalFileFingerprint(existing.path) === undefined) {
+          const current = state.project.buffers[existing.id];
+          if (current?.path === existing.path && current.savedFileFingerprint !== undefined) {
+            replaceBuffer({ ...current, path: file.path, label: file.label,
+              savedFileFingerprint: Object.freeze({ ...current.savedFileFingerprint, realPath: file.realPath }) });
+            if (options.watchFiles !== false) attachWatcher(existing.id, file.path);
+          }
+        }
+        const existingFingerprint = existing.savedFileFingerprint;
         if (existingFingerprint === undefined || !sameExternalFileRevision(existingFingerprint, file.fingerprint)) {
           await api.checkExternalFile(existing.id);
         }
@@ -1635,7 +1704,8 @@ function instantiateVellumApplication(
         label: file.label,
         format: file.format,
         sourceRevision: 0,
-        savedRevision: 0,
+        savedSource: file.source,
+        savedFileFingerprint: file.fingerprint,
         externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint })
       });
     },
@@ -1797,6 +1867,11 @@ function instantiateVellumApplication(
         if (buffer.externalFileState.kind === 'conflict' || buffer.externalFileState.kind === 'deleted') {
           throw new Error(`Resolve the external file state before moving ${oldPath}.`);
         }
+        const observed = await externalFileFingerprint(oldPath);
+        if (observed === undefined || buffer.savedFileFingerprint === undefined
+          || !sameExternalFileRevision(observed, buffer.savedFileFingerprint)) {
+          throw new Error(`The file changed externally before the project move: ${oldPath}`);
+        }
       }
       const preparedWrites = new Map<string, {
         readonly source: string;
@@ -1839,7 +1914,7 @@ function instantiateVellumApplication(
             const target = remapMovedPath(oldPath, source, destination);
             const current = await readSourceFile(target);
             const saved = await saveSourceFile(target, prepared.source, {
-              expectedFingerprint: current.fingerprint,
+              expectedFingerprint: Object.freeze({ ...prepared.original.fingerprint, realPath: current.realPath }),
               format: current.format
             });
             committedFiles.set(target, saved);
@@ -1854,6 +1929,12 @@ function instantiateVellumApplication(
             const futurePath = remapMovedPath(oldPath, source, destination);
             if (futurePath === oldPath && !changesByPath.has(oldPath)) continue;
             const current = committedFiles.get(futurePath) ?? await readSourceFile(futurePath);
+            if (!committedFiles.has(futurePath)) {
+              const baseline = openByOldPath.get(oldPath)?.savedFileFingerprint;
+              if (baseline === undefined || !sameExternalFileRevision(current.fingerprint, { ...baseline, realPath: current.realPath })) {
+                throw new Error(`The file changed externally during the project move: ${futurePath}`);
+              }
+            }
             committedFiles.set(futurePath, current);
           }
         });
@@ -1883,7 +1964,8 @@ function instantiateVellumApplication(
           if (current !== undefined && saved !== undefined) {
             replaceBuffer({
               ...current,
-              savedRevision: current.sourceRevision,
+              savedSource: saved.source,
+              savedFileFingerprint: saved.fingerprint,
               externalFileState: Object.freeze({ kind: 'current', fingerprint: saved.fingerprint })
             });
           }
@@ -1901,6 +1983,8 @@ function instantiateVellumApplication(
             ...current,
             path: futurePath,
             label: path.basename(futurePath),
+            savedFileFingerprint: fingerprint,
+            ...(file === undefined ? {} : { savedSource: file.source }),
             externalFileState: Object.freeze({ kind: 'current', fingerprint })
           });
         }
@@ -2085,6 +2169,7 @@ function instantiateVellumApplication(
       const dialog = state.dialogState;
       if (dialog?.kind !== 'filePath') return false;
       signal?.throwIfAborted();
+      const closingProject = state.project;
       const entered = value ?? dialog.command.editor.input.text;
       if (entered.trim().length === 0 && dialog.operation !== 'filterProjectTree') {
         commit(Object.freeze({
@@ -2120,7 +2205,10 @@ function instantiateVellumApplication(
         }
         signal?.throwIfAborted();
         if (state.dialogState !== dialog) return false;
+        if (dialog.afterSave !== undefined && !sameClosingBuffers(closingProject)) return false;
         if (dialog.afterSave?.kind === 'closeBuffer') {
+          const buffer = state.project.buffers[dialog.afterSave.bufferId];
+          if (buffer !== undefined && bufferIsDirty(buffer)) return false;
           closeBuffer(dialog.afterSave.bufferId);
           await api.persistState();
         } else if (dialog.afterSave?.kind === 'closeApplication') {
@@ -2137,10 +2225,12 @@ function instantiateVellumApplication(
             }));
             return false;
           }
-          commit(clearDialog(state));
           if (!await api.saveAll(signal)) return false;
-          for (const bufferId of [...state.project.bufferOrder]) closeBuffer(bufferId);
+          if (state.dialogState !== dialog || !sameClosingBuffers(closingProject)
+            || Object.values(state.project.buffers).some(bufferIsDirty)) return false;
           await api.persistState();
+          if (signal?.aborted === true || state.dialogState !== dialog || !sameClosingBuffers(closingProject)) return false;
+          commit(clearDialog(state));
           return true;
         } else if (dialog.afterSave?.kind === 'saveAll') {
           const remaining = dialog.afterSave.bufferIds.filter((bufferId) => {
@@ -2296,7 +2386,7 @@ function instantiateVellumApplication(
       const snapshot = options.recoveryJournal?.snapshots.find((candidate) => candidate.generation === generation);
       if (snapshot === undefined) throw new Error(`Recovery generation is unavailable: ${String(generation)}`);
       const restored = await restoreApplicationSeed(options.sessionRecord, Object.freeze({
-        schemaVersion: 1,
+        schemaVersion: 2,
         snapshots: Object.freeze([snapshot])
       }));
       signal?.throwIfAborted();
@@ -2686,6 +2776,9 @@ function instantiateVellumApplication(
       }
     },
     updateTextWidthProfile(widthProfile) {
+      if (textWidthProfileKey(currentWidthProfile) !== textWidthProfileKey(widthProfile)) {
+        for (const runtime of runtimes.values()) invalidatePreviewPreparation(runtime);
+      }
       currentWidthProfile = widthProfile;
       // Accepted component layouts preserve source anchors after real allocation.
     },
@@ -2708,14 +2801,74 @@ function instantiateVellumApplication(
       anchorTypewriterViewport(bufferId);
       synchronizeCommittedPanes(bufferId);
     },
+    acceptPreviewAllocation(bufferId, document, resourceRevision, allocation) {
+      const buffer = state.project.buffers[bufferId];
+      const runtime = runtimes.get(bufferId);
+      if (disposed || buffer?.preview.kind !== 'ready' || runtime === undefined
+        || document !== buffer.editor.document || resourceRevision !== buffer.previewResourceRevision) return undefined;
+      if (allocation.width < 1 || allocation.rows < 1) {
+        invalidatePreviewPreparation(runtime);
+        return undefined;
+      }
+      const previous = runtime.previewPreparation;
+      if (previous !== undefined && !previous.controller.signal.aborted
+        && previous.document === document && previous.resourceRevision === resourceRevision
+        && previous.allocation.width === allocation.width
+        && textWidthProfileKey(previous.allocation.widthProfile) === textWidthProfileKey(allocation.widthProfile)) return undefined;
+      invalidatePreviewPreparation(runtime);
+      const preparation = { document, resourceRevision, allocation, controller: new AbortController() };
+      runtime.previewPreparation = preparation;
+      const tree = buffer.preview.snapshot.document.tree;
+      const geometry = vellumPreviewDocumentGeometry(allocation.width);
+      return {
+        id: `preview-layout:${bufferId}`, concurrency: 'replace',
+        async run(effectSignal) {
+          const signal = AbortSignal.any([effectSignal, preparation.controller.signal]);
+          if (signal.aborted || runtime.previewPreparation !== preparation) {
+            if (signal.aborted) preparation.controller.abort();
+            return;
+          }
+          try {
+            const resources = await prepareMarkdownRender(blockResourcesWork(buffer, runtime), { signal });
+            const layout = await prepareMarkdownPreview(
+              tree, geometry.contentWidth, markdownTheme, allocation.widthProfile, runtime.previewLayouts,
+              resources, { signal },
+            );
+            const presentation = await prepareMarkdownPreviewPresentation(
+              layout, allocation.width, geometry.contentColumn, `preview-content-${bufferId}`, { signal },
+            );
+            const current = state.project.buffers[bufferId];
+            if (signal.aborted || disposed || runtimes.get(bufferId) !== runtime || runtime.previewPreparation !== preparation
+              || current?.editor.document !== document || current.previewResourceRevision !== resourceRevision) return;
+            runtime.previewPresentation = presentation;
+            publishApplicationUpdate('previewLayout', bufferId);
+          } catch (error) {
+            if (signal.aborted || runtime.previewPreparation !== preparation) return;
+            const presentation = runtime.previewPresentation;
+            runtime.previewPresentation = Object.freeze({
+              kind: 'failed', rows: presentation.kind === 'ready' ? presentation.layout.rows.length : presentation.rows,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            publishApplicationUpdate('previewLayout', bufferId);
+          } finally {
+            // A disposed TUI can leave the application alive for another runtime.
+            // Permit that runtime to request the same allocation again.
+            if (signal.aborted) preparation.controller.abort();
+          }
+        },
+      };
+    },
     commitPreviewLayout(bufferId, document, resourceRevision, snapshot) {
       const buffer = state.project.buffers[bufferId];
-      if (buffer === undefined || document !== buffer.editor.document || resourceRevision !== buffer.previewResourceRevision) return;
+      const presentation = runtimes.get(bufferId)?.previewPresentation;
+      if (buffer === undefined || document !== buffer.editor.document || resourceRevision !== buffer.previewResourceRevision
+        || presentation?.kind !== 'ready' || presentation.layout !== snapshot.layout || presentation.width !== snapshot.width
+        || textWidthProfileKey(snapshot.widthProfile) !== textWidthProfileKey(snapshot.layout.widthProfile)) return;
       const panes = paneLayouts.get(bufferId) ?? { origin: 'editor' as const };
       const previous = panes.preview;
       panes.preview = { ...snapshot, document };
       paneLayouts.set(bufferId, panes);
-      if (previous?.document === document && (previous.width !== snapshot.width || previous.rows !== snapshot.rows)) {
+      if (previous?.document === document && (previous.layout !== snapshot.layout || previous.rows !== snapshot.rows)) {
         const previewScroll = synchronizePaneScroll(buffer.previewScroll,
           { map: previous.layout.rowOffsetMap, viewportRows: previous.rows },
           buffer.previewScroll, { map: snapshot.layout.rowOffsetMap, viewportRows: snapshot.rows });
@@ -2789,11 +2942,11 @@ function instantiateVellumApplication(
           commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
           return false;
         }
-        const expected = savingSamePath && snapshot.externalFileState.kind === 'current'
-          ? snapshot.externalFileState.fingerprint
+        const expected = savingSamePath && !overwriteConflict
+          ? snapshot.savedFileFingerprint
           : undefined;
-        const savedRevision = snapshot.sourceRevision;
-        const file = await saveSourceFile(target, textDocumentText(snapshot.editor.document), {
+        const savedSource = textDocumentText(snapshot.editor.document);
+        const file = await saveSourceFile(target, savedSource, {
           format: snapshot.format,
           ...(expected === undefined ? {} : { expectedFingerprint: expected }),
           overwriteExisting: overwriteConflict,
@@ -2806,15 +2959,25 @@ function instantiateVellumApplication(
             ...current,
             path: file.path,
             label: file.label,
-            savedRevision,
+            savedSource,
+            savedFileFingerprint: file.fingerprint,
             externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
             format: file.format
           });
-          if (current.path !== file.path) attachWatcher(bufferId, file.path);
+          if (options.watchFiles !== false) attachWatcher(bufferId, file.path);
         }
         await refreshChangedProjectPaths([file.path]);
         await api.persistState();
         return true;
+      } catch (error) {
+        if (!(error instanceof ExternalFileChangedError)) throw error;
+        const current = state.project.buffers[bufferId];
+        if (current?.savedFileFingerprint?.realPath !== error.current.realPath) throw error;
+        if (current !== undefined) {
+          replaceBuffer({ ...current, externalFileState: Object.freeze({ kind: 'conflict', disk: error.current }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
+        }
+        return false;
       } finally {
         release();
         if (saveQueues.get(bufferId) === queued) saveQueues.delete(bufferId);
@@ -2853,7 +3016,7 @@ function instantiateVellumApplication(
       closeBuffer(bufferId);
       return true;
     },
-    async resolveDirtyBuffer(action, destination) {
+    async resolveDirtyBuffer(action, destination, signal) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'dirtyBuffer' || dialog.closeApplication) return false;
       const bufferId = dialog.bufferIds[0];
@@ -2865,17 +3028,32 @@ function instantiateVellumApplication(
         commit(Object.freeze({ ...state, dialogState: saveAsDialog(Object.freeze({ kind: 'closeBuffer', bufferId })) }));
         return false;
       }
-      if (action === 'save' && !await api.saveBuffer(bufferId, destination)) return false;
+      const closingProject = state.project;
+      if (action === 'save' && !await api.saveBuffer(bufferId, destination, false, signal)) return false;
+      if (signal?.aborted === true || state.dialogState !== dialog
+        || !sameClosingBuffers(closingProject, bufferId)
+        || (action === 'save' && state.project.buffers[bufferId] !== undefined && bufferIsDirty(state.project.buffers[bufferId]!))) return false;
       closeBuffer(bufferId);
       await api.persistState();
       return true;
     },
-    reopenRecentlyClosed() {
+    async reopenRecentlyClosed(signal) {
       const record = state.project.recentlyClosed[0];
       if (record === undefined) return undefined;
+      signal?.throwIfAborted();
+      if (record.path !== undefined) {
+        const observed = record.externalFileState.kind === 'untracked' ? undefined : externalFileStateFingerprint(record.externalFileState);
+        const live = findOpenFile(record.path, observed);
+        const id = await api.openFile(live?.path ?? record.path, signal);
+        commit(Object.freeze({
+          ...state,
+          project: Object.freeze({ ...state.project, recentlyClosed: Object.freeze(state.project.recentlyClosed.filter((entry) => entry !== record)) })
+        }));
+        return id;
+      }
       commit(Object.freeze({
         ...state,
-        project: Object.freeze({ ...state.project, recentlyClosed: Object.freeze(state.project.recentlyClosed.slice(1)) })
+        project: Object.freeze({ ...state.project, recentlyClosed: Object.freeze(state.project.recentlyClosed.filter((entry) => entry !== record)) })
       }));
       const source = textDocumentText(record.editor.document);
       const id = addBuffer({
@@ -2884,12 +3062,17 @@ function instantiateVellumApplication(
         ...(record.path === undefined ? {} : { path: record.path }),
         format: record.format,
         sourceRevision: record.sourceRevision,
-        savedRevision: record.savedRevision,
+        savedSource: record.savedSource,
+        ...(record.savedFileFingerprint === undefined ? {} : { savedFileFingerprint: record.savedFileFingerprint }),
         externalFileState: record.externalFileState,
         editor: record.editor,
         previewScroll: record.previewScroll
       });
       return id;
+    },
+    canExit(project) {
+      return state.dialogState === undefined && sameClosingBuffers(project)
+        && !Object.values(state.project.buffers).some(bufferIsDirty);
     },
     requestCloseApplication() {
       const dirty = state.project.bufferOrder.filter((id) => {
@@ -2903,12 +3086,14 @@ function instantiateVellumApplication(
       }));
       return false;
     },
-    async resolveCloseApplication(action) {
+    async resolveCloseApplication(action, signal) {
       const dialog = state.dialogState;
       if (dialog?.kind !== 'dirtyBuffer' || !dialog.closeApplication || action === 'cancel') {
         commit(clearDialog(state));
         return false;
       }
+      signal?.throwIfAborted();
+      const closingProject = state.project;
       if (action === 'saveAll') {
         const unsaved = dialog.bufferIds.find((bufferId) => state.project.buffers[bufferId]?.path === undefined);
         if (unsaved !== undefined) {
@@ -2919,10 +3104,26 @@ function instantiateVellumApplication(
           }));
           return false;
         }
-        if (!await api.saveAll()) return false;
+        if (!await api.saveAll(signal)) return false;
       }
-      for (const bufferId of [...state.project.bufferOrder]) closeBuffer(bufferId);
+      if (signal?.aborted === true || state.dialogState !== dialog || !sameClosingBuffers(closingProject)) return false;
+      if (action === 'saveAll' && Object.values(state.project.buffers).some(bufferIsDirty)) return false;
+      if (action === 'discardAll') {
+        for (const bufferId of closingProject.bufferOrder) {
+          const buffer = state.project.buffers[bufferId];
+          if (buffer === undefined || !bufferIsDirty(buffer)) continue;
+          if (buffer.path === undefined) closeBuffer(bufferId);
+          else applyTransition(bufferId, { kind: 'applyChanges', changeSet: createTextChangeSet([{
+            startOffset: 0, endOffsetExclusive: textDocumentText(buffer.editor.document).length, insertedText: buffer.savedSource
+          }]) });
+        }
+      }
+      const persistedProject = state.project;
       await api.persistState();
+      signal?.throwIfAborted();
+      if ((action === 'saveAll' && state.dialogState !== dialog)
+        || !sameClosingBuffers(persistedProject)) return false;
+      commit(clearDialog(state));
       return true;
     },
     async checkExternalFile(bufferId) {
@@ -2932,22 +3133,26 @@ function instantiateVellumApplication(
       const currentFingerprint = await externalFileFingerprint(observedPath);
       let buffer = state.project.buffers[bufferId];
       if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
-      const previous = externalFileStateFingerprint(buffer.externalFileState);
+      const previous = buffer.savedFileFingerprint;
+      if (previous === undefined) return false;
+      if (previous !== snapshot.savedFileFingerprint) return api.checkExternalFile(bufferId);
       if (currentFingerprint === undefined) {
         await api.refreshFileTree();
         buffer = state.project.buffers[bufferId];
         if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
-        const latestPrevious = externalFileStateFingerprint(buffer.externalFileState);
-        const renamed = await findRenamedPath(state.project.index, latestPrevious);
+        const latestPrevious = buffer.savedFileFingerprint;
+        if (latestPrevious === undefined) return false;
+        const renamed = await findRenamedPath(state.project.index, externalFileStateFingerprint(buffer.externalFileState));
         if (renamed !== undefined) {
           const renamedFingerprint = await externalFileFingerprint(renamed);
           buffer = state.project.buffers[bufferId];
           if (renamedFingerprint !== undefined && buffer?.path === observedPath) {
+            if (buffer.savedFileFingerprint !== latestPrevious) return api.checkExternalFile(bufferId);
             replaceBuffer({
               ...buffer,
               path: renamed,
               label: path.basename(renamed),
-              externalFileState: Object.freeze({ kind: 'current', fingerprint: renamedFingerprint })
+              savedFileFingerprint: Object.freeze({ ...latestPrevious, realPath: renamedFingerprint.realPath })
             });
             commit(Object.freeze({
               ...state,
@@ -2955,10 +3160,15 @@ function instantiateVellumApplication(
                 ...state.project,
                 recentlyOpenedPaths: Object.freeze(state.project.recentlyOpenedPaths.map((candidate) => (
                   candidate === observedPath ? renamed : candidate
+                ))),
+                recentlyClosed: Object.freeze(state.project.recentlyClosed.map((record) => (
+                  record.path === observedPath ? Object.freeze({ ...record, path: renamed }) : record
                 )))
               })
             }));
-            attachWatcher(bufferId, renamed);
+            if (options.watchFiles !== false) attachWatcher(bufferId, renamed);
+            await api.checkExternalFile(bufferId);
+            schedulePersistence();
             return true;
           }
         }
@@ -2972,7 +3182,7 @@ function instantiateVellumApplication(
         return true;
       }
       if (sameExternalFileRevision(currentFingerprint, previous)) {
-        if (buffer.externalFileState.kind !== 'deleted') return false;
+        if (buffer.externalFileState.kind === 'current' && sameExternalFileRevision(buffer.externalFileState.fingerprint, currentFingerprint)) return false;
         replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'current', fingerprint: currentFingerprint }) });
         if (state.dialogState?.kind === 'externalConflict' && state.dialogState.bufferId === bufferId) {
           commit(clearDialog(state));
@@ -3023,7 +3233,8 @@ function instantiateVellumApplication(
         ...buffer,
         editor,
         sourceRevision: revision,
-        savedRevision: revision,
+        savedSource: file.source,
+        savedFileFingerprint: file.fingerprint,
         preview,
         externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
         format: file.format
@@ -3175,21 +3386,13 @@ function instantiateVellumApplication(
       if (runtime !== undefined) runtime.hybridDecorations = hybridDecorationCache(buffer, decorations, snapshot.writingMode.focus, currentWidthProfile);
       return decorations;
     },
-    previewMedia(bufferId, snapshot = state) {
+    previewPresentation(bufferId, snapshot = state) {
       const buffer = snapshot.project.buffers[bufferId];
+      const current = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
-      if (buffer?.preview.kind !== 'ready' || runtime === undefined || state.project.buffers[bufferId]?.editor.document !== buffer.editor.document) return [];
-      return [...walkMarkdown(buffer.preview.snapshot.document.tree)].flatMap(({ node }) => {
-        const image = runtime.images.get(node.id);
-        if (image?.kind !== 'ready') return [];
-        if (node.kind === 'image') {
-          const media = imagePreviewSpan(node, inlinePlainText(node.children), markdownTheme, image).media;
-          return media === undefined ? [] : [media];
-        }
-        return node.kind === 'codeBlock' && runtime.diagramText.has(node.id)
-          ? [{ image: image.image, label: 'Mermaid diagram', sourceSpan: node.contentSpan }]
-          : [];
-      });
+      return buffer === undefined || runtime === undefined || current?.editor.document !== buffer.editor.document
+        || current.previewResourceRevision !== buffer.previewResourceRevision
+        ? pendingPreview : runtime.previewPresentation;
     },
     previewLayout(
       bufferId,

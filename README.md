@@ -35,6 +35,12 @@ vellum export docs/ --batch --profile html
 vellum export book/ --project-manifest
 ```
 
+For a terminal that renders emoji sequences as separate characters, use
+`vellum README.md --emoji-width codepoint`. This selects measured scalar cell
+widths without splitting graphemes for editing. The default is joined wide
+emoji; `narrow` is also available. Select a policy from the terminal's actual
+rendering behavior rather than its name alone.
+
 Run `vellum --help` for the complete generated command reference. Starting
 without a path restores the previous session or opens the empty-workspace
 screen.
@@ -197,8 +203,12 @@ Clean session continuity and unsaved-source recovery are separate:
   modes, recent searches/projects, diagnostics preferences, and export history.
   It does not duplicate saved file contents.
 - The bounded recovery journal stores only untitled or dirty source with disk
-  fingerprints, generations, timestamps, and checksums. Multiple generations
+  fingerprints, saved-source baselines, generations, timestamps, and checksums. Multiple generations
   can be selected after startup.
+
+Recovery uses schema version 2. Older recovery journals are preserved in
+quarantine rather than loaded through a compatibility path. Save pending work
+before updating an older running editor.
 
 Corrupt or unknown session/recovery data is quarantined and reported instead of
 preventing startup. File watchers detect replacement, modification, rename, and
