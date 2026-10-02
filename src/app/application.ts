@@ -533,6 +533,12 @@ function instantiateVellumApplication(
     reason: VellumApplicationUpdateReason = 'state',
     bufferId?: BufferId
   ): void => {
+    // A conflict dialog is a projection of the referenced buffer's disk state.
+    // Resolving that state and retiring the dialog must be one published commit.
+    if (next.dialogState?.kind === 'externalConflict') {
+      const external = next.project.buffers[next.dialogState.bufferId]?.externalFileState;
+      if (external?.kind !== 'conflict' && external?.kind !== 'deleted') next = clearDialog(next);
+    }
     if (next === state && reason === 'state') return;
     const previousTree = state.project.fileTree;
     const nextTree = next.project.fileTree;
@@ -3127,133 +3133,152 @@ function instantiateVellumApplication(
       return true;
     },
     async checkExternalFile(bufferId) {
-      const snapshot = state.project.buffers[bufferId];
-      if (snapshot?.path === undefined || snapshot.externalFileState.kind === 'untracked') return false;
-      const observedPath = snapshot.path;
-      const currentFingerprint = await externalFileFingerprint(observedPath);
-      let buffer = state.project.buffers[bufferId];
-      if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
-      const previous = buffer.savedFileFingerprint;
-      if (previous === undefined) return false;
-      if (previous !== snapshot.savedFileFingerprint) return api.checkExternalFile(bufferId);
-      if (currentFingerprint === undefined) {
-        await api.refreshFileTree();
-        buffer = state.project.buffers[bufferId];
+      for (;;) {
+        // Watcher notifications may arrive between the atomic write and publication
+        // of its saved baseline. Order their reads after that buffer's save queue.
+        const saving = saveQueues.get(bufferId);
+        if (saving !== undefined) await saving;
+        const snapshot = state.project.buffers[bufferId];
+        if (snapshot?.path === undefined || snapshot.externalFileState.kind === 'untracked') return false;
+        const observedPath = snapshot.path;
+        const currentFingerprint = await externalFileFingerprint(observedPath);
+        if (saveQueues.has(bufferId)) continue;
+        let buffer = state.project.buffers[bufferId];
         if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
-        const latestPrevious = buffer.savedFileFingerprint;
-        if (latestPrevious === undefined) return false;
-        const renamed = await findRenamedPath(state.project.index, externalFileStateFingerprint(buffer.externalFileState));
-        if (renamed !== undefined) {
-          const renamedFingerprint = await externalFileFingerprint(renamed);
+        const previous = buffer.savedFileFingerprint;
+        if (previous === undefined) return false;
+        if (previous !== snapshot.savedFileFingerprint) continue;
+        if (currentFingerprint === undefined) {
+          await api.refreshFileTree();
+          if (saveQueues.has(bufferId)) continue;
           buffer = state.project.buffers[bufferId];
-          if (renamedFingerprint !== undefined && buffer?.path === observedPath) {
-            if (buffer.savedFileFingerprint !== latestPrevious) return api.checkExternalFile(bufferId);
-            replaceBuffer({
-              ...buffer,
-              path: renamed,
-              label: path.basename(renamed),
-              savedFileFingerprint: Object.freeze({ ...latestPrevious, realPath: renamedFingerprint.realPath })
-            });
-            commit(Object.freeze({
-              ...state,
-              project: Object.freeze({
-                ...state.project,
-                recentlyOpenedPaths: Object.freeze(state.project.recentlyOpenedPaths.map((candidate) => (
-                  candidate === observedPath ? renamed : candidate
-                ))),
-                recentlyClosed: Object.freeze(state.project.recentlyClosed.map((record) => (
-                  record.path === observedPath ? Object.freeze({ ...record, path: renamed }) : record
-                )))
-              })
-            }));
-            if (options.watchFiles !== false) attachWatcher(bufferId, renamed);
-            await api.checkExternalFile(bufferId);
-            schedulePersistence();
-            return true;
+          if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
+          const latestPrevious = buffer.savedFileFingerprint;
+          if (latestPrevious === undefined) return false;
+          if (latestPrevious !== previous) continue;
+          const renamed = await findRenamedPath(state.project.index, externalFileStateFingerprint(buffer.externalFileState));
+          if (saveQueues.has(bufferId)) continue;
+          if (renamed !== undefined) {
+            const renamedFingerprint = await externalFileFingerprint(renamed);
+            if (saveQueues.has(bufferId)) continue;
+            buffer = state.project.buffers[bufferId];
+            if (renamedFingerprint !== undefined && buffer?.path === observedPath) {
+              if (buffer.savedFileFingerprint !== latestPrevious) continue;
+              replaceBuffer({
+                ...buffer,
+                path: renamed,
+                label: path.basename(renamed),
+                savedFileFingerprint: Object.freeze({ ...latestPrevious, realPath: renamedFingerprint.realPath })
+              });
+              commit(Object.freeze({
+                ...state,
+                project: Object.freeze({
+                  ...state.project,
+                  recentlyOpenedPaths: Object.freeze(state.project.recentlyOpenedPaths.map((candidate) => (
+                    candidate === observedPath ? renamed : candidate
+                  ))),
+                  recentlyClosed: Object.freeze(state.project.recentlyClosed.map((record) => (
+                    record.path === observedPath ? Object.freeze({ ...record, path: renamed }) : record
+                  )))
+                })
+              }));
+              if (options.watchFiles !== false) attachWatcher(bufferId, renamed);
+              await api.checkExternalFile(bufferId);
+              schedulePersistence();
+              return true;
+            }
           }
+          buffer = state.project.buffers[bufferId];
+          if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
+          if (buffer.savedFileFingerprint !== latestPrevious) continue;
+          replaceBuffer({
+            ...buffer,
+            externalFileState: Object.freeze({ kind: 'deleted', previous: externalFileStateFingerprint(buffer.externalFileState) })
+          });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
+          return true;
         }
-        buffer = state.project.buffers[bufferId];
-        if (buffer?.path !== observedPath || buffer.externalFileState.kind === 'untracked') return false;
-        replaceBuffer({
-          ...buffer,
-          externalFileState: Object.freeze({ kind: 'deleted', previous: externalFileStateFingerprint(buffer.externalFileState) })
-        });
-        commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
-        return true;
-      }
-      if (sameExternalFileRevision(currentFingerprint, previous)) {
-        if (buffer.externalFileState.kind === 'current' && sameExternalFileRevision(buffer.externalFileState.fingerprint, currentFingerprint)) return false;
-        replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'current', fingerprint: currentFingerprint }) });
-        if (state.dialogState?.kind === 'externalConflict' && state.dialogState.bufferId === bufferId) {
-          commit(clearDialog(state));
+        if (sameExternalFileRevision(currentFingerprint, previous)) {
+          if (buffer.externalFileState.kind === 'current' && sameExternalFileRevision(buffer.externalFileState.fingerprint, currentFingerprint)) return false;
+          replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'current', fingerprint: currentFingerprint }) });
+          return true;
         }
-        return true;
+        if (bufferIsDirty(buffer)) {
+          replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: currentFingerprint }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
+          return true;
+        }
+        return api.reloadExternalFile(bufferId);
       }
-      if (bufferIsDirty(buffer)) {
-        replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: currentFingerprint }) });
-        commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
-        return true;
-      }
-      return api.reloadExternalFile(bufferId);
     },
     async reloadExternalFile(bufferId) {
       const snapshot = state.project.buffers[bufferId];
       const runtime = runtimes.get(bufferId);
       if (snapshot?.path === undefined || runtime === undefined) return false;
-      const file = await readSourceFile(snapshot.path);
-      const buffer = state.project.buffers[bufferId];
-      if (buffer?.path !== snapshot.path || runtimes.get(bufferId) !== runtime) return false;
-      if (buffer.sourceRevision !== snapshot.sourceRevision) {
-        if (!bufferIsDirty(buffer)
-          && buffer.externalFileState.kind === 'current'
-          && sameExternalFileRevision(buffer.externalFileState.fingerprint, file.fingerprint)) {
-          return false;
+      for (;;) {
+        const saving = saveQueues.get(bufferId);
+        if (saving !== undefined) await saving;
+        const baseline = state.project.buffers[bufferId]?.savedFileFingerprint;
+        const file = await readSourceFile(snapshot.path);
+        if (saveQueues.has(bufferId)) continue;
+        const buffer = state.project.buffers[bufferId];
+        if (buffer?.path !== snapshot.path || runtimes.get(bufferId) !== runtime) return false;
+        if (buffer.savedFileFingerprint !== baseline) continue;
+        if (buffer.sourceRevision !== snapshot.sourceRevision) {
+          // New local edits revoke the reload, but do not imply a disk conflict.
+          if (baseline !== undefined && sameExternalFileRevision(baseline, file.fingerprint)) {
+            if (buffer.externalFileState.kind !== 'current'
+              || !sameExternalFileRevision(buffer.externalFileState.fingerprint, file.fingerprint)) {
+              replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }) });
+            }
+            return false;
+          }
+          replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: file.fingerprint }) });
+          commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
+          return true;
         }
-        replaceBuffer({ ...buffer, externalFileState: Object.freeze({ kind: 'conflict', disk: file.fingerprint }) });
-        commit(Object.freeze({ ...state, dialogState: Object.freeze({ kind: 'externalConflict', bufferId }) }));
+        const revision = snapshot.sourceRevision + 1;
+        const caret = Math.min(snapshot.editor.caret.position.offset, file.source.length);
+        const selection = snapshot.editor.selection === undefined
+          ? undefined
+          : textDocumentSelectionBetween(
+              Math.min(snapshot.editor.selection.anchor.offset, file.source.length),
+              Math.min(snapshot.editor.selection.focus.offset, file.source.length)
+            );
+        const editor = createTextAreaState({
+          value: file.source,
+          caret: textCaretAt(caret),
+          ...(selection === undefined ? {} : { selection }),
+          scroll: snapshot.editor.scroll
+        });
+        const preview = runtime.parser.replaceSource(file.source, revision);
+        resetSessionScopedPreviewCaches(runtime);
+        replaceBuffer({
+          ...buffer,
+          editor,
+          sourceRevision: revision,
+          savedSource: file.source,
+          savedFileFingerprint: file.fingerprint,
+          preview,
+          externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
+          format: file.format
+        });
+        const dialog = state.dialogState;
+        if (dialog?.kind === 'documentSearch' && dialog.selectionOnly) {
+          const nextDialog = {
+            ...dialog,
+            selectionOnly: false,
+            matches: Object.freeze([]),
+            error: 'Selection-only search was disabled because the source document was reloaded.'
+          };
+          delete nextDialog.selectionSpan;
+          delete nextDialog.selectedIndex;
+          commit(Object.freeze({ ...state, dialogState: Object.freeze(nextDialog) }));
+        }
+        schedulePreviewResources(bufferId);
+        schedulePersistence();
         return true;
       }
-      const revision = snapshot.sourceRevision + 1;
-      const caret = Math.min(snapshot.editor.caret.position.offset, file.source.length);
-      const selection = snapshot.editor.selection === undefined
-        ? undefined
-        : textDocumentSelectionBetween(
-            Math.min(snapshot.editor.selection.anchor.offset, file.source.length),
-            Math.min(snapshot.editor.selection.focus.offset, file.source.length)
-          );
-      const editor = createTextAreaState({
-        value: file.source,
-        caret: textCaretAt(caret),
-        ...(selection === undefined ? {} : { selection }),
-        scroll: snapshot.editor.scroll
-      });
-      const preview = runtime.parser.replaceSource(file.source, revision);
-      resetSessionScopedPreviewCaches(runtime);
-      replaceBuffer({
-        ...buffer,
-        editor,
-        sourceRevision: revision,
-        savedSource: file.source,
-        savedFileFingerprint: file.fingerprint,
-        preview,
-        externalFileState: Object.freeze({ kind: 'current', fingerprint: file.fingerprint }),
-        format: file.format
-      });
-      const dialog = state.dialogState;
-      if (dialog?.kind === 'documentSearch' && dialog.selectionOnly) {
-        const nextDialog = {
-          ...dialog,
-          selectionOnly: false,
-          matches: Object.freeze([]),
-          error: 'Selection-only search was disabled because the source document was reloaded.'
-        };
-        delete nextDialog.selectionSpan;
-        delete nextDialog.selectedIndex;
-        commit(Object.freeze({ ...state, dialogState: Object.freeze(nextDialog) }));
-      }
-      schedulePreviewResources(bufferId);
-      schedulePersistence();
-      return true;
     },
     keepBuffer(bufferId) {
       const buffer = state.project.buffers[bufferId];
@@ -3268,13 +3293,11 @@ function instantiateVellumApplication(
     },
     async overwriteExternalFile(bufferId, signal) {
       await api.saveBuffer(bufferId, undefined, true, signal);
-      commit(clearDialog(state));
     },
     async recreateDeletedFile(bufferId, signal) {
       const buffer = state.project.buffers[bufferId];
       if (buffer?.path === undefined || buffer.externalFileState.kind !== 'deleted') return;
       await api.saveBuffer(bufferId, buffer.path, true, signal);
-      commit(clearDialog(state));
     },
     async resolveExternalFileAction(action, signal) {
       const dialog = state.dialogState;
@@ -3286,10 +3309,10 @@ function instantiateVellumApplication(
       }
       if (action === 'compare') {
         const comparison = await api.compareExternalFile(buffer.id, signal);
+        if (state.dialogState !== dialog) return;
         commit(Object.freeze({ ...state, dialogState: Object.freeze({ ...dialog, comparison }) }));
       } else if (action === 'reloadDisk') {
         await api.reloadExternalFile(buffer.id);
-        commit(clearDialog(state));
       } else if (action === 'keepBuffer') {
         api.keepBuffer(buffer.id);
       } else if (action === 'saveAs') {

@@ -493,3 +493,192 @@ test('reopen reuses a live renamed identity even when the closed record path is 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+for (const resolution of ['reload', 'overwrite', 'saveAs'] as const) test(`resolving a disk conflict by ${resolution} atomically retires its dialog`, async () => {
+  const { directory, file } = await fixture();
+  const app = createVellumApplication({ watchFiles: false });
+  try {
+    const id = await app.openFile(file);
+    insert(app, id, 'local ');
+    await writeFile(file, 'external\n');
+    await app.checkExternalFile(id);
+    assert.equal(app.state().dialogState?.kind, 'externalConflict');
+    const inconsistent: string[] = [];
+    app.subscribe(({ state }) => {
+      const dialog = state.dialogState;
+      if (dialog?.kind !== 'externalConflict') return;
+      const kind = state.project.buffers[dialog.bufferId]?.externalFileState.kind;
+      if (kind !== 'conflict' && kind !== 'deleted') inconsistent.push(String(kind));
+    });
+    if (resolution === 'reload') await app.reloadExternalFile(id);
+    else if (resolution === 'overwrite') await app.saveBuffer(id, undefined, true);
+    else await app.saveBuffer(id, path.join(directory, 'copy.md'));
+    assert.equal(app.state().project.buffers[id]?.externalFileState.kind, 'current');
+    assert.equal(app.state().dialogState, undefined);
+    assert.deepEqual(inconsistent, []);
+  } finally {
+    await app.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('real watchers never mistake an atomic self-save for an external conflict or revoke quit', async () => {
+  const { directory, file } = await fixture();
+  const app = createVellumApplication();
+  try {
+    const id = await app.openFile(file);
+    const conflicts: string[] = [];
+    app.subscribe(({ state }) => {
+      if (state.dialogState?.kind === 'externalConflict') conflicts.push(state.project.buffers[id]?.externalFileState.kind ?? 'missing');
+    });
+    for (let iteration = 0; iteration < 10; iteration += 1) {
+      insert(app, id, 'x');
+      assert.equal(await app.saveBuffer(id), true);
+      await app.checkExternalFile(id);
+      assert.equal(app.state().dialogState, undefined);
+    }
+    insert(app, id, 'last');
+    app.requestCloseApplication();
+    assert.equal(await app.resolveCloseApplication('saveAll'), true);
+    await app.checkExternalFile(id);
+    assert.equal(app.state().dialogState, undefined);
+    assert.deepEqual(conflicts, []);
+  } finally {
+    await app.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const externalWriter of [false, true]) test(`disk observations wait for a paused save baseline${externalWriter ? ' and preserve a newer external write' : ' without changing the close prompt'}`, async () => {
+  const { directory, file } = await fixture();
+  const entered = deferred();
+  const release = deferred();
+  let pause = true;
+  const app = createVellumApplication({
+    watchFiles: true,
+    persistenceDelayMilliseconds: 60000,
+    recoveryStore: {
+      filePath: path.join(directory, 'recovery.json'),
+      async read() { return undefined; },
+      async write() { if (pause) { entered.resolve(); await release.promise; } },
+      async delete() {},
+      diagnostics() { return []; }
+    }
+  });
+  try {
+    const id = await app.openFile(file);
+    insert(app, id, 'saved ');
+    app.requestCloseApplication();
+    const dialog = app.state().dialogState;
+    const saving = app.saveBuffer(id);
+    await entered.promise;
+    assert.equal(await readFile(file, 'utf8'), 'saved original\n');
+    if (externalWriter) {
+      insert(app, id, 'newer ');
+      await writeFile(file, 'external writer\n');
+    }
+    let observed = false;
+    const checking = app.checkExternalFile(id).then(() => { observed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(observed, false);
+    assert.equal(app.state().dialogState, dialog);
+    pause = false;
+    release.resolve();
+    assert.equal(await saving, true);
+    await checking;
+    if (externalWriter) {
+      assert.equal(app.state().project.buffers[id]?.externalFileState.kind, 'conflict');
+      assert.equal(app.state().dialogState?.kind, 'externalConflict');
+      assert.equal(app.state().project.buffers[id]?.savedSource, 'saved original\n');
+      assert.equal(await app.saveBuffer(id), false);
+      assert.equal(await readFile(file, 'utf8'), 'external writer\n');
+    } else {
+      assert.equal(app.state().project.buffers[id]?.externalFileState.kind, 'current');
+      assert.equal(app.state().dialogState, dialog);
+      assert.equal(await app.resolveCloseApplication('saveAll'), true);
+    }
+  } finally {
+    pause = false;
+    release.resolve();
+    await app.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const externalWriter of [false, true]) test(`a stale reload preserves later edits with ${externalWriter ? 'changed' : 'unchanged'} disk contents`, async () => {
+  const { directory, file } = await fixture();
+  const entered = deferred();
+  const release = deferred();
+  let pause = true;
+  const app = createVellumApplication({
+    watchFiles: false, persistenceDelayMilliseconds: 60000,
+    recoveryStore: {
+      filePath: path.join(directory, 'recovery.json'),
+      async read() { return undefined; },
+      async write() { if (pause) { entered.resolve(); await release.promise; } },
+      async delete() {}, diagnostics() { return []; }
+    }
+  });
+  try {
+    const id = await app.openFile(file);
+    insert(app, id, 'saved ');
+    const saving = app.saveBuffer(id);
+    await entered.promise;
+    const reloading = app.reloadExternalFile(id);
+    insert(app, id, 'later ');
+    if (externalWriter) await writeFile(file, 'external\n');
+    pause = false;
+    release.resolve();
+    await saving;
+    assert.equal(await reloading, externalWriter);
+    assert.equal(source(app, id), 'saved later original\n');
+    assert.equal(dirty(app, id), true);
+    assert.equal(app.state().project.buffers[id]?.externalFileState.kind, externalWriter ? 'conflict' : 'current');
+    assert.equal(app.state().dialogState?.kind, externalWriter ? 'externalConflict' : undefined);
+    if (externalWriter) assert.equal(await app.saveBuffer(id), false);
+    assert.equal(await readFile(file, 'utf8'), externalWriter ? 'external\n' : 'saved original\n');
+  } finally {
+    pause = false;
+    release.resolve();
+    await app.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const action of ['overwriteDisk', 'recreate', 'reloadDisk'] as const) test(`completed ${action} cannot dismiss a newer dialog`, async () => {
+  const { directory, file } = await fixture();
+  const entered = deferred();
+  const release = deferred();
+  let pause = action !== 'reloadDisk';
+  const app = createVellumApplication({
+    watchFiles: false, persistenceDelayMilliseconds: 60000,
+    recoveryStore: {
+      filePath: path.join(directory, 'recovery.json'),
+      async read() { return undefined; },
+      async write() { if (pause) { entered.resolve(); await release.promise; } },
+      async delete() {}, diagnostics() { return []; }
+    }
+  });
+  try {
+    const id = await app.openFile(file);
+    insert(app, id, 'local ');
+    if (action === 'recreate') await rm(file);
+    else await writeFile(file, 'external\n');
+    await app.checkExternalFile(id);
+    const resolving = app.resolveExternalFileAction(action);
+    if (action !== 'reloadDisk') await entered.promise;
+    app.dispatchCommand('edit.find');
+    const dialog = app.state().dialogState;
+    assert.equal(dialog?.kind, 'documentSearch');
+    pause = false;
+    release.resolve();
+    await resolving;
+    assert.equal(app.state().project.buffers[id]?.externalFileState.kind, 'current');
+    assert.equal(app.state().dialogState, dialog);
+  } finally {
+    pause = false;
+    release.resolve();
+    await app.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
