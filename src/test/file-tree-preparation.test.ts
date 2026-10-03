@@ -84,7 +84,7 @@ test('large tree preparation yields, publishes exact snapshots, and retains sour
     assert.equal(application.state().project.fileTree.view, null, 'large preparation must yield before publication');
     const ready = await waitForTree(application);
     assert.equal(ready.source, source);
-    assert.equal(ready.view?.collection.totalCount, 4_097);
+    assert.equal(ready.view?.collection.count, 4_097);
     assert.equal(matchingTreeView(source, ready.interaction, ready.view), ready.view);
     assert.equal(updates.filter((update) => update.reason === 'fileTreeView').length, 1);
     assert.match(renderFramePlain(render(application.state())), /document-00000/u);
@@ -129,8 +129,8 @@ test('replacement filters, sorting and disclosure reject obsolete preparations a
     assert.equal(ready.source, desired.source);
     assert.notEqual(ready.source, old.source);
     assert.notEqual(ready.source, superseded.source);
-    assert.equal(ready.view?.collection.totalCount, 101);
-    assert.equal(ready.view?.collection.items[1]?.row.node.label, 'document-00099.md');
+    assert.equal(ready.view?.collection.count, 101);
+    assert.equal(ready.view?.collection.itemAt(1)?.row.node.label, 'document-00099.md');
     assert.deepEqual(completions, [ready]);
     const current = application.state();
     await application.applyFileTreeTransition({ kind: 'collapse', id: virtualProjectRoot }, undefined, old.revision);
@@ -145,7 +145,7 @@ test('replacement filters, sorting and disclosure reject obsolete preparations a
     const collapsedState = application.state();
     await application.applyFileTreeTransition({ kind: 'expand', id: virtualProjectRoot }, undefined, ready.revision);
     assert.equal(application.state(), collapsedState, 'a stale expansion view is rejected even for the same source');
-    assert.equal(collapsed.view?.collection.totalCount, 1);
+    assert.equal(collapsed.view?.collection.count, 1);
   } finally { await application.dispose(); }
 });
 
@@ -173,7 +173,7 @@ test('lazy IO stays lazy through filtering, then accepted directory contents rep
     application.setProjectTreeFilter('keep');
     const filtered = await waitForTree(application);
     assert.equal(filtered.nodes[lazy]?.loaded, false);
-    assert.deepEqual(filtered.view?.collection.items.map((item) => item.row.node.label), [path.basename(directory), 'nested', 'keep.md']);
+    assert.deepEqual(filtered.view?.collection.window(0, filtered.view.collection.count).map((item) => item.row.node.label), [path.basename(directory), 'nested', 'keep.md']);
     application.subscribe((update) => {
       const tree = update.state.project.fileTree;
       if (tree.nodes[lazy]?.loading === true) assert.equal(tree.source, filtered.source);
@@ -184,7 +184,7 @@ test('lazy IO stays lazy through filtering, then accepted directory contents rep
     const expanded = await waitForTree(application);
     assert.equal(expanded.nodes[lazy]?.loaded, true);
     assert.notEqual(expanded.source, filtered.source);
-    assert.ok(expanded.view?.collection.items.some((item) => item.id === path.join(lazy, 'keep-child.md')));
+    assert.ok(expanded.view?.collection.itemById(path.join(lazy, 'keep-child.md')));
     // The actual event source delivers accepted preparation without manual dispatch.
     const deadline = Date.now() + 5_000;
     while (runtime.state().project.fileTree.view !== expanded.view && Date.now() < deadline) {
