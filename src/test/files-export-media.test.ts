@@ -30,7 +30,7 @@ import { createVellumApplication } from '../app/application.js';
 import {
   vellumPreviewDocumentGeometry,
 } from '../app/viewport-geometry.js';
-import { loadUserMarkdownTheme } from '../markdown/theme.js';
+import { loadUserMarkdownTheme, validateMarkdownTheme } from '../markdown/theme.js';
 import { darkTerminalMarkdownTheme } from '../markdown/theme.js';
 import { renderCodeBlock } from '../markdown/render/code.js';
 import { createVellumTui } from '../tui.js';
@@ -176,6 +176,28 @@ test('user Markdown themes validate semantic keys and terminal colors at the con
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Markdown theme transparency is explicit and applies only to backgrounds', () => {
+  const transparent = validateMarkdownTheme({ codeBlock: { bg: null } });
+  assert.deepEqual(transparent.diagnostics, []);
+  assert.equal(transparent.theme.codeBlock.bg, null);
+  assert.equal(Object.hasOwn(transparent.theme.codeBlock, 'bg'), true);
+  assert.deepEqual(transparent.theme.codeBlock.fg, darkTerminalMarkdownTheme.codeBlock.fg);
+
+  const inherited = validateMarkdownTheme({ codeBlock: { bold: true } }, transparent.theme);
+  assert.deepEqual(inherited.diagnostics, []);
+  assert.equal(inherited.theme.codeBlock.bg, null);
+  assert.equal(inherited.theme.codeBlock.bold, true);
+
+  const invalid = validateMarkdownTheme({ codeBlock: { fg: null, bg: { kind: 'invalid' } } }, transparent.theme);
+  assert.deepEqual(invalid.diagnostics.map((diagnostic) => diagnostic.key), ['codeBlock.fg', 'codeBlock.bg']);
+  assert.deepEqual(invalid.theme.codeBlock.fg, transparent.theme.codeBlock.fg);
+  assert.equal(invalid.theme.codeBlock.bg, null);
+
+  const opaque = validateMarkdownTheme({ codeBlock: { bg: { kind: 'default' } } }, transparent.theme);
+  assert.deepEqual(opaque.diagnostics, []);
+  assert.deepEqual(opaque.theme.codeBlock.bg, { kind: 'default' });
 });
 
 test('export invokes an executable directly with deterministic Pandoc arguments and protects output', async () => {

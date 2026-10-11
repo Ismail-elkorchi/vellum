@@ -208,7 +208,9 @@ function styleValue(
     } else if (supplied !== undefined) merged[flag] = supplied;
   }
   const foreground = styleColor(record['fg'], base.fg, `${key}.fg`, diagnostics);
-  const background = styleColor(record['bg'], base.bg, `${key}.bg`, diagnostics);
+  const background = record['bg'] === null
+    ? null
+    : styleColor(record['bg'], base.bg, `${key}.bg`, diagnostics);
   if (foreground === undefined) delete merged['fg'];
   else merged['fg'] = foreground;
   if (background === undefined) delete merged['bg'];
@@ -216,12 +218,12 @@ function styleValue(
   return Object.freeze(merged) as TerminalStyle;
 }
 
-function styleColor(
+function styleColor<TBase extends TerminalColor | null | undefined>(
   value: unknown,
-  base: TerminalColor | undefined,
+  base: TBase,
   key: string,
   diagnostics: MarkdownThemeDiagnostic[]
-): TerminalColor | undefined {
+): TerminalColor | TBase {
   if (value === undefined) return base;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     diagnostics.push(Object.freeze({ key, message: `Markdown theme ${key} must be a terminal color object.` }));

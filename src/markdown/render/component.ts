@@ -1,6 +1,7 @@
 import type { AccessibleNode, AccessibleRole } from '@ismail-elkorchi/terminal-ui/accessibility';
 import {
   defineComponent,
+  type ComponentAccessibilityResult,
   ignoreMessage,
 } from '@ismail-elkorchi/terminal-ui/component';
 import type { RoutedPointerEvent } from '@ismail-elkorchi/terminal-ui/input';
@@ -36,7 +37,7 @@ export interface ReadyMarkdownPreviewPresentation {
   readonly focusTargets: readonly FocusTarget[];
   readonly targets: ReadonlyMap<string, MarkdownPreviewActionFragment>;
   readonly hitTargets: readonly HitTarget<MarkdownPreviewAction>[];
-  accessibility(focusedTargetId?: string): AccessibleNode;
+  accessibility(focusedTargetId?: string): ComponentAccessibilityResult;
 }
 
 export interface MarkdownPreviewOptions {
@@ -119,6 +120,7 @@ export const markdownPreview = defineComponent<MarkdownPreviewOptions, MarkdownP
   identity: 'required',
   structure: 'composite',
   semantics: 'semantic',
+  emitsActions: true,
   accessibleRole: 'document',
   slots: markdownPreviewSlots,
   implementationSlots: ({ model }) => ({
@@ -233,7 +235,7 @@ export const markdownPreview = defineComponent<MarkdownPreviewOptions, MarkdownP
   accessibility: ({ id, model: options, bounds, widthProfile, focusedTargetId }) => {
     const model = resolvedPreview(options, bounds.width, widthProfile);
     return model === undefined
-      ? { id, role: 'document', label: options.label, focused: focusedTargetId === documentFocusTargetId, children: [{ id: `${id}:status`, role: 'status', label: previewStatus(options.presentation) }] }
+      ? { id, label: options.label, focused: focusedTargetId === documentFocusTargetId, children: [{ id: `${id}:status`, role: 'status', label: previewStatus(options.presentation) }] }
       : { ...model.presentation.accessibility(focusedTargetId), id, label: model.label, ...(focusedTargetId === documentFocusTargetId ? { focused: true } : {}) };
   },
 });
@@ -287,7 +289,9 @@ function* previewPresentationWork(
     targets.set(targetId, group.target);
   }
   const paths = new Map<string, readonly number[]>();
-  const accessibility = yield* accessiblePreviewNode(layout.accessibility, id, [], paths);
+  // The component owns the document role; preparation owns its semantic contents.
+  const { role: _rootRole, ...rootContent } = yield* accessiblePreviewNode(layout.accessibility, id, [], paths);
+  const accessibility: ComponentAccessibilityResult = Object.freeze(rootContent);
   let focusedId: string | undefined;
   let focusedTree = accessibility;
   const media: ReturnType<typeof localImageComponent>[] = [];
@@ -428,7 +432,7 @@ function* accessiblePreviewNode(
   });
 }
 
-function focusedAccessibleNode(node: AccessibleNode, path: readonly number[], depth: number): AccessibleNode {
+function focusedAccessibleNode<TNode extends Pick<AccessibleNode, 'children' | 'focused'>>(node: TNode, path: readonly number[], depth: number): TNode {
   const index = path[depth];
   if (index === undefined) return Object.freeze({ ...node, focused: true });
   const child = node.children?.[index];

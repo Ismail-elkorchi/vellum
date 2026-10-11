@@ -182,6 +182,7 @@ test('terminal presentation preparation is cancellable and reuses accepted seman
   const presentation = await prepareMarkdownPreviewPresentation(layout, 50, 1, 'prepared-targets');
   const focus = presentation.focusTargets[0]?.id;
   assert.ok(focus);
+  assert.equal(Object.hasOwn(presentation.accessibility(), 'role'), false);
   assert.equal(presentation.accessibility(), presentation.accessibility());
   assert.equal(presentation.accessibility(focus), presentation.accessibility(focus));
   const snapshot = renderElementSnapshot({
